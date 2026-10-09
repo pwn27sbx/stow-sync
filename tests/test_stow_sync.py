@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -93,6 +94,24 @@ def porcelain_bytes(repo: Path) -> bytes:
         env=git_test_env(),
     )
     return result.stdout
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def stow_apply(repo: Path, target: Path, package: str) -> subprocess.CompletedProcess[str]:
+    """Run a real ``stow`` for ``package`` from ``repo`` into ``target``.
+
+    ``HOME`` is the caller's (patched) environment so stow never reads a real
+    ``~/.stowrc``.
+    """
+    return subprocess.run(
+        ["stow", "-v", "-d", str(repo), "-t", str(target), package],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=os.environ.copy(),
+    )
 
 
 def make_bare_and_clone(root: Path) -> tuple[Path, Path]:
@@ -569,19 +588,425 @@ class DetectOperationTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# T9/T10 Stow health (real stow 2.4.1 in a temp HOME)
+# --------------------------------------------------------------------------
+
+
+class StowHealthTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.repo = self.home / ".dotfiles"
+
+    def _write_package(self) -> None:
+        write(self.repo / "mypkg" / ".config" / "app" / "conf", "hello\n")
+        write(self.repo / "mypkg" / ".config" / "app" / "keep", "keep\n")
+
+    def _anti_fold(self) -> None:
+        # A real sibling dir forces stow to link files individually instead of
+        # folding the whole tree into one directory symlink.
+        write(self.home / ".config" / "app" / "sibling", "s\n")
+
+    def test_stow_dry_run_reports_to_stderr_with_empty_stdout(self) -> None:
+        self._write_package()
+        self._anti_fold()
+        result = ss.stow_dry_run(str(self.repo), str(self.home), "mypkg")
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"LINK: .config/app/conf", result.stderr)
+
+    def test_pending_link_shape_and_tilde_paths(self) -> None:
+        self._write_package()
+        self._anti_fold()
+        health = ss.package_health(str(self.repo), str(self.home), "mypkg")
+        self.assertEqual(health["name"], "mypkg")
+        self.assertEqual(health["health"], "pending")
+        self.assertEqual(health["conflicts"], [])
+        self.assertEqual(health["dangling"], [])
+        self.assertEqual(
+            health["pending_links"],
+            [
+                {"target": "~/.config/app/conf", "source": "~/.dotfiles/mypkg/.config/app/conf"},
+                {"target": "~/.config/app/keep", "source": "~/.dotfiles/mypkg/.config/app/keep"},
+            ],
+        )
+
+    def test_fully_stowed_package_is_ok(self) -> None:
+        self._write_package()
+        self._anti_fold()
+        stow_apply(self.repo, self.home, "mypkg")
+        health = ss.package_health(str(self.repo), str(self.home), "mypkg")
+        self.assertEqual(health["health"], "ok")
+        self.assertEqual(health["pending_links"], [])
+        self.assertEqual(health["conflicts"], [])
+        self.assertEqual(health["dangling"], [])
+
+    def test_real_file_in_the_way_is_a_conflict(self) -> None:
+        self._write_package()
+        os.remove(self.repo / "mypkg" / ".config" / "app" / "keep")
+        self._anti_fold()
+        write(self.home / ".config" / "app" / "conf", "real\n")
+        health = ss.package_health(str(self.repo), str(self.home), "mypkg")
+        self.assertEqual(health["health"], "conflicts")
+        self.assertEqual(health["pending_links"], [])
+        self.assertEqual(len(health["conflicts"]), 1)
+        conflict = health["conflicts"][0]
+        self.assertEqual(conflict["target"], "~/.config/app/conf")
+        self.assertEqual(conflict["source"], "~/.dotfiles/mypkg/.config/app/conf")
+        self.assertTrue(
+            conflict["message"].startswith(
+                "cannot stow .dotfiles/mypkg/.config/app/conf over existing target "
+                ".config/app/conf since neither a link nor a directory and --adopt not specified"
+            ),
+            conflict["message"],
+        )
+
+    def test_dangling_link_is_detected_from_the_filesystem(self) -> None:
+        self._write_package()
+        self._anti_fold()
+        stow_apply(self.repo, self.home, "mypkg")
+        os.remove(self.repo / "mypkg" / ".config" / "app" / "conf")
+        # stow's own dry run does not report the dangling link at all
+        dry = ss.stow_dry_run(str(self.repo), str(self.home), "mypkg")
+        self.assertNotIn(b"LINK:", dry.stderr)
+        health = ss.package_health(str(self.repo), str(self.home), "mypkg")
+        self.assertEqual(health["health"], "dangling")
+        self.assertEqual(health["pending_links"], [])
+        self.assertEqual(health["conflicts"], [])
+        self.assertEqual(
+            health["dangling"],
+            [{"target": "~/.config/app/conf", "source": "~/.dotfiles/mypkg/.config/app/conf"}],
+        )
+
+    def test_health_precedence_conflicts_beat_pending(self) -> None:
+        self._write_package()
+        os.remove(self.repo / "mypkg" / ".config" / "app" / "keep")
+        self._anti_fold()
+        write(self.home / ".config" / "app" / "conf", "real\n")  # conflict
+        write(self.repo / "mypkg" / ".config" / "app" / "new", "new\n")  # pending
+        health = ss.package_health(str(self.repo), str(self.home), "mypkg")
+        self.assertEqual(len(health["conflicts"]), 1)
+        self.assertEqual(len(health["pending_links"]), 1)
+        self.assertEqual(health["health"], "conflicts")
+
+    def test_health_precedence_dangling_beats_pending(self) -> None:
+        self._write_package()
+        self._anti_fold()
+        stow_apply(self.repo, self.home, "mypkg")
+        os.remove(self.repo / "mypkg" / ".config" / "app" / "keep")  # dangling
+        write(self.repo / "mypkg" / ".config" / "app" / "added", "added\n")  # pending
+        health = ss.package_health(str(self.repo), str(self.home), "mypkg")
+        self.assertEqual(len(health["dangling"]), 1)
+        self.assertEqual(len(health["pending_links"]), 1)
+        self.assertEqual(health["health"], "dangling")
+
+
+class ConflictFixtureTests(unittest.TestCase):
+    def test_pinned_fixture_parses_real_stow_wording(self) -> None:
+        fixture = (FIXTURES / "stow_conflict_stderr.txt").read_text(encoding="utf-8")
+        self.assertIn("would cause conflicts:", fixture)
+        self.assertIn("neither a link nor a directory and --adopt not specified", fixture)
+        self.assertIn("All operations aborted.", fixture)
+        target_dir = "/tmp/target"
+        conflicts = ss.parse_conflicts(fixture, target_dir)
+        self.assertEqual(len(conflicts), 1)
+        conflict = conflicts[0]
+        self.assertEqual(ss.to_tilde(conflict["target"]), ss.to_tilde(os.path.join(target_dir, ".config/app/conf")))
+        self.assertEqual(
+            ss.to_tilde(conflict["source"]),
+            ss.to_tilde(os.path.normpath(os.path.join(target_dir, "../crepo/mypkg/.config/app/conf"))),
+        )
+        self.assertEqual(
+            conflict["message"],
+            "cannot stow ../crepo/mypkg/.config/app/conf over existing target "
+            ".config/app/conf since neither a link nor a directory and --adopt not specified",
+        )
+
+
+# --------------------------------------------------------------------------
+# T11 Candidates (README section 5.3)
+# --------------------------------------------------------------------------
+
+
+class CandidateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.repo = self.home / ".dotfiles"
+
+    def _candidates(self, watch, ignore=None, repos=None):
+        config = {
+            "repos": repos or [],
+            "watch": watch,
+            "ignore": ignore or [],
+        }
+        return ss.compute_candidates(config)
+
+    def test_plain_watch_dir_children_are_watched(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "#!/bin/sh\n")
+        write(self.home / ".local" / "bin" / "other", "x\n")
+        candidates = self._candidates(["~/.local/bin"])
+        by_path = {c["path"]: c for c in candidates}
+        self.assertEqual(set(by_path), {"~/.local/bin/tool", "~/.local/bin/other"})
+        for candidate in by_path.values():
+            self.assertEqual(candidate["group"], "watched")
+            self.assertEqual(candidate["type"], "file")
+
+    def test_glob_matches_are_group_other(self) -> None:
+        write(self.home / ".config" / "foo.conf", "x\n")
+        write(self.home / ".config" / "kitty" / "kitty.conf", "k\n")
+        candidates = self._candidates(["~/.config/*"])
+        by_path = {c["path"]: c for c in candidates}
+        self.assertEqual(set(by_path), {"~/.config/foo.conf", "~/.config/kitty"})
+        self.assertEqual(by_path["~/.config/foo.conf"]["group"], "other")
+        self.assertEqual(by_path["~/.config/foo.conf"]["type"], "file")
+        self.assertEqual(by_path["~/.config/kitty"]["group"], "other")
+        self.assertEqual(by_path["~/.config/kitty"]["type"], "dir")
+
+    def test_ignore_glob_skips_matching_children(self) -> None:
+        write(self.home / ".config" / "systemd" / "user" / "app.service", "x\n")
+        write(self.home / ".config" / "systemd" / "user" / "foo.wants" / "x", "x\n")
+        candidates = self._candidates(
+            ["~/.config/systemd/user"],
+            ignore=["~/.config/systemd/user/*.wants"],
+        )
+        self.assertEqual([c["path"] for c in candidates], ["~/.config/systemd/user/app.service"])
+
+    def test_symlink_into_repo_is_not_a_candidate(self) -> None:
+        write(self.repo / "ai-tools" / ".config" / "systemd" / "user" / "ai-tools-check.timer", "t\n")
+        # real file first so stow links the .timer individually (no tree folding)
+        write(self.home / ".config" / "systemd" / "user" / "other.service", "x\n")
+        stow_apply(self.repo, self.home, "ai-tools")
+        candidates = self._candidates(
+            ["~/.config/systemd/user"],
+            repos=[{"path": str(self.repo), "target": str(self.home), "packages": ["ai-tools"]}],
+        )
+        self.assertEqual([c["path"] for c in candidates], ["~/.config/systemd/user/other.service"])
+
+    def test_candidate_inside_stowed_directory_is_skipped(self) -> None:
+        write(self.repo / "mycfg" / ".config" / "myapp" / "settings", "s\n")
+        # Home has no .config yet, so stow folds the whole tree into one symlink.
+        stow_apply(self.repo, self.home, "mycfg")
+        self.assertTrue(os.path.islink(self.home / ".config"))
+        candidates = self._candidates(
+            ["~/.config/*"],
+            repos=[{"path": str(self.repo), "target": str(self.home), "packages": ["mycfg"]}],
+        )
+        self.assertEqual(candidates, [])
+
+    def test_badge_counts_watched_and_recent_other(self) -> None:
+        now = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+        recent = (now - timedelta(days=1)).isoformat(timespec="seconds")
+        old = (now - timedelta(days=10)).isoformat(timespec="seconds")
+        candidates = [
+            {"group": "watched", "mtime": old},
+            {"group": "other", "mtime": recent},
+            {"group": "other", "mtime": old},
+        ]
+        self.assertEqual(ss.compute_badge(candidates, now), 2)
+
+    def test_sibling_package_suggestion_wins(self) -> None:
+        write(self.repo / "ai-tools" / ".config" / "systemd" / "user" / "ai-tools-check.timer", "t\n")
+        write(self.home / ".config" / "systemd" / "user" / "easyeffects.service", "x\n")
+        stow_apply(self.repo, self.home, "ai-tools")
+        candidates = self._candidates(
+            ["~/.config/systemd/user"],
+            repos=[{"path": str(self.repo), "target": str(self.home), "packages": ["ai-tools"]}],
+        )
+        self.assertEqual([c["path"] for c in candidates], ["~/.config/systemd/user/easyeffects.service"])
+        self.assertEqual(candidates[0]["suggested_package"], "ai-tools")
+
+    def test_suggestion_fallback_user_becomes_systemd(self) -> None:
+        write(self.home / ".config" / "systemd" / "user" / "easyeffects.service", "x\n")
+        candidates = self._candidates(["~/.config/systemd/user"])
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["suggested_package"], "systemd")
+
+    def test_suggestion_fallback_for_directory_is_basename(self) -> None:
+        write(self.home / ".config" / "kitty" / "kitty.conf", "k\n")
+        candidates = self._candidates(["~/.config/*"])
+        self.assertEqual([c["path"] for c in candidates], ["~/.config/kitty"])
+        self.assertEqual(candidates[0]["suggested_package"], "kitty")
+
+    def test_candidate_fields_are_exact(self) -> None:
+        content = "hello\n"
+        write(self.home / ".local" / "bin" / "tool", content)
+        candidates = self._candidates(["~/.local/bin"])
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(
+            set(candidate),
+            {"path", "type", "size", "mtime", "group", "suggested_package"},
+        )
+        self.assertEqual(candidate["size"], len(content.encode("utf-8")))
+        self.assertEqual(datetime.fromisoformat(candidate["mtime"]).tzinfo is not None, True)
+
+    def test_oversized_candidate_is_skipped(self) -> None:
+        big = self.home / ".local" / "bin" / "big.bin"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        with open(big, "wb") as handle:
+            handle.seek(ss.MAX_CANDIDATE_SIZE + 1)
+            handle.write(b"x")
+        write(self.home / ".local" / "bin" / "small", "s\n")
+        candidates = self._candidates(["~/.local/bin"])
+        self.assertEqual([c["path"] for c in candidates], ["~/.local/bin/small"])
+
+    def test_special_file_is_skipped(self) -> None:
+        bindir = self.home / ".local" / "bin"
+        bindir.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(bindir / "pipe")
+        write(bindir / "tool", "x\n")
+        candidates = self._candidates(["~/.local/bin"])
+        self.assertEqual([c["path"] for c in candidates], ["~/.local/bin/tool"])
+
+
+# --------------------------------------------------------------------------
+# T12 status integration: real package health, candidates, summary
+# --------------------------------------------------------------------------
+
+
+class StatusIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.config = self.env.root / "config.json"
+
+    def status(self, *extra: str) -> dict:
+        return ss.dispatch(["status", *extra], str(self.config))
+
+    def _clean_repo(self, files: dict[str, str]) -> Path:
+        repo = self.home / ".dotfiles"
+        init_repo(repo)
+        for rel, content in files.items():
+            write(repo / rel, content)
+        commit_all(repo, "c1")
+        bare = self.env.root / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", str(bare)],
+            check=True,
+            capture_output=True,
+            env=git_test_env(),
+        )
+        git(repo, "remote", "add", "origin", str(bare))
+        git(repo, "push", "-u", "-q", "origin", "main")
+        return repo
+
+    def test_status_reports_pending_package_and_summary_state(self) -> None:
+        repo = self._clean_repo({"mypkg/.config/app/conf": "hello\n"})
+        write_config(self.config, [{"path": str(repo), "target": str(self.home), "packages": "auto"}])
+        result = self.status()
+        entry = result["repos"][0]
+        self.assertEqual(entry["state"], "clean")
+        self.assertEqual(
+            entry["packages"],
+            [
+                {
+                    "name": "mypkg",
+                    "health": "pending",
+                    "pending_links": [{"target": "~/.config", "source": "~/.dotfiles/mypkg/.config"}],
+                    "conflicts": [],
+                    "dangling": [],
+                }
+            ],
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["summary"]["state"], "pending")
+        self.assertEqual(result["summary"]["count"], 1)
+
+    def test_status_uses_explicit_package_list(self) -> None:
+        repo = self._clean_repo(
+            {
+                "mypkg/.config/app/conf": "hello\n",
+                "other/.config/other/conf": "x\n",
+            }
+        )
+        write_config(self.config, [{"path": str(repo), "target": str(self.home), "packages": ["other"]}])
+        entry = self.status()["repos"][0]
+        self.assertEqual([package["name"] for package in entry["packages"]], ["other"])
+
+    def test_summary_state_is_conflict_for_stow_conflict(self) -> None:
+        repo = self._clean_repo({"mypkg/.config/app/conf": "hello\n"})
+        write(self.home / ".config" / "app" / "sibling", "s\n")
+        write(self.home / ".config" / "app" / "conf", "real\n")
+        write_config(self.config, [{"path": str(repo), "target": str(self.home), "packages": "auto"}])
+        result = self.status()
+        self.assertEqual(result["repos"][0]["packages"][0]["health"], "conflicts")
+        self.assertEqual(result["summary"]["state"], "conflict")
+        self.assertEqual(result["summary"]["count"], 1)
+
+    def test_summary_count_includes_watched_candidate_badge(self) -> None:
+        repo = self._clean_repo({"mypkg/.config/app/conf": "hello\n"})
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        write_config(
+            self.config,
+            [{"path": str(repo), "target": str(self.home), "packages": "auto"}],
+            watch=["~/.local/bin"],
+        )
+        result = self.status()
+        self.assertEqual([c["path"] for c in result["candidates"]], ["~/.local/bin/tool"])
+        self.assertEqual(result["candidates"][0]["group"], "watched")
+        self.assertEqual(result["summary"]["state"], "pending")
+        self.assertEqual(result["summary"]["count"], 2)  # 1 pending link + 1 watched candidate
+
+    def test_summary_count_includes_dangling(self) -> None:
+        repo = self._clean_repo(
+            {
+                "mypkg/.config/app/conf": "hello\n",
+                "mypkg/.config/app/keep": "keep\n",
+            }
+        )
+        write(self.home / ".config" / "app" / "sibling", "s\n")
+        stow_apply(repo, self.home, "mypkg")
+        os.remove(repo / "mypkg" / ".config" / "app" / "conf")
+        commit_all(repo, "remove conf")
+        git(repo, "push", "-q", "origin", "main")
+        write_config(self.config, [{"path": str(repo), "target": str(self.home), "packages": "auto"}])
+        result = self.status()
+        entry = result["repos"][0]
+        self.assertEqual(entry["state"], "clean")
+        self.assertEqual(entry["packages"][0]["health"], "dangling")
+        self.assertEqual(result["summary"]["state"], "dangling")
+        self.assertEqual(result["summary"]["count"], 1)
+
+    def test_package_state_rank_pins_severity_order(self) -> None:
+        rank = ss._STATE_RANK
+        self.assertGreater(rank["pending"], rank["clean"])
+        self.assertGreater(rank["dangling"], rank["dirty"])
+        self.assertGreater(rank["conflict"], rank["dirty"])
+        self.assertGreater(rank["missing"], rank["conflict"])
+        self.assertGreater(rank["operation"], rank["conflict"])
+
+
+# --------------------------------------------------------------------------
 # T6/T8 status command and CLI
 # --------------------------------------------------------------------------
 
 
-def write_config(path: Path, repos: list[dict]) -> Path:
+def write_config(
+    path: Path,
+    repos: list[dict],
+    watch: list[str] | None = None,
+    ignore: list[str] | None = None,
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
                 "version": 1,
                 "repos": repos,
-                "watch": [],
-                "ignore": [],
+                "watch": watch or [],
+                "ignore": ignore or [],
                 "fetch_minutes": 15,
                 "refresh_minutes": 5,
                 "notify_after_hours": 0,
@@ -604,7 +1029,7 @@ class StatusCommandTests(unittest.TestCase):
     def status(self, *extra: str) -> dict:
         return ss.dispatch(["status", *extra], str(self.config))
 
-    def test_clean_repo_lists_packages_placeholders(self) -> None:
+    def test_clean_repo_reports_stowed_package_health(self) -> None:
         bare, repo = make_bare_and_clone(self.env.root)
         (repo / "fish").mkdir()
         write(repo / "fish" / ".config", "x\n")
@@ -612,6 +1037,7 @@ class StatusCommandTests(unittest.TestCase):
         write(repo / "odd" / ".stow-local-ignore", ".*\n")
         commit_all(repo, "c1")
         git(repo, "push", "-q", "origin", "main")
+        stow_apply(repo, self.env.home, "fish")
         write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
 
         result = self.status()

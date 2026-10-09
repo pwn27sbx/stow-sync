@@ -1,0 +1,3 @@
+WARNING! stowing mypkg would cause conflicts:
+  * cannot stow ../crepo/mypkg/.config/app/conf over existing target .config/app/conf since neither a link nor a directory and --adopt not specified
+All operations aborted.

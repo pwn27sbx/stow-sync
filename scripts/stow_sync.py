@@ -14,14 +14,17 @@ everything so a failure never leaks a traceback to the panel.
 from __future__ import annotations
 
 import copy
+import fnmatch
+import glob
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 VERSION = "0.1.0"
@@ -521,17 +524,29 @@ def compute_state(
     return "clean"
 
 
-# Severity for the summary's "worst" state.
+# Severity for the summary's "worst" state. Repo states keep their README
+# section 5.1 relative order; package-derived states (README section 5.1:
+# conflicts -> "conflict", plus "dangling" and "pending") are interleaved.
 _STATE_RANK = {
     "clean": 0,
-    "behind": 1,
-    "ahead": 2,
-    "no-upstream": 3,
-    "dirty": 4,
-    "detached": 5,
-    "diverged": 6,
-    "operation": 7,
-    "missing": 8,
+    "behind": 10,
+    "ahead": 20,
+    "pending": 25,
+    "no-upstream": 30,
+    "dirty": 40,
+    "detached": 50,
+    "dangling": 55,
+    "diverged": 60,
+    "conflict": 65,
+    "operation": 70,
+    "missing": 80,
+}
+
+# Package ``health`` value -> summary state name.
+_HEALTH_STATE = {
+    "conflicts": "conflict",
+    "dangling": "dangling",
+    "pending": "pending",
 }
 
 
@@ -556,12 +571,378 @@ def _fetch_origin(repo_path: str) -> tuple[str | None, str | None]:
     return (None, datetime.now().astimezone().isoformat(timespec="seconds"))
 
 
-def _package_placeholders(repo_path: str) -> list[dict[str, Any]]:
-    """Package entries with Unit 1 placeholder health; Unit 2 fills these in."""
-    return [
-        {"name": name, "health": "ok", "pending_links": [], "conflicts": [], "dangling": []}
-        for name in detect_packages(repo_path)
+# --------------------------------------------------------------------------
+# Stow health (README section 5.1) and candidates (README section 5.3)
+# --------------------------------------------------------------------------
+
+# A candidate whose recursive size exceeds this is skipped.
+MAX_CANDIDATE_SIZE = 50 * 1024 * 1024
+# ``other`` candidates only count toward the badge when modified recently.
+BADGE_RECENT = timedelta(days=7)
+
+_CONFLICT_LINE = re.compile(
+    r"cannot stow (?P<source>.+?) over existing target (?P<target>.+?) since"
+)
+
+
+def stow_env() -> dict[str, str]:
+    """Environment for every stow child: stable locale, inherited ``HOME``."""
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    return env
+
+
+def stow_dry_run(
+    repo_dir: str,
+    target_dir: str,
+    package: str,
+    timeout: float = 20,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run ``stow -n -v -d <repo> -t <target> <package>``.
+
+    Stow writes all diagnostics to stderr; stdout stays empty.
+    """
+    argv = [
+        "stow",
+        "-n",
+        "-v",
+        "-d",
+        str(repo_dir),
+        "-t",
+        str(target_dir),
+        str(package),
     ]
+    return run_bounded(argv, timeout, env=stow_env())
+
+
+def parse_pending_links(text: str, target_dir: str) -> list[dict[str, str]]:
+    """Parse ``LINK: <target> => <source>`` lines from a stow dry run.
+
+    The target path is relative to ``target_dir``; the source path is a symlink
+    target relative to the directory that holds the link (that is how stow
+    renders it), so it is resolved against ``dirname(target)``.
+    """
+    links: list[dict[str, str]] = []
+    for line in text.splitlines():
+        if not line.startswith("LINK: "):
+            continue
+        body = line[len("LINK: "):]
+        if " => " not in body:
+            continue
+        target_rel, source_rel = body.split(" => ", 1)
+        target_abs = os.path.normpath(os.path.join(target_dir, target_rel.strip()))
+        source_abs = os.path.normpath(
+            os.path.join(os.path.dirname(target_abs), source_rel.strip())
+        )
+        links.append({"target": to_tilde(target_abs), "source": to_tilde(source_abs)})
+    return links
+
+
+def parse_conflicts(text: str, target_dir: str) -> list[dict[str, str]]:
+    """Parse the ``would cause conflicts`` block from a stow dry run.
+
+    Both the source and the target in ``cannot stow X over existing target Y``
+    are rendered relative to ``target_dir``.
+    """
+    conflicts: list[dict[str, str]] = []
+    in_block = False
+    for line in text.splitlines():
+        if line.startswith("WARNING! stowing") and "would cause conflicts" in line:
+            in_block = True
+            continue
+        if in_block and line.strip() == "All operations aborted.":
+            in_block = False
+            continue
+        if not in_block:
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("* "):
+            continue
+        message = stripped[2:]
+        match = _CONFLICT_LINE.search(message)
+        if not match:
+            continue
+        source_abs = _resolve_under(target_dir, match.group("source"))
+        target_abs = _resolve_under(target_dir, match.group("target"))
+        conflicts.append(
+            {
+                "target": to_tilde(target_abs),
+                "source": to_tilde(source_abs),
+                "message": message,
+            }
+        )
+    return conflicts
+
+
+def _resolve_under(base: str, rel: str) -> str:
+    return os.path.normpath(os.path.join(base, rel))
+
+
+def _under(path: str, base: str) -> bool:
+    """True when ``path`` is ``base`` or lies inside it (lexically)."""
+    path = os.path.normpath(path)
+    base = os.path.normpath(base)
+    return path == base or path.startswith(base + os.sep)
+
+
+def _any_under(path: str, bases: list[str]) -> bool:
+    return any(_under(path, base) for base in bases)
+
+
+def _package_target_dirs(repo_dir: str, target_dir: str, package: str) -> set[str]:
+    """Target directories the package maps a regular file into.
+
+    Derived from the package's source tree: the parent under ``target_dir`` of
+    every regular file the package would link.
+    """
+    pkg_root = os.path.join(repo_dir, package)
+    parents: set[str] = set()
+    if not os.path.isdir(pkg_root):
+        return parents
+    for dirpath, _dirnames, filenames in os.walk(pkg_root):
+        for name in filenames:
+            src = os.path.join(dirpath, name)
+            if os.path.islink(src) or not os.path.isfile(src):
+                continue
+            rel = os.path.relpath(src, pkg_root)
+            parents.add(os.path.dirname(os.path.join(target_dir, rel)))
+    return parents
+
+
+def scan_dangling(repo_dir: str, target_dir: str, package: str) -> list[dict[str, str]]:
+    """Depth-1 symlinks into ``repo_dir`` whose source no longer exists.
+
+    Stow's own dry run says nothing about a broken link, so this is an explicit
+    filesystem scan of every target directory the package maps into.
+    """
+    repo_real = os.path.realpath(repo_dir)
+    dangling: list[dict[str, str]] = []
+    for parent in sorted(_package_target_dirs(repo_dir, target_dir, package)):
+        if not os.path.isdir(parent):
+            continue
+        try:
+            names = sorted(os.listdir(parent))
+        except OSError:
+            continue
+        for name in names:
+            entry = os.path.join(parent, name)
+            if not os.path.islink(entry) or os.path.exists(entry):
+                continue
+            real = os.path.realpath(entry)
+            if not _under(real, repo_real):
+                continue
+            dangling.append({"target": to_tilde(entry), "source": to_tilde(real)})
+    return dangling
+
+
+def package_health(
+    repo_dir: str,
+    target_dir: str,
+    package: str,
+    timeout: float = 20,
+) -> dict[str, Any]:
+    """Health of one package: pending links, conflicts and dangling links."""
+    result = stow_dry_run(repo_dir, target_dir, package, timeout)
+    text = _decode(result.stderr)
+    pending = parse_pending_links(text, target_dir)
+    conflicts = parse_conflicts(text, target_dir)
+    dangling = scan_dangling(repo_dir, target_dir, package)
+    health = "ok"
+    if conflicts:
+        health = "conflicts"
+    elif dangling:
+        health = "dangling"
+    elif pending:
+        health = "pending"
+    return {
+        "name": package,
+        "health": health,
+        "pending_links": pending,
+        "conflicts": conflicts,
+        "dangling": dangling,
+    }
+
+
+def _package_health_safe(repo_path: str, target_dir: str, name: str) -> dict[str, Any]:
+    """``package_health`` that never lets one bad package fail the whole status."""
+    try:
+        return package_health(repo_path, target_dir, name)
+    except Exception as exc:  # noqa: BLE001 - status must stay JSON-shaped
+        return {
+            "name": name,
+            "health": "ok",
+            "pending_links": [],
+            "conflicts": [],
+            "dangling": [],
+            "error": (str(exc) or "stow failed")[:200],
+        }
+
+
+def _has_glob(value: str) -> bool:
+    return any(char in value for char in "*?[")
+
+
+def _candidate_size(path: str) -> int:
+    """Size in bytes; recursive for directories, never following subdir links."""
+    if os.path.islink(path):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+    if os.path.isdir(path):
+        total = 0
+        for dirpath, _dirnames, filenames in os.walk(path):
+            for name in filenames:
+                try:
+                    total += os.path.getsize(os.path.join(dirpath, name))
+                except OSError:
+                    pass
+        return total
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _is_ignored(path: str, patterns: list[str]) -> bool:
+    tilde_path = to_tilde(path)
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            continue
+        if fnmatch.fnmatch(tilde_path, to_tilde(pattern)) or fnmatch.fnmatch(path, pattern):
+            return True
+    return False
+
+
+def _inside_stowed_dir(path: str, repo_reals: list[str]) -> bool:
+    """True when the path resolves into a repo or an ancestor links into one."""
+    if _any_under(os.path.realpath(path), repo_reals):
+        return True
+    parent = os.path.dirname(path)
+    while parent and parent != os.path.dirname(parent):
+        if os.path.islink(parent) and _any_under(os.path.realpath(parent), repo_reals):
+            return True
+        parent = os.path.dirname(parent)
+    return False
+
+
+def suggest_package(path: str, repo_reals: list[str]) -> str:
+    """Suggest a package for a candidate (README section 5.3)."""
+    parent = os.path.dirname(path)
+    try:
+        siblings = sorted(os.listdir(parent))
+    except OSError:
+        siblings = []
+    for name in siblings:
+        sibling = os.path.join(parent, name)
+        if sibling == path or not os.path.islink(sibling):
+            continue
+        real = os.path.realpath(sibling)
+        for repo in repo_reals:
+            if _under(real, repo):
+                segment = os.path.relpath(real, repo).split(os.sep, 1)[0]
+                if segment and segment != "..":
+                    return segment
+    base = os.path.basename(path) if os.path.isdir(path) else os.path.basename(parent)
+    base = base.lower()
+    if base == "user":
+        return "systemd"
+    return base
+
+
+def _build_candidate(
+    path: str,
+    group: str,
+    repo_reals: list[str],
+    ignore_patterns: list[str],
+) -> dict[str, Any] | None:
+    """Return a candidate dict, or None when the path must be skipped."""
+    if os.path.islink(path):
+        if not os.path.exists(path):
+            return None  # broken link
+        if _any_under(os.path.realpath(path), repo_reals):
+            return None  # already stowed into a configured repo
+    if _inside_stowed_dir(path, repo_reals):
+        return None
+    if not (os.path.islink(path) or os.path.isfile(path) or os.path.isdir(path)):
+        return None  # socket / FIFO / device
+    if _is_ignored(path, ignore_patterns):
+        return None
+    size = _candidate_size(path)
+    if size > MAX_CANDIDATE_SIZE:
+        return None
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    return {
+        "path": to_tilde(path),
+        "type": "dir" if os.path.isdir(path) else "file",
+        "size": size,
+        "mtime": datetime.fromtimestamp(mtime).astimezone().isoformat(timespec="seconds"),
+        "group": group,
+        "suggested_package": suggest_package(path, repo_reals),
+    }
+
+
+def compute_candidates(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Top-level candidate list from the config's ``watch`` entries.
+
+    A plain directory contributes its direct children as ``watched``; a glob
+    entry contributes each match as ``other``. Depth is always 1.
+    """
+    repo_reals = [
+        os.path.realpath(expand_path(repo.get("path", "")))
+        for repo in config.get("repos", [])
+        if isinstance(repo, dict) and repo.get("path")
+    ]
+    ignore_patterns = [p for p in config.get("ignore", []) if isinstance(p, str)]
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in config.get("watch", []):
+        if not isinstance(entry, str):
+            continue
+        watch_path = expand_path(entry)
+        paths: list[tuple[str, str]] = []
+        if _has_glob(watch_path):
+            paths = [(match, "other") for match in sorted(glob.glob(watch_path))]
+        else:
+            if not os.path.isdir(watch_path):
+                continue
+            try:
+                names = sorted(os.listdir(watch_path))
+            except OSError:
+                continue
+            paths = [(os.path.join(watch_path, name), "watched") for name in names]
+        for raw_path, group in paths:
+            norm = os.path.normpath(raw_path)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            candidate = _build_candidate(norm, group, repo_reals, ignore_patterns)
+            if candidate is not None:
+                candidates.append(candidate)
+    return candidates
+
+
+def compute_badge(candidates: list[dict[str, Any]], now: datetime | None = None) -> int:
+    """Badge count: all ``watched`` plus recent ``other`` candidates."""
+    reference = now or datetime.now().astimezone()
+    cutoff = reference - BADGE_RECENT
+    count = 0
+    for candidate in candidates:
+        if candidate.get("group") == "watched":
+            count += 1
+            continue
+        try:
+            mtime = datetime.fromisoformat(candidate.get("mtime", ""))
+        except ValueError:
+            continue
+        if mtime.tzinfo is None:
+            mtime = mtime.astimezone()
+        if mtime >= cutoff:
+            count += 1
+    return count
 
 
 def _repo_status(repo_cfg: dict[str, Any], do_fetch: bool = False) -> dict[str, Any]:
@@ -594,6 +975,14 @@ def _repo_status(repo_cfg: dict[str, Any], do_fetch: bool = False) -> dict[str, 
         entry["state"] = "missing"
         return entry
     operation = detect_operation(path)
+    packages_cfg = repo_cfg.get("packages", "auto")
+    if packages_cfg == "auto":
+        package_names = detect_packages(path)
+    elif isinstance(packages_cfg, list):
+        package_names = [str(name) for name in packages_cfg]
+    else:
+        package_names = []
+    target_dir = expand_path(repo_cfg.get("target", "~") or "~")
     entry.update(
         {
             "branch": status["branch"],
@@ -603,7 +992,9 @@ def _repo_status(repo_cfg: dict[str, Any], do_fetch: bool = False) -> dict[str, 
             "changes": status["changes"],
             "untracked": status["untracked"],
             "operation": operation,
-            "packages": _package_placeholders(path),
+            "packages": [
+                _package_health_safe(path, target_dir, name) for name in package_names
+            ],
             "state": compute_state(
                 exists=True,
                 operation=operation,
@@ -619,20 +1010,34 @@ def _repo_status(repo_cfg: dict[str, Any], do_fetch: bool = False) -> dict[str, 
     return entry
 
 
-def compute_summary(repos: list[dict[str, Any]]) -> dict[str, Any]:
-    """Worst repo state plus the count of actionable items (Unit 1 subset)."""
-    if not repos:
-        return {"state": "clean", "count": 0}
-    worst = max(repos, key=lambda repo: _STATE_RANK.get(repo.get("state", "clean"), 0))
+def compute_summary(repos: list[dict[str, Any]], badge_count: int = 0) -> dict[str, Any]:
+    """Worst repo/package state plus the count of actionable items.
+
+    ``count`` = changes + untracked + (ahead>0) + (behind>0) + pending_links +
+    conflicts + dangling + badge_count (README section 5.1).
+    """
+    states: list[str] = []
     count = 0
     for repo in repos:
+        states.append(repo.get("state", "clean"))
         count += len(repo.get("changes", []))
         count += len(repo.get("untracked", []))
         if repo.get("ahead", 0) > 0:
             count += 1
         if repo.get("behind", 0) > 0:
             count += 1
-    return {"state": worst["state"], "count": count}
+        for package in repo.get("packages", []):
+            count += len(package.get("pending_links", []))
+            count += len(package.get("conflicts", []))
+            count += len(package.get("dangling", []))
+            mapped = _HEALTH_STATE.get(package.get("health", "ok"))
+            if mapped:
+                states.append(mapped)
+    count += badge_count
+    if not states:
+        return {"state": "clean", "count": count}
+    worst = max(states, key=lambda state: _STATE_RANK.get(state, 0))
+    return {"state": worst, "count": count}
 
 
 def cmd_status(args: list[str], config_path: str | None = None) -> dict[str, Any]:
@@ -640,11 +1045,13 @@ def cmd_status(args: list[str], config_path: str | None = None) -> dict[str, Any
     do_fetch = "--fetch" in args
     config = load_config(config_path)
     repos = [_repo_status(repo_cfg, do_fetch) for repo_cfg in config.get("repos", [])]
+    candidates = compute_candidates(config)
+    badge_count = compute_badge(candidates)
     return {
         "ok": True,
         "repos": repos,
-        "summary": compute_summary(repos),
-        "candidates": [],
+        "summary": compute_summary(repos, badge_count),
+        "candidates": candidates,
     }
 
 
