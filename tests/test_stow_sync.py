@@ -8,6 +8,7 @@ environment is isolated from the host's global config, identity and hooks.
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -862,6 +863,18 @@ class CandidateTests(unittest.TestCase):
         candidates = self._candidates(["~/.local/bin"])
         self.assertEqual([c["path"] for c in candidates], ["~/.local/bin/small"])
 
+    def test_candidate_size_stops_once_over_the_cap(self) -> None:
+        # `status --short` must stay fast: an over-cap directory only needs to
+        # be known as "over", so the recursive walk stops at the first file
+        # that pushes the total past MAX_CANDIDATE_SIZE.
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("a.bin", "b.bin"):
+                with open(os.path.join(tmp, name), "wb") as handle:
+                    handle.truncate(ss.MAX_CANDIDATE_SIZE + 1)
+            size = ss._candidate_size(tmp)
+            self.assertGreater(size, ss.MAX_CANDIDATE_SIZE)
+            self.assertLess(size, 2 * (ss.MAX_CANDIDATE_SIZE + 1))
+
     def test_special_file_is_skipped(self) -> None:
         bindir = self.home / ".local" / "bin"
         bindir.mkdir(parents=True, exist_ok=True)
@@ -1482,6 +1495,932 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertLessEqual(len(out.encode("utf-8")), ss.MAX_RESPONSE_BYTES + 1)
         self.assertFalse(json.loads(out)["ok"])
+
+
+# --------------------------------------------------------------------------
+# Unit 3: shared repo resolution and path validation
+# --------------------------------------------------------------------------
+
+
+class ResolveRepoTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.repo = self.env.home / "repo"
+        self.config = {
+            "repos": [{"path": "~/repo", "target": "~", "packages": "auto"}],
+            "watch": [],
+            "ignore": [],
+        }
+
+    def test_resolves_expanded_path(self) -> None:
+        found = ss.resolve_repo(self.config, "~/repo")
+        self.assertEqual(found["path"], str(self.repo))
+
+    def test_unknown_repo_raises_command_error(self) -> None:
+        with self.assertRaises(ss.CommandError):
+            ss.resolve_repo(self.config, "~/other")
+        with self.assertRaises(ss.CommandError):
+            ss.resolve_repo(self.config, None)
+
+
+class ValidateRelpathTests(unittest.TestCase):
+    def test_accepts_relative(self) -> None:
+        self.assertEqual(
+            ss.validate_repo_relpath("fish/.config/fish/config.fish"),
+            "fish/.config/fish/config.fish",
+        )
+
+    def test_rejects_absolute(self) -> None:
+        with self.assertRaises(ss.CommandError):
+            ss.validate_repo_relpath("/etc/passwd")
+
+    def test_rejects_parent_traversal(self) -> None:
+        with self.assertRaises(ss.CommandError):
+            ss.validate_repo_relpath("../secret")
+        with self.assertRaises(ss.CommandError):
+            ss.validate_repo_relpath("fish/../../secret")
+
+    def test_rejects_nul_and_tilde(self) -> None:
+        with self.assertRaises(ss.CommandError):
+            ss.validate_repo_relpath("a\x00b")
+        with self.assertRaises(ss.CommandError):
+            ss.validate_repo_relpath("~/x")
+
+
+class RunGitStdinTests(unittest.TestCase):
+    def test_run_git_forwards_stdin(self) -> None:
+        result = ss.run_git(None, ["hash-object", "--stdin"], stdin="hello\n")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), b"ce013625030ba8dba906f756967f9e9ca394464a")
+
+
+class DiffCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.config = self.env.root / "config.json"
+
+    def _repo(self) -> Path:
+        repo = self.env.home / ".dotfiles"
+        init_repo(repo)
+        write(repo / "a.txt", "old\n")
+        commit_all(repo, "c1")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        return repo
+
+    def diff(self, repo: Path, path: str) -> dict:
+        return ss.dispatch(["diff", "--repo", str(repo), "--path", path], str(self.config))
+
+    def test_unstaged_diff_text_and_not_truncated(self) -> None:
+        repo = self._repo()
+        write(repo / "a.txt", "new\n")
+        result = self.diff(repo, "a.txt")
+        self.assertTrue(result["ok"])
+        self.assertIn("-old", result["text"])
+        self.assertIn("+new", result["text"])
+        self.assertFalse(result["truncated"])
+
+    def test_falls_back_to_cached_diff(self) -> None:
+        repo = self._repo()
+        write(repo / "a.txt", "staged\n")
+        git(repo, "add", "a.txt")
+        result = self.diff(repo, "a.txt")
+        self.assertTrue(result["ok"])
+        self.assertIn("+staged", result["text"])
+        self.assertFalse(result["truncated"])
+
+    def test_truncates_at_400_lines(self) -> None:
+        repo = self._repo()
+        write(repo / "big.txt", "".join(f"line-{i}\n" for i in range(600)))
+        commit_all(repo, "big")
+        write(repo / "big.txt", "".join(f"changed-{i}\n" for i in range(600)))
+        result = self.diff(repo, "big.txt")
+        self.assertTrue(result["truncated"])
+        self.assertLessEqual(len(result["text"].splitlines()), ss.DIFF_MAX_LINES)
+
+    def test_truncates_at_32_kilobytes(self) -> None:
+        repo = self._repo()
+        write(repo / "long.txt", "seed\n")
+        commit_all(repo, "long")
+        write(repo / "long.txt", ("y" * 60000) + "\n")
+        result = self.diff(repo, "long.txt")
+        self.assertTrue(result["truncated"])
+        self.assertLessEqual(len(result["text"].encode("utf-8")), ss.DIFF_MAX_BYTES)
+
+    def test_unknown_repo_is_error(self) -> None:
+        self._repo()
+        result = ss.dispatch(["diff", "--repo", str(self.env.home / "nope"), "--path", "a.txt"], str(self.config))
+        self.assertFalse(result["ok"])
+        self.assertIn("repo", result["error"].lower())
+
+    def test_absolute_path_is_rejected(self) -> None:
+        repo = self._repo()
+        result = self.diff(repo, "/etc/passwd")
+        self.assertFalse(result["ok"])
+
+
+# --------------------------------------------------------------------------
+# Unit 3: secret scan (README section 6)
+# --------------------------------------------------------------------------
+
+SECRET_SAMPLES = [
+    ("private-key", "-----BEGIN RSA PRIVATE KEY-----"),
+    ("github-token", "ghp_" + "A" * 36),
+    ("github-pat", "github_pat_" + "A" * 60),
+    ("aws-access-key", "AKIA" + "A" * 16),
+    ("slack-token", "xoxb-" + "A" * 10),
+    ("openai-key", "sk-" + "A" * 32),
+    ("google-api-key", "AIza" + "A" * 35),
+    ("assignment", "password = \"supersecretvalue\""),
+]
+
+
+def synthetic_diff(path: str, line: str) -> str:
+    return (
+        f"diff --git a/{path} b/{path}\n"
+        f"--- a/{path}\n"
+        f"+++ b/{path}\n"
+        "@@ -0,0 +1 @@\n"
+        f"+{line}\n"
+    )
+
+
+class SecretScanTests(unittest.TestCase):
+    def test_every_rule_is_detected(self) -> None:
+        for rule, sample in SECRET_SAMPLES:
+            found = ss.scan_secrets(synthetic_diff("file.txt", sample))
+            self.assertEqual([entry["rule"] for entry in found], [rule], sample)
+
+    def test_clean_line_has_no_secrets(self) -> None:
+        self.assertEqual(ss.scan_secrets(synthetic_diff("file.txt", "just a normal line")), [])
+
+    def test_path_and_line_number_are_reported(self) -> None:
+        found = ss.scan_secrets(synthetic_diff("dir/secret.env", "ghp_" + "A" * 36))
+        self.assertEqual(found[0]["path"], "dir/secret.env")
+        self.assertEqual(found[0]["line"], 1)
+
+    def test_line_numbers_track_hunks(self) -> None:
+        diff = (
+            "diff --git a/f b/f\n"
+            "--- a/f\n"
+            "+++ b/f\n"
+            "@@ -1,2 +1,3 @@\n"
+            " context\n"
+            "-old\n"
+            "+new\n"
+            "+ghp_" + "A" * 36 + "\n"
+        )
+        found = ss.scan_secrets(diff)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["path"], "f")
+        self.assertEqual(found[0]["line"], 3)
+
+
+class CommitCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.config = self.env.root / "config.json"
+        self.repo = self.env.home / ".dotfiles"
+        init_repo(self.repo)
+        write(self.repo / "a.txt", "a\n")
+        commit_all(self.repo, "c1")
+        write_config(self.config, [{"path": str(self.repo), "target": "~", "packages": "auto"}])
+
+    def run_stdin(self, payload, *extra: str) -> dict:
+        argv = ["commit", "--repo", str(self.repo), *extra]
+        with patch("sys.stdin", io.StringIO(json.dumps(payload))):
+            return ss.dispatch(argv, str(self.config))
+
+    def test_commit_only_selected_paths(self) -> None:
+        write(self.repo / "b.txt", "b\n")
+        write(self.repo / "c.txt", "c\n")
+        result = self.run_stdin({"message": "chore: add b", "paths": ["b.txt"]})
+        self.assertTrue(result["ok"])
+        self.assertRegex(result["commit"], r"^[0-9a-f]{7,40}$")
+        self.assertEqual(result["secrets"], [])
+        message = git(self.repo, "log", "-1", "--format=%s").stdout.strip()
+        self.assertEqual(message, "chore: add b")
+        porcelain = git(self.repo, "status", "--porcelain").stdout
+        self.assertIn("?? c.txt", porcelain)
+        self.assertNotIn("b.txt", porcelain)
+
+    def test_empty_message_is_refused(self) -> None:
+        write(self.repo / "b.txt", "b\n")
+        result = self.run_stdin({"message": "   ", "paths": ["b.txt"]})
+        self.assertFalse(result["ok"])
+        self.assertEqual(git(self.repo, "log", "--oneline").stdout.count("\n"), 1)
+
+    def test_missing_path_is_refused(self) -> None:
+        result = self.run_stdin({"message": "chore: nope", "paths": ["missing.txt"]})
+        self.assertFalse(result["ok"])
+        self.assertIn("missing.txt", result["error"])
+
+    def test_each_secret_rule_blocks_the_commit(self) -> None:
+        for index, (rule, sample) in enumerate(SECRET_SAMPLES):
+            name = f"secret-{index}.txt"
+            write(self.repo / name, sample + "\n")
+            result = self.run_stdin({"message": "chore: secret", "paths": [name]})
+            self.assertFalse(result["ok"], rule)
+            self.assertEqual([entry["rule"] for entry in result["secrets"]], [rule], rule)
+            self.assertEqual(result["secrets"][0]["path"], name)
+            git(self.repo, "reset", "-q")
+            os.remove(self.repo / name)
+
+    def test_secret_value_is_never_echoed(self) -> None:
+        token = "ghp_" + "A" * 36
+        write(self.repo / "leak.txt", "token = " + token + "\n")
+        result = self.run_stdin({"message": "chore: leak", "paths": ["leak.txt"]})
+        self.assertFalse(result["ok"])
+        self.assertNotIn(token, json.dumps(result))
+
+    def test_secret_block_leaves_index_staged_and_retry_succeeds(self) -> None:
+        token = "ghp_" + "A" * 36
+        write(self.repo / "leak.txt", token + "\n")
+        blocked = self.run_stdin({"message": "chore: leak", "paths": ["leak.txt"]})
+        self.assertFalse(blocked["ok"])
+        staged = git(self.repo, "diff", "--cached", "--name-only").stdout
+        self.assertIn("leak.txt", staged)
+        retry = self.run_stdin(
+            {"message": "chore: leak", "paths": ["leak.txt"], "allow_secrets": True}
+        )
+        self.assertTrue(retry["ok"])
+        self.assertEqual(retry["secrets"], [])
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%s").stdout.strip(), "chore: leak")
+
+
+# --------------------------------------------------------------------------
+# Unit 3: push and pull
+# --------------------------------------------------------------------------
+
+
+class PushPullCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.config = self.env.root / "config.json"
+
+    def _use(self, repo: Path) -> None:
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+
+    def _clone_other(self, bare: Path) -> Path:
+        other = self.env.root / "other"
+        subprocess.run(
+            ["git", "clone", str(bare), str(other)],
+            check=True,
+            capture_output=True,
+            env=git_test_env(),
+        )
+        git(other, "config", "user.name", "Test")
+        git(other, "config", "user.email", "test@example.com")
+        return other
+
+    def push(self, repo: Path) -> dict:
+        return ss.dispatch(["push", "--repo", str(repo)], str(self.config))
+
+    def pull(self, repo: Path) -> dict:
+        return ss.dispatch(["pull", "--repo", str(repo)], str(self.config))
+
+    def test_push_success(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        write(work / "b.txt", "b\n")
+        commit_all(work, "c2")
+        self._use(work)
+        result = self.push(work)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pushed"])
+        remote_head = git(bare, "rev-parse", "main").stdout.strip()
+        local_head = git(work, "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(remote_head, local_head)
+
+    def test_push_non_fast_forward_is_non_fatal(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        other = self._clone_other(bare)
+        write(other / "b.txt", "b\n")
+        commit_all(other, "c2")
+        git(other, "push", "-q", "origin", "main")
+        write(work / "c.txt", "c\n")
+        commit_all(work, "c3")
+        self._use(work)
+        result = self.push(work)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("pushed", result)
+        self.assertIn("push_error", result)
+        self.assertIn("Pull first", result["push_error"])
+
+    def test_pull_fast_forward(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        other = self._clone_other(bare)
+        write(other / "b.txt", "b\n")
+        commit_all(other, "c2")
+        git(other, "push", "-q", "origin", "main")
+        git(work, "fetch", "-q", "origin")
+        self._use(work)
+        result = self.pull(work)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pulled"])
+        self.assertEqual(
+            git(work, "rev-parse", "HEAD").stdout.strip(),
+            git(bare, "rev-parse", "main").stdout.strip(),
+        )
+
+    def test_pull_refuses_dirty_worktree(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        other = self._clone_other(bare)
+        write(other / "b.txt", "b\n")
+        commit_all(other, "c2")
+        git(other, "push", "-q", "origin", "main")
+        git(work, "fetch", "-q", "origin")
+        write(work / "a.txt", "changed\n")
+        self._use(work)
+        result = self.pull(work)
+        self.assertFalse(result["ok"])
+        self.assertIn("uncommitted", result["error"])
+
+    def test_pull_refuses_untracked_worktree(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        write(work / "new.txt", "n\n")
+        self._use(work)
+        result = self.pull(work)
+        self.assertFalse(result["ok"])
+        self.assertIn("uncommitted", result["error"])
+
+    def test_pull_refuses_diverged(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        other = self._clone_other(bare)
+        write(other / "b.txt", "b\n")
+        commit_all(other, "c2")
+        git(other, "push", "-q", "origin", "main")
+        write(work / "c.txt", "c\n")
+        commit_all(work, "c3")
+        git(work, "fetch", "-q", "origin")
+        self._use(work)
+        result = self.pull(work)
+        self.assertFalse(result["ok"])
+        self.assertIn("diverged", result["error"].lower())
+
+    def test_pull_refuses_no_upstream(self) -> None:
+        repo = self.env.root / "repo"
+        init_repo(repo)
+        write(repo / "a.txt", "a\n")
+        commit_all(repo, "c1")
+        self._use(repo)
+        result = self.pull(repo)
+        self.assertFalse(result["ok"])
+        self.assertIn("upstream", result["error"].lower())
+
+
+# --------------------------------------------------------------------------
+# Unit 3: stow actions and restow
+# --------------------------------------------------------------------------
+
+
+class ParseStowActionsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+
+    def test_link_actions_are_resolved_and_warning_skipped(self) -> None:
+        text = (
+            "LINK: .config/app/conf => ../../.dotfiles/mypkg/.config/app/conf\n"
+            "WARNING: in simulation mode so not modifying filesystem.\n"
+        )
+        actions = ss.parse_stow_actions(text, str(self.home))
+        self.assertEqual(
+            actions,
+            [
+                {
+                    "action": "LINK",
+                    "target": "~/.config/app/conf",
+                    "source": "~/.dotfiles/mypkg/.config/app/conf",
+                }
+            ],
+        )
+
+    def test_non_link_action_is_target_only(self) -> None:
+        actions = ss.parse_stow_actions("MKDIR: .config/app\n", str(self.home))
+        self.assertEqual(actions, [{"action": "MKDIR", "target": "~/.config/app"}])
+
+
+class RestowCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.repo = self.home / ".dotfiles"
+        self.config = self.env.root / "config.json"
+        write(self.repo / "mypkg" / ".config" / "app" / "conf", "hello\n")
+        write(self.repo / "mypkg" / ".config" / "app" / "keep", "keep\n")
+        # A real sibling forces per-file linking instead of folding the tree.
+        write(self.home / ".config" / "app" / "sibling", "s\n")
+        write_config(self.config, [{"path": str(self.repo), "target": str(self.home), "packages": "auto"}])
+
+    def restow(self, *extra: str) -> dict:
+        return ss.dispatch(
+            ["restow", "--repo", str(self.repo), "--package", "mypkg", *extra],
+            str(self.config),
+        )
+
+    def test_dry_run_reports_actions_and_touches_nothing(self) -> None:
+        result = self.restow("--dry-run")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(
+            result["actions"],
+            [
+                {"action": "LINK", "target": "~/.config/app/conf", "source": "~/.dotfiles/mypkg/.config/app/conf"},
+                {"action": "LINK", "target": "~/.config/app/keep", "source": "~/.dotfiles/mypkg/.config/app/keep"},
+            ],
+        )
+        self.assertFalse(os.path.islink(self.home / ".config" / "app" / "conf"))
+
+    def test_real_restow_links_the_files(self) -> None:
+        result = self.restow()
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["dry_run"])
+        self.assertEqual(len(result["actions"]), 2)
+        link = self.home / ".config" / "app" / "conf"
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.path.realpath(link), str(self.repo / "mypkg" / ".config" / "app" / "conf"))
+
+    def test_conflict_refuses_without_mutating(self) -> None:
+        os.remove(self.repo / "mypkg" / ".config" / "app" / "keep")
+        write(self.home / ".config" / "app" / "conf", "real\n")
+        result = self.restow()
+        self.assertFalse(result["ok"])
+        self.assertEqual(len(result["conflicts"]), 1)
+        self.assertIn("conflict", result["error"].lower())
+        real = self.home / ".config" / "app" / "conf"
+        self.assertFalse(os.path.islink(real))
+        self.assertEqual(real.read_text(encoding="utf-8"), "real\n")
+
+    def test_unknown_package_name_is_rejected(self) -> None:
+        result = ss.dispatch(
+            ["restow", "--repo", str(self.repo), "--package", "../evil"], str(self.config)
+        )
+        self.assertFalse(result["ok"])
+
+
+# --------------------------------------------------------------------------
+# Unit 3: adopt (README section 5.3)
+# --------------------------------------------------------------------------
+
+
+class AdoptCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.repo = self.home / ".dotfiles"
+        self.config = self.env.root / "config.json"
+
+    def _write_config(self, watch: list[str]) -> None:
+        write_config(
+            self.config,
+            [{"path": str(self.repo), "target": str(self.home), "packages": "auto"}],
+            watch=watch,
+        )
+
+    def _mypkg_with_sibling(self) -> None:
+        write(self.repo / "mypkg" / "watch" / "existing", "e\n")
+
+    def adopt(self, package: str, path: Path, *extra: str, rename=None) -> dict:
+        argv = [
+            "adopt",
+            "--repo",
+            str(self.repo),
+            "--package",
+            package,
+            "--path",
+            str(path),
+            *extra,
+        ]
+        if rename is None:
+            return ss.dispatch(argv, str(self.config))
+        return ss.cmd_adopt(argv[1:], str(self.config), None, rename=rename)
+
+    def test_dry_run_reports_and_touches_nothing(self) -> None:
+        self._mypkg_with_sibling()
+        write(self.home / "watch" / "keep", "k\n")
+        target = self.home / "watch" / "new.conf"
+        write(target, "content\n")
+        self._write_config(["~/watch"])
+        result = self.adopt("mypkg", target, "--dry-run")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["moved_to"], "~/.dotfiles/mypkg/watch/new.conf")
+        self.assertTrue(target.is_file() and not target.is_symlink())
+        self.assertFalse((self.repo / "mypkg" / "watch" / "new.conf").exists())
+
+    def test_happy_path_moves_and_links(self) -> None:
+        self._mypkg_with_sibling()
+        write(self.home / "watch" / "keep", "k\n")
+        target = self.home / "watch" / "new.conf"
+        write(target, "content\n")
+        self._write_config(["~/watch"])
+        result = self.adopt("mypkg", target)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("dry_run", result)
+        self.assertEqual(result["moved_to"], "~/.dotfiles/mypkg/watch/new.conf")
+        dest = self.repo / "mypkg" / "watch" / "new.conf"
+        self.assertTrue(dest.is_file())
+        self.assertEqual(dest.read_text(encoding="utf-8"), "content\n")
+        self.assertTrue(os.path.islink(target))
+        self.assertEqual(os.path.realpath(target), str(dest))
+        self.assertTrue(result["actions"])
+        self.assertTrue(all(a["action"] == "LINK" for a in result["actions"]))
+        self.assertIn(
+            {"action": "LINK", "target": "~/watch/new.conf", "source": "~/.dotfiles/mypkg/watch/new.conf"},
+            result["actions"],
+        )
+
+    def test_destination_exists_is_refused(self) -> None:
+        self._mypkg_with_sibling()
+        write(self.repo / "mypkg" / "watch" / "new.conf", "already\n")
+        write(self.home / "watch" / "new.conf", "content\n")
+        self._write_config(["~/watch"])
+        result = self.adopt("mypkg", self.home / "watch" / "new.conf")
+        self.assertFalse(result["ok"])
+        self.assertIn("destination already exists", result["error"])
+
+    def test_conflict_rolls_back(self) -> None:
+        write(self.repo / "mypkg" / ".config" / "app" / "keep", "keep\n")
+        write(self.home / ".config" / "app" / "keep", "real\n")  # conflict
+        write(self.home / ".config" / "app" / "sibling", "s\n")  # anti-fold
+        target = self.home / ".config" / "app" / "newfile"
+        write(target, "original\n")
+        self._write_config(["~/.config/app"])
+        result = self.adopt("mypkg", target)
+        self.assertFalse(result["ok"])
+        self.assertIn("conflict", result["error"].lower())
+        self.assertTrue(target.is_file() and not target.is_symlink())
+        self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+        self.assertFalse((self.repo / "mypkg" / ".config" / "app" / "newfile").exists())
+
+    def test_exdev_falls_back_to_copy(self) -> None:
+        self._mypkg_with_sibling()
+        write(self.home / "watch" / "keep", "k\n")
+        target = self.home / "watch" / "new.conf"
+        write(target, "content\n")
+        self._write_config(["~/watch"])
+
+        def always_exdev(src: str, dst: str) -> None:
+            raise OSError(errno.EXDEV, "cross-device link")
+
+        result = self.adopt("mypkg", target, rename=always_exdev)
+        self.assertTrue(result["ok"])
+        dest = self.repo / "mypkg" / "watch" / "new.conf"
+        self.assertTrue(dest.is_file())
+        self.assertEqual(dest.read_text(encoding="utf-8"), "content\n")
+        self.assertTrue(os.path.islink(target))
+
+    def test_path_outside_watch_area_is_refused(self) -> None:
+        self._mypkg_with_sibling()
+        target = self.home / "elsewhere" / "x.conf"
+        write(target, "x\n")
+        self._write_config(["~/watch"])
+        result = self.adopt("mypkg", target)
+        self.assertFalse(result["ok"])
+        self.assertIn("watch", result["error"].lower())
+
+    def test_path_outside_home_is_refused(self) -> None:
+        self._mypkg_with_sibling()
+        self._write_config(["~"])
+        result = self.adopt("mypkg", Path("/etc/hosts"))
+        self.assertFalse(result["ok"])
+
+    def test_invalid_package_name_is_refused(self) -> None:
+        self._mypkg_with_sibling()
+        target = self.home / "watch" / "x.conf"
+        write(target, "x\n")
+        self._write_config(["~/watch"])
+        result = self.adopt("../evil", target)
+        self.assertFalse(result["ok"])
+
+
+# --------------------------------------------------------------------------
+# Unit 3: ignore / unignore
+# --------------------------------------------------------------------------
+
+
+class IgnoreCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.config = self.env.root / "config.json"
+        write_config(self.config, [], watch=["~/.local/bin"], ignore=["~/.config/hypr"])
+
+    def run_cmd(self, command: str, payload) -> dict:
+        with patch("sys.stdin", io.StringIO(json.dumps(payload))):
+            return ss.dispatch([command], str(self.config))
+
+    def raw(self) -> dict:
+        return json.loads(self.config.read_text(encoding="utf-8"))
+
+    def test_ignore_bare_string_adds_tilde_path(self) -> None:
+        result = self.run_cmd("ignore", "~/.config/foo")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ignore"], ["~/.config/hypr", "~/.config/foo"])
+        self.assertEqual(self.raw()["ignore"], ["~/.config/hypr", "~/.config/foo"])
+
+    def test_ignore_list_dedupes(self) -> None:
+        result = self.run_cmd("ignore", ["~/.config/a", "~/.config/a", "~/.config/b"])
+        self.assertEqual(result["ignore"], ["~/.config/hypr", "~/.config/a", "~/.config/b"])
+
+    def test_ignore_normalizes_absolute_path_under_home(self) -> None:
+        result = self.run_cmd("ignore", str(self.home / ".config" / "x"))
+        self.assertEqual(result["ignore"], ["~/.config/hypr", "~/.config/x"])
+
+    def test_ignore_preserves_other_config_keys(self) -> None:
+        before = self.raw()
+        self.run_cmd("ignore", "~/.config/foo")
+        after = self.raw()
+        for key in ("version", "repos", "watch", "fetch_minutes", "refresh_minutes", "notify_after_hours"):
+            self.assertEqual(after[key], before[key], key)
+
+    def test_unignore_removes_exact_match(self) -> None:
+        result = self.run_cmd("unignore", "~/.config/hypr")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ignore"], [])
+        self.assertEqual(self.raw()["ignore"], [])
+
+    def test_unignore_unknown_is_noop(self) -> None:
+        result = self.run_cmd("unignore", "~/.config/absent")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ignore"], ["~/.config/hypr"])
+
+
+# --------------------------------------------------------------------------
+# Unit 3: suggest-message (README section 5.4)
+# --------------------------------------------------------------------------
+
+
+class SuggestMessagePureTests(unittest.TestCase):
+    def test_one_package_modified(self) -> None:
+        paths = ["fish/.config/fish/config.fish"]
+        statuses = {paths[0]: "modified"}
+        self.assertEqual(
+            ss.suggest_message(paths, statuses),
+            "chore(fish): update config.fish",
+        )
+
+    def test_one_package_many_files(self) -> None:
+        paths = [
+            "fish/.config/fish/config.fish",
+            "fish/.config/fish/a.fish",
+            "fish/.config/fish/b.fish",
+            "fish/.config/fish/c.fish",
+            "fish/.config/fish/d.fish",
+        ]
+        statuses = {p: "modified" for p in paths}
+        self.assertEqual(
+            ss.suggest_message(paths, statuses),
+            "chore(fish): update config.fish, a.fish, b.fish, +2 more",
+        )
+
+    def test_several_packages(self) -> None:
+        paths = ["fish/.config/fish/config.fish", "nvim/.config/nvim/init.lua"]
+        statuses = {p: "modified" for p in paths}
+        self.assertEqual(ss.suggest_message(paths, statuses), "chore: update fish, nvim")
+
+    def test_several_packages_more_than_two(self) -> None:
+        paths = ["a/x", "b/y", "c/z", "d/w"]
+        statuses = {p: "modified" for p in paths}
+        self.assertEqual(ss.suggest_message(paths, statuses), "chore: update a, b, +2 more")
+
+    def test_only_additions(self) -> None:
+        paths = ["fish/.config/fish/new.fish"]
+        statuses = {paths[0]: "untracked"}
+        self.assertEqual(ss.suggest_message(paths, statuses), "feat(fish): add new.fish")
+
+    def test_added_status_is_also_an_addition(self) -> None:
+        paths = ["fish/.config/fish/new.fish"]
+        statuses = {paths[0]: "added"}
+        self.assertEqual(ss.suggest_message(paths, statuses), "feat(fish): add new.fish")
+
+
+class SuggestMessageCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.config = self.env.root / "config.json"
+        self.repo = self.env.home / ".dotfiles"
+        init_repo(self.repo)
+        write(self.repo / "fish" / ".config" / "fish" / "config.fish", "old\n")
+        commit_all(self.repo, "c1")
+        write_config(self.config, [{"path": str(self.repo), "target": "~", "packages": "auto"}])
+
+    def suggest(self, payload) -> dict:
+        with patch("sys.stdin", io.StringIO(json.dumps(payload))):
+            return ss.dispatch(["suggest-message", "--repo", str(self.repo)], str(self.config))
+
+    def test_modified_file_message(self) -> None:
+        write(self.repo / "fish" / ".config" / "fish" / "config.fish", "new\n")
+        result = self.suggest(["fish/.config/fish/config.fish"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["message"], "chore(fish): update config.fish")
+
+    def test_untracked_file_is_feat(self) -> None:
+        write(self.repo / "fish" / ".config" / "fish" / "new.fish", "n\n")
+        result = self.suggest(["fish/.config/fish/new.fish"])
+        self.assertEqual(result["message"], "feat(fish): add new.fish")
+
+    def test_dict_payload_and_several_packages(self) -> None:
+        write(self.repo / "nvim" / ".config" / "nvim" / "init.lua", "l\n")
+        commit_all(self.repo, "add nvim")
+        write(self.repo / "fish" / ".config" / "fish" / "config.fish", "new\n")
+        write(self.repo / "nvim" / ".config" / "nvim" / "init.lua", "changed\n")
+        result = self.suggest(
+            {"paths": ["fish/.config/fish/config.fish", "nvim/.config/nvim/init.lua"]}
+        )
+        self.assertEqual(result["message"], "chore: update fish, nvim")
+
+    def test_tilde_path_is_accepted(self) -> None:
+        write(self.repo / "fish" / ".config" / "fish" / "config.fish", "new\n")
+        result = self.suggest(["~/.dotfiles/fish/.config/fish/config.fish"])
+        self.assertEqual(result["message"], "chore(fish): update config.fish")
+
+
+# --------------------------------------------------------------------------
+# Unit 3: status --short (README section 7)
+# --------------------------------------------------------------------------
+
+
+class StatusShortTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        os.environ.pop("STOW_SYNC_STATE_DIR", None)
+        self.addCleanup(lambda: os.environ.pop("STOW_SYNC_STATE_DIR", None))
+        self.home = self.env.home
+        self.config = self.env.root / "config.json"
+        self.state_dir = self.env.root / "state"
+
+    def short(self) -> str:
+        return ss.cmd_status_short(["--short"], str(self.config), str(self.state_dir))
+
+    def _repo_with_remote(self, name: str) -> Path:
+        repo = self.home / name
+        init_repo(repo)
+        write(repo / "a.txt", "a\n")
+        commit_all(repo, "c1")
+        bare = self.env.root / f"{name}.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", str(bare)],
+            check=True,
+            capture_output=True,
+            env=git_test_env(),
+        )
+        git(repo, "remote", "add", "origin", str(bare))
+        git(repo, "push", "-u", "-q", "origin", "main")
+        return repo
+
+    def test_clean_repo_is_empty(self) -> None:
+        repo = self._repo_with_remote(".dotfiles")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        self.assertEqual(self.short(), "")
+
+    def test_changed_and_untracked_segments(self) -> None:
+        repo = self._repo_with_remote(".dotfiles")
+        write(repo / "a.txt", "changed\n")
+        write(repo / "new.txt", "n\n")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        self.assertEqual(self.short(), "dotfiles: 1 changed, 1 untracked")
+
+    def test_unpushed_segment(self) -> None:
+        repo = self._repo_with_remote(".dotfiles")
+        write(repo / "b.txt", "b\n")
+        commit_all(repo, "c2")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        self.assertEqual(self.short(), "dotfiles: 1 unpushed")
+
+    def test_behind_segment(self) -> None:
+        repo = self._repo_with_remote(".dotfiles")
+        bare = self.env.root / ".dotfiles.git"
+        other = self.env.root / "other"
+        subprocess.run(["git", "clone", str(bare), str(other)], check=True, capture_output=True, env=git_test_env())
+        git(other, "config", "user.name", "Test")
+        git(other, "config", "user.email", "test@example.com")
+        write(other / "b.txt", "b\n")
+        commit_all(other, "c2")
+        git(other, "push", "-q", "origin", "main")
+        git(repo, "fetch", "-q", "origin")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        self.assertEqual(self.short(), "dotfiles: 1 behind")
+
+    def test_multiple_repos_are_joined(self) -> None:
+        one = self._repo_with_remote(".dotfiles")
+        two = self._repo_with_remote("wallpapers")
+        write(one / "a.txt", "changed\n")
+        write(two / "a.txt", "changed\n")
+        write_config(
+            self.config,
+            [
+                {"path": str(one), "target": "~", "packages": "auto"},
+                {"path": str(two), "target": "~", "packages": "auto"},
+            ],
+        )
+        self.assertEqual(self.short(), "dotfiles: 1 changed · wallpapers: 1 changed")
+
+    def test_new_config_segment(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        self.assertEqual(self.short(), "1 new config")
+
+    def test_known_candidate_does_not_add_segment(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "baseline.json").write_text(
+            json.dumps({"version": 1, "created": "x", "paths": ["~/.local/bin/tool"]}),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.short(), "")
+
+    def test_does_not_create_baseline(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        self.short()
+        self.assertFalse((self.state_dir / "baseline.json").exists())
+        self.assertFalse(self.state_dir.exists())
+
+    def test_skips_stow_health(self) -> None:
+        repo = self._repo_with_remote(".dotfiles")
+        write(repo / "mypkg" / ".config" / "app" / "conf", "x\n")
+        commit_all(repo, "add pkg")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        with patch.object(ss, "package_health", side_effect=AssertionError("stow health must be skipped")):
+            self.assertEqual(self.short(), "dotfiles: 1 unpushed")
+
+    def test_main_prints_plain_line(self) -> None:
+        repo = self._repo_with_remote(".dotfiles")
+        write(repo / "a.txt", "changed\n")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        buffer = io.StringIO()
+        with patch("sys.stdout", buffer):
+            code = ss.main(["--config", str(self.config), "--state-dir", str(self.state_dir), "status", "--short"])
+        self.assertEqual(code, 0)
+        self.assertEqual(buffer.getvalue(), "dotfiles: 1 changed\n")
+
+    def test_main_prints_nothing_when_clean(self) -> None:
+        repo = self._repo_with_remote(".dotfiles")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        buffer = io.StringIO()
+        with patch("sys.stdout", buffer):
+            code = ss.main(["--config", str(self.config), "--state-dir", str(self.state_dir), "status", "--short"])
+        self.assertEqual(code, 0)
+        self.assertEqual(buffer.getvalue(), "")
 
 
 if __name__ == "__main__":

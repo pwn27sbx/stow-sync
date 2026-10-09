@@ -14,11 +14,14 @@ everything so a failure never leaks a traceback to the panel.
 from __future__ import annotations
 
 import copy
+import errno
 import fnmatch
 import glob
+import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -35,6 +38,21 @@ VERSION = "0.1.0"
 # at 2 MB by the writer.
 MAX_OUTPUT = 1024 * 1024
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+# Diff command caps (README section 5): 400 lines or 32 KB, whichever first.
+DIFF_MAX_LINES = 400
+DIFF_MAX_BYTES = 32 * 1024
+
+
+class CommandError(Exception):
+    """A user-facing command failure; carried to ``ok: false, error``."""
+
+
+def _shorten(text: str, limit: int = 300) -> str:
+    """Collapse whitespace and cap a human-readable error string."""
+    collapsed = " ".join(str(text).split())
+    return collapsed[:limit]
+
 
 # Defaults from the handoff README section 4. Stored verbatim (with ``~``);
 # they are expanded in memory when a config is loaded.
@@ -402,14 +420,79 @@ def run_git(
     args: list[str],
     timeout: float = 20,
     cwd: str | None = None,
+    stdin: str | None = None,
+    max_output: int = MAX_OUTPUT,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run git with the shared hooks/color/env hardening."""
+    """Run git with the shared hooks/color/env hardening.
+
+    ``stdin`` is forwarded verbatim (used for ``git commit -F -``), and
+    ``max_output`` overrides the per-stream cap.
+    """
     return run_bounded(
         build_git_argv(repo, args),
         timeout,
+        max_output=max_output,
         cwd=str(cwd) if cwd else None,
         env=git_env(),
+        stdin=stdin,
     )
+
+
+def resolve_repo(config: dict[str, Any], repo_arg: str | None) -> dict[str, Any]:
+    """Match ``--repo R`` against the configured ``repos[].path`` (expanded).
+
+    Commands may only touch configured repos. Raises :class:`CommandError`
+    when the argument is missing or does not name a configured repo.
+    """
+    if not repo_arg:
+        raise CommandError("missing --repo")
+    wanted = os.path.normpath(expand_path(repo_arg))
+    for repo in config.get("repos", []):
+        if not isinstance(repo, dict):
+            continue
+        path = repo.get("path", "")
+        if not isinstance(path, str) or not path:
+            continue
+        if os.path.normpath(expand_path(path)) == wanted:
+            found = dict(repo)
+            found["path"] = os.path.normpath(expand_path(path))
+            return found
+    raise CommandError("unknown repo: " + str(repo_arg))
+
+
+def validate_repo_relpath(path: Any) -> str:
+    """Return a safe repo-relative path, or raise :class:`CommandError`.
+
+    Rejects non-strings, empty values, NUL bytes, absolute paths, ``~``
+    prefixes, and any ``..`` component (README section 5.2: absolute, ``..``,
+    NUL, outside the repo).
+    """
+    if not isinstance(path, str) or not path:
+        raise CommandError("empty path")
+    if "\x00" in path:
+        raise CommandError("path contains a NUL byte")
+    if path.startswith("~"):
+        raise CommandError("path must be repo-relative: " + path)
+    if os.path.isabs(path):
+        raise CommandError("absolute path not allowed: " + path)
+    normalized = path.replace("\\", "/")
+    if ".." in normalized.split("/"):
+        raise CommandError("path escapes the repo: " + path)
+    clean = os.path.normpath(normalized)
+    if clean in (".", "") or clean == ".." or clean.startswith("../"):
+        raise CommandError("path escapes the repo: " + path)
+    return clean
+
+
+def opt_value(args: list[str], flag: str) -> str | None:
+    """Return the value of ``--flag VALUE`` or ``--flag=VALUE`` in ``args``."""
+    for index, token in enumerate(args):
+        if token == flag and index + 1 < len(args):
+            return args[index + 1]
+        if token.startswith(flag + "="):
+            return token[len(flag) + 1:]
+    return None
+
 
 
 _STATUS_KIND = {
@@ -728,6 +811,25 @@ def stow_dry_run(
     return run_bounded(argv, timeout, env=stow_env())
 
 
+def stow_real(
+    repo_dir: str,
+    target_dir: str,
+    package: str,
+    timeout: float = 30,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run ``stow -v -d <repo> -t <target> <package>`` (mutating)."""
+    argv = [
+        "stow",
+        "-v",
+        "-d",
+        str(repo_dir),
+        "-t",
+        str(target_dir),
+        str(package),
+    ]
+    return run_bounded(argv, timeout, env=stow_env())
+
+
 def parse_pending_links(text: str, target_dir: str) -> list[dict[str, str]]:
     """Parse ``LINK: <target> => <source>`` lines from a stow dry run.
 
@@ -789,6 +891,49 @@ def parse_conflicts(text: str, target_dir: str) -> list[dict[str, str]]:
 
 def _resolve_under(base: str, rel: str) -> str:
     return os.path.normpath(os.path.join(base, rel))
+
+
+# A stow ``-v`` line is ``ACTION: body`` (LINK, UNLINK, MKDIR, RMDIR, ...).
+_STOW_ACTION_LINE = re.compile(r"^(?P<action>[A-Z]+): (?P<body>.*)$")
+
+
+def parse_stow_actions(text: str, target_dir: str) -> list[dict[str, str]]:
+    """Parse ``stow -v`` output into an ``actions[]`` list.
+
+    ``LINK`` lines carry both ``target`` and ``source`` (both ``~``-relative);
+    every other action carries only ``target``.
+    """
+    actions: list[dict[str, str]] = []
+    for line in text.splitlines():
+        match = _STOW_ACTION_LINE.match(line)
+        if not match:
+            continue
+        name = match.group("action")
+        if name == "WARNING":
+            continue
+        body = match.group("body")
+        if name == "LINK" and " => " in body:
+            target_rel, source_rel = body.split(" => ", 1)
+            target_abs = os.path.normpath(os.path.join(target_dir, target_rel.strip()))
+            source_abs = os.path.normpath(
+                os.path.join(os.path.dirname(target_abs), source_rel.strip())
+            )
+            actions.append(
+                {"action": "LINK", "target": to_tilde(target_abs), "source": to_tilde(source_abs)}
+            )
+        else:
+            target_abs = os.path.normpath(os.path.join(target_dir, body.strip()))
+            actions.append({"action": name, "target": to_tilde(target_abs)})
+    return actions
+
+
+def validate_package_name(name: Any) -> str:
+    """Return a safe stow package name, or raise :class:`CommandError`."""
+    if not isinstance(name, str) or not name:
+        raise CommandError("missing package")
+    if "/" in name or "\\" in name or ".." in name or name.startswith("~"):
+        raise CommandError("invalid package name: " + name)
+    return name
 
 
 def _under(path: str, base: str) -> bool:
@@ -896,7 +1041,14 @@ def _has_glob(value: str) -> bool:
 
 
 def _candidate_size(path: str) -> int:
-    """Size in bytes; recursive for directories, never following subdir links."""
+    """Size in bytes; recursive for directories, never following subdir links.
+
+    The walk stops as soon as the running total exceeds ``MAX_CANDIDATE_SIZE``:
+    an over-cap directory is discarded either way, and walking a multi-gigabyte
+    tree (e.g. a browser profile) in full made ``status --short`` miss its
+    prompt budget. The returned value for an over-cap directory is therefore a
+    lower bound greater than the cap, which is all the caller needs.
+    """
     if os.path.islink(path):
         try:
             return os.path.getsize(path)
@@ -910,6 +1062,8 @@ def _candidate_size(path: str) -> int:
                     total += os.path.getsize(os.path.join(dirpath, name))
                 except OSError:
                     pass
+                if total > MAX_CANDIDATE_SIZE:
+                    return total
         return total
     try:
         return os.path.getsize(path)
@@ -1236,10 +1390,713 @@ def cmd_version(
     return {"ok": True, "version": VERSION}
 
 
+# --------------------------------------------------------------------------
+# diff (README section 5, read-only)
+# --------------------------------------------------------------------------
+
+
+def _cap_diff(text: str) -> tuple[str, bool]:
+    """Cap a diff at ``DIFF_MAX_LINES`` or ``DIFF_MAX_BYTES``, whichever first."""
+    truncated = False
+    lines = text.splitlines(keepends=True)
+    if len(lines) > DIFF_MAX_LINES:
+        text = "".join(lines[:DIFF_MAX_LINES])
+        truncated = True
+    data = text.encode("utf-8")
+    if len(data) > DIFF_MAX_BYTES:
+        text = data[:DIFF_MAX_BYTES].decode("utf-8", "ignore")
+        truncated = True
+    return text, truncated
+
+
+def _diff_text(repo_path: str, rel_path: str) -> tuple[str, bool]:
+    """Return ``(text, truncated)`` for the unstaged diff, else the cached one."""
+    result = run_git(repo_path, ["diff", "--no-color", "--", rel_path], timeout=20)
+    if result.returncode != 0:
+        raise CommandError(_short_error(result))
+    text = _decode(result.stdout)
+    if not text:
+        cached = run_git(
+            repo_path, ["diff", "--no-color", "--cached", "--", rel_path], timeout=20
+        )
+        if cached.returncode != 0:
+            raise CommandError(_short_error(cached))
+        text = _decode(cached.stdout)
+    return _cap_diff(text)
+
+
+def cmd_diff(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Read-only diff for one repo-relative path (README section 5)."""
+    config = load_config(config_path)
+    repo = resolve_repo(config, opt_value(args, "--repo"))
+    rel_path = validate_repo_relpath(opt_value(args, "--path"))
+    text, truncated = _diff_text(repo["path"], rel_path)
+    return {"ok": True, "text": text, "truncated": truncated}
+
+
+# --------------------------------------------------------------------------
+# Secret scan and commit (README section 6)
+# --------------------------------------------------------------------------
+
+# Named rules; the matched VALUE is never returned, only the rule/path/line.
+SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
+    ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{60,}")),
+    ("aws-access-key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("slack-token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("openai-key", re.compile(r"sk-[A-Za-z0-9]{32,}")),
+    ("google-api-key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
+    (
+        "assignment",
+        re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
+    ),
+]
+
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_SECRET_DIFF_CAP = 2 * 1024 * 1024
+
+# Git prefixes the paths in a diff with a one-character component: the classic
+# ``a/``/``b/`` or the mnemonic ``i/`` (index), ``w/`` (worktree), ``c/``
+# (commit), ``o/`` (object), ``1/``/``2/`` (merge sides). Always strip one.
+_DIFF_PREFIX_CHARS = frozenset("abciow12")
+
+
+def iter_added_lines(diff_text: str):
+    """Yield ``(path, line_number, text)`` for every added line of a diff."""
+    path = ""
+    new_line = 0
+    in_hunk = False
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            in_hunk = False
+            continue
+        if line.startswith("@@"):
+            match = _HUNK_HEADER.match(line)
+            if match:
+                new_line = int(match.group(1))
+            in_hunk = True
+            continue
+        if not in_hunk:
+            if line.startswith("+++ "):
+                target = line[4:].strip()
+                if len(target) >= 2 and target[1] == "/" and target[0] in _DIFF_PREFIX_CHARS:
+                    target = target[2:]
+                path = target
+            continue
+        if line.startswith("\\ "):
+            continue
+        if line.startswith("+"):
+            yield path, new_line, line[1:]
+            new_line += 1
+        elif line.startswith("-"):
+            continue
+        elif line.startswith(" "):
+            new_line += 1
+
+
+def scan_secrets(diff_text: str) -> list[dict[str, Any]]:
+    """Find secret-looking added lines; never includes the matched value."""
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, str]] = set()
+    for path, line_no, text in iter_added_lines(diff_text):
+        for rule, pattern in SECRET_RULES:
+            if not pattern.search(text):
+                continue
+            key = (path, line_no, rule)
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append({"path": path, "line": line_no, "rule": rule})
+    return found
+
+
+def read_stdin_json() -> Any:
+    """Read and parse a JSON payload from stdin; ``None`` when empty."""
+    try:
+        raw = sys.stdin.read()
+    except (OSError, ValueError):
+        return None
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError as exc:
+        raise CommandError("invalid JSON on stdin: " + _shorten(str(exc)))
+
+
+def cmd_commit(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Stage selected paths, scan for secrets, and commit (README section 6)."""
+    config = load_config(config_path)
+    repo = resolve_repo(config, opt_value(args, "--repo"))
+    payload = read_stdin_json()
+    if not isinstance(payload, dict):
+        raise CommandError("commit expects a JSON object on stdin")
+    message = payload.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise CommandError("commit message must not be empty")
+    raw_paths = payload.get("paths")
+    if not isinstance(raw_paths, list) or not raw_paths:
+        raise CommandError("no paths selected")
+    repo_path = repo["path"]
+    rel_paths: list[str] = []
+    for raw in raw_paths:
+        rel = validate_repo_relpath(raw)
+        if not os.path.lexists(os.path.join(repo_path, rel)):
+            raise CommandError("path not found in repo: " + rel)
+        rel_paths.append(rel)
+    added = run_git(repo_path, ["add", "--", *rel_paths], timeout=20)
+    if added.returncode != 0:
+        raise CommandError(_short_error(added))
+    staged = run_git(
+        repo_path, ["diff", "--cached", "-U0"], timeout=20, max_output=_SECRET_DIFF_CAP
+    )
+    secrets = scan_secrets(_decode(staged.stdout))
+    if secrets and not payload.get("allow_secrets"):
+        return {
+            "ok": False,
+            "error": "Secret detected in staged changes; commit blocked.",
+            "secrets": secrets,
+        }
+    committed = run_git(
+        repo_path, ["commit", "-F", "-"], timeout=30, stdin=message.rstrip("\n") + "\n"
+    )
+    if committed.returncode != 0:
+        raise CommandError(_short_error(committed))
+    rev = run_git(repo_path, ["rev-parse", "--short", "HEAD"], timeout=20)
+    short_hash = _decode(rev.stdout).strip()
+    return {"ok": True, "commit": short_hash, "secrets": []}
+
+
+# --------------------------------------------------------------------------
+# push and pull (README section 5)
+# --------------------------------------------------------------------------
+
+
+def _push_error_text(text: str) -> str:
+    """Map a failed push to short human text (README section 5.2)."""
+    lowered = text.lower()
+    if (
+        "non-fast-forward" in lowered
+        or "fetch first" in lowered
+        or "rejected" in lowered
+        or "behind" in lowered
+    ):
+        return "Push rejected: the remote has new commits. Pull first."
+    short = _shorten(text)
+    return short or "Push failed."
+
+
+def cmd_push(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Push the current branch; a remote rejection is non-fatal (README section 5)."""
+    config = load_config(config_path)
+    repo = resolve_repo(config, opt_value(args, "--repo"))
+    try:
+        result = run_git(repo["path"], ["push"], timeout=300)
+    except subprocess.TimeoutExpired:
+        return {"ok": True, "push_error": "Push timed out after 300s."}
+    if result.returncode == 0:
+        return {"ok": True, "pushed": True}
+    text = _decode(result.stderr) + "\n" + _decode(result.stdout)
+    return {"ok": True, "push_error": _push_error_text(text)}
+
+
+def cmd_pull(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Fast-forward-only pull that refuses dirty/diverged/no-upstream repos."""
+    config = load_config(config_path)
+    repo = resolve_repo(config, opt_value(args, "--repo"))
+    repo_path = repo["path"]
+    try:
+        status = git_status(repo_path)
+    except Exception as exc:  # noqa: BLE001 - report as a refusal, not a crash
+        return {"ok": False, "error": _shorten(str(exc)) or "git status failed"}
+    if not status["upstream"]:
+        return {"ok": False, "error": "No upstream branch is configured."}
+    if status["ahead"] > 0 and status["behind"] > 0:
+        return {
+            "ok": False,
+            "error": "Local and remote have diverged; resolve manually before pulling.",
+        }
+    if status["changes"] or status["untracked"]:
+        return {
+            "ok": False,
+            "error": "Worktree has uncommitted changes; commit or stash them first.",
+        }
+    try:
+        result = run_git(repo_path, ["pull", "--ff-only"], timeout=300)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Pull timed out after 300s."}
+    if result.returncode != 0:
+        return {"ok": False, "error": _short_error(result)}
+    return {"ok": True, "pulled": True}
+
+
+# --------------------------------------------------------------------------
+# restow (README section 5)
+# --------------------------------------------------------------------------
+
+
+def cmd_restow(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Dry-run stow first; on conflicts refuse, else restow (README section 5)."""
+    config = load_config(config_path)
+    repo = resolve_repo(config, opt_value(args, "--repo"))
+    package = validate_package_name(opt_value(args, "--package"))
+    dry_run = "--dry-run" in args
+    repo_path = repo["path"]
+    target_dir = expand_path(repo.get("target", "~") or "~")
+    dry = stow_dry_run(repo_path, target_dir, package)
+    dry_text = _decode(dry.stderr)
+    conflicts = parse_conflicts(dry_text, target_dir)
+    if conflicts:
+        return {
+            "ok": False,
+            "error": "Stow conflict: " + _shorten(conflicts[0]["message"]),
+            "conflicts": conflicts,
+        }
+    if dry_run:
+        return {"ok": True, "dry_run": True, "actions": parse_stow_actions(dry_text, target_dir)}
+    real = stow_real(repo_path, target_dir, package)
+    if real.returncode != 0:
+        raise CommandError(_short_error(real))
+    return {
+        "ok": True,
+        "dry_run": False,
+        "actions": parse_stow_actions(_decode(real.stderr), target_dir),
+    }
+
+
+# --------------------------------------------------------------------------
+# adopt (README section 5.3)
+# --------------------------------------------------------------------------
+
+
+def sha256_file(path: str) -> str:
+    """SHA-256 hex digest of a regular file."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _move_path(src: str, dst: str, rename: Any = os.rename) -> None:
+    """Move ``src`` to ``dst``; fall back to copy + verify + unlink on EXDEV.
+
+    ``rename`` is injectable so tests can force the cross-device path.
+    """
+    try:
+        rename(src, dst)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    if os.path.isdir(src):
+        shutil.copytree(src, dst, symlinks=True)
+        shutil.rmtree(src)
+        return
+    shutil.copy2(src, dst)
+    if sha256_file(dst) != sha256_file(src):
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise CommandError("copy verification failed for " + src)
+    os.unlink(src)
+
+
+def _rollback_adopt(abs_path: str, dest: str, rename: Any) -> None:
+    """Undo a partial adopt: drop a link stow made, then move ``dest`` back."""
+    try:
+        if os.path.islink(abs_path):
+            os.unlink(abs_path)
+    except OSError:
+        pass
+    try:
+        if os.path.lexists(dest) and not os.path.lexists(abs_path):
+            _move_path(dest, abs_path, rename)
+    except OSError:
+        pass
+
+
+def _adopt_verified(abs_path: str, dest: str, original_sha: str | None) -> bool:
+    """True when ``abs_path`` is a symlink to ``dest`` with the original bytes."""
+    if not os.path.islink(abs_path):
+        return False
+    if os.path.realpath(abs_path) != os.path.realpath(dest):
+        return False
+    if original_sha is not None:
+        try:
+            if sha256_file(abs_path) != original_sha:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def is_in_watch_area(path: str, config: dict[str, Any]) -> bool:
+    """True when ``path`` is a direct child of a watch dir or matches a glob."""
+    norm = os.path.normpath(path)
+    for entry in config.get("watch", []):
+        if not isinstance(entry, str):
+            continue
+        watch = expand_path(entry)
+        if _has_glob(watch):
+            if fnmatch.fnmatch(norm, watch) or fnmatch.fnmatch(to_tilde(norm), to_tilde(watch)):
+                return True
+        elif os.path.dirname(norm) == os.path.normpath(watch):
+            return True
+    return False
+
+
+def cmd_adopt(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+    rename: Any = os.rename,
+) -> dict[str, Any]:
+    """Adopt a watched path into a package without ``stow --adopt`` (section 5.3)."""
+    config = load_config(config_path)
+    repo = resolve_repo(config, opt_value(args, "--repo"))
+    package = validate_package_name(opt_value(args, "--package"))
+    raw_path = opt_value(args, "--path")
+    if not raw_path:
+        raise CommandError("missing --path")
+    abs_path = os.path.normpath(expand_path(raw_path))
+    dry_run = "--dry-run" in args
+    home = os.path.expanduser("~")
+    if abs_path == home or not _under(abs_path, home):
+        raise CommandError("adopt path must be under HOME: " + raw_path)
+    if not is_in_watch_area(abs_path, config):
+        raise CommandError("adopt path is not inside a configured watch area: " + raw_path)
+    if not os.path.lexists(abs_path):
+        raise CommandError("path does not exist: " + to_tilde(abs_path))
+    if os.path.islink(abs_path):
+        raise CommandError("path is already a symlink: " + to_tilde(abs_path))
+    target_dir = expand_path(repo.get("target", "~") or "~")
+    repo_path = repo["path"]
+    rel = os.path.relpath(abs_path, target_dir)
+    if rel.startswith(".."):
+        raise CommandError("adopt path is outside the repo target: " + raw_path)
+    dest = os.path.join(repo_path, package, rel)
+    moved_to = to_tilde(dest)
+    if os.path.lexists(dest):
+        raise CommandError("destination already exists: " + moved_to)
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "moved_to": moved_to,
+            "actions": [{"action": "LINK", "target": to_tilde(abs_path), "source": moved_to}],
+        }
+    original_sha = sha256_file(abs_path) if os.path.isfile(abs_path) else None
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    _move_path(abs_path, dest, rename)
+    dry = stow_dry_run(repo_path, target_dir, package)
+    conflicts = parse_conflicts(_decode(dry.stderr), target_dir)
+    if conflicts:
+        _rollback_adopt(abs_path, dest, rename)
+        return {
+            "ok": False,
+            "error": "Stow conflict: " + _shorten(conflicts[0]["message"]),
+            "conflicts": conflicts,
+        }
+    real = stow_real(repo_path, target_dir, package)
+    if real.returncode != 0:
+        _rollback_adopt(abs_path, dest, rename)
+        return {"ok": False, "error": _short_error(real)}
+    if not _adopt_verified(abs_path, dest, original_sha):
+        _rollback_adopt(abs_path, dest, rename)
+        return {"ok": False, "error": "Adopt verification failed; rolled back."}
+    return {
+        "ok": True,
+        "moved_to": moved_to,
+        "actions": parse_stow_actions(_decode(real.stderr), target_dir),
+    }
+
+
+# --------------------------------------------------------------------------
+# ignore / unignore (README section 5)
+# --------------------------------------------------------------------------
+
+
+def normalize_path_list(payload: Any) -> list[str]:
+    """Normalize stdin into a deduped list of ``~``-relative paths."""
+    if isinstance(payload, str):
+        items: list[Any] = [payload]
+    elif isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        raw = payload.get("paths", [])
+        items = raw if isinstance(raw, list) else [raw]
+    else:
+        items = []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, str) or not item:
+            continue
+        norm = to_tilde(expand_path(item))
+        if norm not in seen:
+            seen.add(norm)
+            result.append(norm)
+    return result
+
+
+def _read_raw_config(path: str) -> dict[str, Any]:
+    """Read the on-disk config verbatim (defaults created first if missing)."""
+    if not os.path.exists(path):
+        load_config(path)
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    return data if isinstance(data, dict) else {}
+
+
+def _write_config_atomic(path: str, data: dict[str, Any]) -> None:
+    """Atomically replace the config file, preserving its permission mode."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    fd, tmp_path = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _update_ignore(args: list[str], config_path: str | None, add: bool) -> dict[str, Any]:
+    paths = normalize_path_list(read_stdin_json())
+    config_file = expand_path(config_path) if config_path else default_config_path()
+    raw = _read_raw_config(config_file)
+    ignore = [p for p in raw.get("ignore", []) if isinstance(p, str)]
+    for path in paths:
+        if add:
+            if path not in ignore:
+                ignore.append(path)
+        else:
+            ignore = [p for p in ignore if p != path]
+    raw["ignore"] = ignore
+    _write_config_atomic(config_file, raw)
+    return {"ok": True, "ignore": ignore}
+
+
+def cmd_ignore(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Add paths to the config ``ignore`` list (README section 5)."""
+    return _update_ignore(args, config_path, True)
+
+
+def cmd_unignore(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Remove exact matches from the config ``ignore`` list (README section 5)."""
+    return _update_ignore(args, config_path, False)
+
+
+# --------------------------------------------------------------------------
+# suggest-message (README section 5.4)
+# --------------------------------------------------------------------------
+
+
+def _file_names_summary(paths: list[str]) -> str:
+    """Up to three basenames, then ``+N more``."""
+    names = [os.path.basename(path) for path in paths]
+    shown = names[:3]
+    text = ", ".join(shown)
+    extra = len(names) - len(shown)
+    if extra > 0:
+        text += f", +{extra} more"
+    return text
+
+
+def suggest_message(paths: list[str], statuses: dict[str, str]) -> str:
+    """Pure commit-message suggestion (README section 5.4)."""
+    clean_paths = [str(p) for p in paths if isinstance(p, str) and p]
+    if not clean_paths:
+        return "chore: update files"
+    packages: list[str] = []
+    for path in clean_paths:
+        package = _package_of(path)
+        if package not in packages:
+            packages.append(package)
+    only_additions = all(
+        statuses.get(path, "modified") in ("added", "untracked") for path in clean_paths
+    )
+    if len(packages) == 1:
+        package = packages[0]
+        if only_additions:
+            return f"feat({package}): add {_file_names_summary(clean_paths)}"
+        return f"chore({package}): update {_file_names_summary(clean_paths)}"
+    shown = packages[:2]
+    extra = len(packages) - len(shown)
+    suffix = f", +{extra} more" if extra > 0 else ""
+    return "chore: update " + ", ".join(shown) + suffix
+
+
+def _suggest_path_items(payload: Any) -> list[Any]:
+    if isinstance(payload, str):
+        return [payload]
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        raw = payload.get("paths", [])
+        return raw if isinstance(raw, list) else [raw]
+    return []
+
+
+def _to_repo_relpath(raw: Any, repo_path: str) -> str:
+    """Map a ``~``-relative/absolute path to a repo-relative one, or validate."""
+    if not isinstance(raw, str) or not raw:
+        raise CommandError("empty path")
+    if raw.startswith("~") or os.path.isabs(raw):
+        expanded = os.path.normpath(expand_path(raw))
+        rel = os.path.relpath(expanded, repo_path)
+        if rel == ".." or rel.startswith(".." + os.sep):
+            raise CommandError("path is outside the repo: " + raw)
+        return rel.replace(os.sep, "/")
+    return validate_repo_relpath(raw)
+
+
+def _repo_status_map(repo_path: str) -> dict[str, str]:
+    """Map repo-relative path -> status kind (untracked included)."""
+    try:
+        status = git_status(repo_path)
+    except Exception:  # noqa: BLE001 - a missing status just yields no hints
+        return {}
+    result: dict[str, str] = {}
+    for change in status["changes"]:
+        result[change["path"]] = change["kind"]
+    for entry in status["untracked"]:
+        result[entry["path"]] = "untracked"
+    return result
+
+
+def cmd_suggest_message(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Suggest a commit message for the given paths (README section 5.4)."""
+    config = load_config(config_path)
+    repo = resolve_repo(config, opt_value(args, "--repo"))
+    repo_path = repo["path"]
+    payload = read_stdin_json()
+    rel_paths = [
+        _to_repo_relpath(item, repo_path) for item in _suggest_path_items(payload)
+    ]
+    statuses = _repo_status_map(repo_path)
+    return {"ok": True, "message": suggest_message(rel_paths, statuses)}
+
+
+# --------------------------------------------------------------------------
+# status --short (README section 7)
+# --------------------------------------------------------------------------
+
+
+def read_baseline_paths(state_dir: str) -> set[str]:
+    """Read the baseline path set without ever creating the file (read-only)."""
+    path = baseline_path(state_dir)
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            return set()
+        return {str(p) for p in data.get("paths", []) if isinstance(p, str)}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def cmd_status_short(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> str:
+    """One plain Starship line; empty when clean (README section 7).
+
+    Read-only: skips stow health for speed and never creates the baseline.
+    """
+    config = load_config(config_path)
+    segments: list[str] = []
+    for repo_cfg in config.get("repos", []):
+        raw_path = repo_cfg.get("path", "") if isinstance(repo_cfg, dict) else ""
+        path = expand_path(raw_path) if raw_path else ""
+        if not path or _git_dir(path) is None:
+            continue
+        try:
+            status = git_status(path)
+        except Exception:  # noqa: BLE001 - one bad repo must not blank the line
+            continue
+        parts: list[str] = []
+        if status["changes"]:
+            parts.append(f"{len(status['changes'])} changed")
+        if status["untracked"]:
+            parts.append(f"{len(status['untracked'])} untracked")
+        if status["ahead"] > 0:
+            parts.append(f"{status['ahead']} unpushed")
+        if status["behind"] > 0:
+            parts.append(f"{status['behind']} behind")
+        if not parts:
+            continue
+        basename = os.path.basename(os.path.normpath(path))
+        name = basename.lstrip(".") or basename
+        segments.append(f"{name}: " + ", ".join(parts))
+    known = read_baseline_paths(resolve_state_dir(state_dir))
+    unknown = sum(1 for c in compute_candidates(config) if c["path"] not in known)
+    if unknown > 0:
+        segments.append(f"{unknown} new config")
+    return " · ".join(segments)
+
+
 COMMANDS = {
     "version": cmd_version,
     "status": cmd_status,
     "baseline": cmd_baseline,
+    "diff": cmd_diff,
+    "commit": cmd_commit,
+    "push": cmd_push,
+    "pull": cmd_pull,
+    "restow": cmd_restow,
+    "adopt": cmd_adopt,
+    "ignore": cmd_ignore,
+    "unignore": cmd_unignore,
+    "suggest-message": cmd_suggest_message,
 }
 
 
@@ -1292,13 +2149,24 @@ def dispatch(
     handler = COMMANDS.get(name)
     if handler is None:
         return {"ok": False, "error": "unknown command: " + (name or "<none>")}
-    return handler(argv[1:], config_path, state_dir)
+    try:
+        return handler(argv[1:], config_path, state_dir)
+    except CommandError as exc:
+        return {"ok": False, "error": _shorten(str(exc))}
+    except subprocess.TimeoutExpired as exc:
+        return {"ok": False, "error": _shorten("command timed out: " + str(exc))}
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         config_path, state_dir, rest = extract_global_args(args)
+        if rest and rest[0] == "status" and "--short" in rest[1:]:
+            # Starship integration: one plain line, not JSON (README section 7).
+            text = cmd_status_short(rest[1:], config_path, state_dir)
+            if text:
+                sys.stdout.write(text + "\n")
+            return 0
         result = dispatch(rest, config_path, state_dir)
     except Exception as exc:  # noqa: BLE001 - CLI must never print a traceback to QML
         result = {"ok": False, "error": (str(exc) or exc.__class__.__name__)}
