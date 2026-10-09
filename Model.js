@@ -701,6 +701,40 @@ function newCandidateCount(data) {
   return count
 }
 
+// The first unacknowledged candidate (falling back to the first candidate) —
+// what the `a` key adopts. Null when there is nothing to adopt.
+function firstNewCandidate(candidates) {
+  var list = candidates || []
+  var fallback = null
+  for (var i = 0; i < list.length; i++) {
+    if (!list[i]) continue
+    if (list[i].known !== true) return list[i]
+    if (fallback === null) fallback = list[i]
+  }
+  return fallback
+}
+
+// "https://github.com/pwn27sbx/dotfiles.git" -> "pwn27sbx/dotfiles" and
+// "git@github.com:pwn27sbx/dotfiles.git" -> "pwn27sbx/dotfiles". The lane shows
+// this short form; the copy button still copies the full URL.
+function shortRemote(url) {
+  var s = String(url === undefined || url === null ? "" : url).trim()
+  if (s === "") return ""
+  s = s.replace(/\.git$/, "")
+  var scp = s.match(/^[^@]+@[^:]+:(.+)$/)
+  if (scp) s = scp[1]
+  else {
+    s = s.replace(/^[a-z+]+:\/\//i, "")
+    var slash = s.indexOf("/")
+    if (slash >= 0) s = s.slice(slash + 1)
+  }
+  var parts = []
+  var raw = s.split("/")
+  for (var i = 0; i < raw.length; i++) if (raw[i] !== "") parts.push(raw[i])
+  if (parts.length >= 2) return parts.slice(-2).join("/")
+  return s
+}
+
 function unhealthyCount(repo) {
   var packages = (repo && repo.packages) || []
   var count = 0
@@ -1577,6 +1611,7 @@ function packageCards(data) {
       cards.push({
         repo: repoPath,
         name: name,
+        health: health,
         icon: packageIcon(name),
         title: name,
         description: (target ? target + " \u00b7 " : "\u00b7 ") + statusText,
@@ -1610,4 +1645,95 @@ function repoInfoRows(repo, version, now) {
     { label: "Packages", value: pluralCount(num(r.stowed_packages, 0), "package") },
     { label: "Plugin", value: "stow-sync " + String(version || "") }
   ]
+}
+
+// --------------------------------------------------------------------------
+// Unit 6: own visual identity. Pure view models for the sync bridge, the
+// borderless repo lanes, the package chip grid and the count tween.
+// --------------------------------------------------------------------------
+
+// A repo needs the urgent stripe when a git operation is stuck, the repo is
+// gone, or a package cannot be stowed at all; pending work stays accent.
+function repoAttention(repo) {
+  var r = repo || {}
+  if (r.exists === false) return true
+  var state = String(r.state || "clean")
+  if (state === "conflict" || state === "diverged" || state === "operation" || state === "missing" || state === "secret-blocked") return true
+  var packages = r.packages || []
+  for (var i = 0; i < packages.length; i++) {
+    if (String((packages[i] && packages[i].health) || "ok") === "conflicts") return true
+  }
+  return false
+}
+
+// The hero diagram's shape: two node labels, the up/down flows, which chips
+// are present, the line tone and the "This PC" change-count badge.
+function bridgeState(data) {
+  var d = data || {}
+  var up = flowTotals(d, "ahead").count
+  var down = flowTotals(d, "behind").count
+  var changes = changeTotals(d).count
+  return {
+    leftLabel: "This PC",
+    rightLabel: "GitHub",
+    up: up,
+    down: down,
+    hasUp: up > 0,
+    hasDown: down > 0,
+    upText: up > 0 ? "\u2191" + up : "",
+    downText: down > 0 ? "\u2193" + down : "",
+    lineTone: attentionFor(d) ? "urgent" : "accent",
+    badge: changes,
+    badgeText: changes > 99 ? "99+" : (changes > 0 ? String(changes) : ""),
+    hasChanges: changes > 0
+  }
+}
+
+// Collapsed repo lane: bold name, branch chip, short hash, relative time and a
+// compact "N pkgs" count (the panel elides it clear of the scrollbar). The
+// stripe is accent at half alpha when clean, full accent while work is
+// pending, and urgent for a state that needs attention.
+function repoLaneSummary(repo, now) {
+  var r = repo || {}
+  var branch = String(r.branch || "")
+  var head = String(r.head || "")
+  var count = num(r.stowed_packages, 0)
+  var attention = repoAttention(r)
+  var pending = attention || repoChangeCount(r) > 0 ||
+    num(r.ahead, 0) > 0 || num(r.behind, 0) > 0 || String(r.state || "clean") !== "clean" ||
+    unhealthyCount(r) > 0
+  return {
+    name: repoDisplayName(r.path),
+    branch: branch,
+    branchChip: branch,
+    shortHash: head.length > 7 ? head.slice(0, 7) : head,
+    timeText: relativeTime(r.head_time, now),
+    count: count,
+    countText: pluralCount(count, "pkg", "pkgs"),
+    stripeTone: attention ? "urgent" : "accent",
+    stripeAlpha: pending ? 1 : 0.5,
+    state: String(r.state || "clean")
+  }
+}
+
+// Chip grid tone for one package card: an unhealthy package gets the urgent
+// outline, a package with changes the accent outline, everything else the
+// plain foreground fill.
+function packageChipState(card) {  var c = card || {}
+  var health = String(c.health || "ok")
+  var count = num(c.count, (c.files || []).length)
+  if (health !== "ok") return { tone: "fixing", fillAlpha: 0.06, outline: true, outlineTone: "urgent" }
+  if (count > 0) return { tone: "changed", fillAlpha: 0.06, outline: true, outlineTone: "accent" }
+  return { tone: "ok", fillAlpha: 0.06, outline: false, outlineTone: "" }
+}
+
+// Integer ease-out cubic interpolation. t is clamped to [0, 1]; no other
+// animation in the panel is allowed, so this mirrors the only tween.
+function tweenValue(from, to, t) {
+  var clamped = Number(t)
+  if (!isFinite(clamped)) clamped = 0
+  if (clamped < 0) clamped = 0
+  if (clamped > 1) clamped = 1
+  var eased = 1 - Math.pow(1 - clamped, 3)
+  return Math.round(from + (to - from) * eased)
 }

@@ -26,52 +26,32 @@ Panel {
     var custom = String(root.setting("configPath", ""))
     return custom !== "" ? custom : (Quickshell.env("HOME") + "/.config/stow-sync/config.json")
   }
-  property var statusData: null
-  property int activeTab: 0
-  property var checkedPaths: ({})
-  property var hiddenPaths: []
-  property bool showHidden: false
-  property bool showExisting: false
-  property string focusedKey: ""
-  property int repoCycleIndex: 0
-  property string errorText: ""
-  property string resultText: ""
-  property bool started: false
-  property double nowMs: Date.now()
-  property string busyVerb: ""
-  property string overlayMode: ""
-  property string confirmKind: ""
-  property var confirmPayload: ({})
+  property var statusData: null; property int activeTab: 0
+  property var checkedPaths: ({}); property var hiddenPaths: []
+  property bool showHidden: false; property bool showExisting: false
+  property string focusedKey: ""; property int repoCycleIndex: 0
+  property string errorText: ""; property string resultText: ""
+  property bool started: false; property double nowMs: Date.now()
+  property string busyVerb: ""; property string overlayMode: ""
+  property string confirmKind: ""; property var confirmPayload: ({})
   // Publish card and cumulative batch state (publish / upload / update).
-  property string publishMessage: ""
-  property var publishLines: []
-  property var publishTargets: []
-  property var publishSecrets: []
-  property bool publishAllowSecrets: false
-  property string publishError: ""
-  property string publishRepoFilter: ""
-  property string publishUpstream: "origin/main"
-  property int publishCommitDone: 0
-  property bool publishHadError: false
-  property string batchKind: ""
-  property int batchRemaining: 0
+  property string publishMessage: ""; property var publishLines: []
+  property var publishTargets: []; property var publishSecrets: []
+  property bool publishAllowSecrets: false; property string publishError: ""
+  property string publishRepoFilter: ""; property string publishUpstream: "origin/main"
+  property int publishCommitDone: 0; property bool publishHadError: false
+  property string batchKind: ""; property int batchRemaining: 0
   property string batchError: ""
   // Adopt and diff cards.
-  property string adoptRepo: ""
-  property string adoptPath: ""
-  property string adoptPackage: ""
-  property var adoptSuggestions: []
-  property string adoptError: ""
-  property string diffTitle: ""
-  property string diffBody: ""
-  property bool diffTruncated: false
+  property string adoptRepo: ""; property string adoptPath: ""
+  property string adoptPackage: ""; property var adoptSuggestions: []
+  property string adoptError: ""; property string diffTitle: ""
+  property string diffBody: ""; property bool diffTruncated: false
   readonly property string clock: Qt.formatTime(new Date(root.nowMs), "HH:mm")
   readonly property var hero: Model.heroState(root.statusData, root.clock)
   readonly property var primary: Model.primaryAction(root.statusData)
   readonly property var tabs: ["Overview", "Changes", "Packages"]
-  readonly property var changeView: Model.changesView(root.statusData, {
-    hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting
-  })
+  readonly property var changeView: Model.changesView(root.statusData, { hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting })
   readonly property var changeRows: root.changeView.rows
   readonly property var packages: Model.packageCards(root.statusData)
   readonly property int changeCount: Model.changeTotals(root.statusData).count
@@ -79,6 +59,8 @@ Panel {
   readonly property string stateText: root.hero.title + (root.busy ? "  \u00b7  updating" : "")
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
+  readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"
+  property bool helpOpen: false
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5)
   readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
   Runner {
@@ -181,9 +163,14 @@ Panel {
     var target = Model.adoptTarget(root.statusData ? root.statusData.repos : [])
     if (target.repo === "") { root.setResult("No repository is configured to adopt into.", true); return }
     root.adoptRepo = target.repo; root.adoptPath = String(row.path || "")
-    root.adoptPackage = Model.packageFor({ key: row.path, suggestedPackage: row.package, path: row.path }, {})
+    root.adoptPackage = Model.packageFor({ key: row.path, suggestedPackage: row.suggested_package || row.package, path: row.path }, {})
     root.adoptSuggestions = Model.pickerOptions(target.packages, root.adoptPackage, root.adoptPackage)
     root.adoptError = ""; root.overlayMode = "adopt"
+  }
+  function adoptFirst() {
+    var pick = Model.firstNewCandidate(root.statusData ? root.statusData.candidates : [])
+    if (pick) root.adoptCandidate(pick)
+    else root.setResult("No new config to adopt.", true)
   }
   function adoptConfirmed() {
     if (root.busy) return
@@ -248,7 +235,10 @@ Panel {
   }
   function editConfig() { Util.execArgv(["xdg-open", root.configPath]) }
   function overlayCancel() { if (!root.busy) root.overlayMode = "" }
-  function handleEscape() { if (root.overlayMode !== "") root.overlayCancel(); else root.close() }
+  function handleEscape() {
+    if (root.helpOpen) { root.helpOpen = false; return }
+    if (root.overlayMode !== "") root.overlayCancel(); else root.close()
+  }
   function activateCursor() {
     if (root.overlayMode === "diff") { root.overlayMode = ""; return }
     if (root.activeTab === 1) { var row = root.focusedChange(); if (row) root.openDiff(String(row.repo), String(row.path)) }
@@ -258,6 +248,7 @@ Panel {
     else if (text === "r") root.refreshWithFetch()
     else if (text === "p") { if (root.changeCount > 0) root.openPublish(""); else root.primaryClicked() }
     else if (text === "u") root.requestUpdate()
+    else if (text === "a") root.adoptFirst()
     else if (text === "i") root.toggleHidden(root.focusedChange())
   }
 
@@ -299,7 +290,6 @@ Panel {
         Header {
           Layout.fillWidth: true
           version: root.version
-          stateText: root.stateText
           stateTone: root.hero.tone
           busy: root.busy
           refreshEnabled: !root.busy
@@ -311,13 +301,13 @@ Panel {
           onDismissed: root.dismissError()
         }
 
-        Tabs {
+        SegmentedTabs {
           Layout.fillWidth: true
           tabs: root.tabs
           current: root.activeTab
+          motion: root.motionOn
           onSelected: function(index) { root.switchTabTo(index) }
         }
-
         Flickable {
           id: flick
           Layout.fillWidth: true
@@ -337,6 +327,7 @@ Panel {
             version: root.version
             now: String(root.nowMs)
             busy: root.busy
+            motion: root.motionOn
             checkedPaths: root.checkedPaths
             hiddenPaths: root.hiddenPaths
             showHidden: root.showHidden
@@ -361,7 +352,15 @@ Panel {
           }
         }
 
-        FooterChips { Layout.fillWidth: true }
+      }
+
+      HelpOverlay {
+        anchors.fill: parent
+        motion: root.motionOn
+        foreground: Color.foreground
+        open: root.helpOpen
+        onToggleRequested: root.helpOpen = !root.helpOpen
+        onCloseRequested: root.helpOpen = false
       }
     }
 

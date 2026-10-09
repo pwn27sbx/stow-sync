@@ -3,17 +3,15 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// Fixed top of the panel (config-sync's header, folding in the Unit 4c hero):
-// a state-tinted branch glyph, the title and version on one baseline, the
-// plain-words state line with a spinner while busy, the refresh / Edit /
-// close actions, and the dismissible feedback strip underneath. Errors stay
-// until the next successful refresh; successes clear themselves.
+// Fixed top of the panel. No boxed look: a small filled circle tinted by state
+// holds the branch glyph, the title and version sit on one baseline, and three
+// icon-only 32x32 actions (refresh, edit, close) live on the right. The
+// dismissible feedback strip stays underneath until the next success.
 Item {
   id: root
 
   property string title: "Stow Sync"
   property string version: ""
-  property string stateText: ""
   property string stateTone: "muted"
   property bool busy: false
   property bool refreshEnabled: true
@@ -38,106 +36,85 @@ Item {
     id: column
     anchors.left: parent.left
     anchors.right: parent.right
-    spacing: Style.spacing.sm
+    spacing: Style.spacing.lg
 
     RowLayout {
       id: row
       Layout.fillWidth: true
-      spacing: Style.spacing.md
+      spacing: Style.spacing.xxl
+
+      Rectangle {
+        Layout.alignment: Qt.AlignVCenter
+        implicitWidth: Style.space(28)
+        implicitHeight: Style.space(28)
+        radius: width / 2
+        color: Util.alpha(root.toneColor(), 0.18)
+
+        Text {
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          // Octicon git-branch; verified present in the bar font.
+          text: "\ue725"
+          color: root.toneColor()
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+        }
+      }
 
       Text {
         Layout.alignment: Qt.AlignVCenter
         textFormat: Text.PlainText
-        // Octicon git-branch; verified present in the bar font (see BarWidget).
-        text: "\ue725"
-        color: root.toneColor()
+        text: root.title
+        color: root.foreground
         font.family: Style.font.family
-        font.pixelSize: Style.font.display
+        font.pixelSize: Style.font.title
+        font.bold: true
+        elide: Text.ElideRight
       }
 
-      ColumnLayout {
-        Layout.fillWidth: true
-        Layout.alignment: Qt.AlignVCenter
-        spacing: Style.spacing.xxs
-
-        RowLayout {
-          Layout.fillWidth: true
-          spacing: Style.spacing.sm
-
-          Text {
-            Layout.alignment: Qt.AlignBaseline
-            textFormat: Text.PlainText
-            text: root.title
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.title
-            font.bold: true
-            elide: Text.ElideRight
-          }
-          Text {
-            Layout.alignment: Qt.AlignBaseline
-            textFormat: Text.PlainText
-            text: root.version !== "" ? "v" + root.version : ""
-            color: Util.alpha(root.foreground, 0.8)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-          Item { Layout.fillWidth: true }
-        }
-
-        RowLayout {
-          Layout.fillWidth: true
-          spacing: Style.spacing.sm
-
-          Text {
-            Layout.fillWidth: true
-            Layout.alignment: Qt.AlignVCenter
-            textFormat: Text.PlainText
-            text: root.stateText
-            color: root.toneColor()
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-          }
-
-          Text {
-            Layout.alignment: Qt.AlignVCenter
-            visible: root.busy
-            textFormat: Text.PlainText
-            // Font Awesome spinner, rotated while a request is in flight.
-            text: "\uf110"
-            color: root.toneColor()
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            RotationAnimation on rotation {
-              from: 0
-              to: 360
-              duration: 900
-              loops: Animation.Infinite
-              running: root.busy
-            }
-          }
-        }
+      Text {
+        Layout.alignment: Qt.AlignBaseline
+        textFormat: Text.PlainText
+        text: root.version !== "" ? "v" + root.version : ""
+        color: Util.alpha(root.foreground, 0.72)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
       }
+
+      Item { Layout.fillWidth: true }
 
       Button {
         Layout.alignment: Qt.AlignVCenter
+        Layout.preferredWidth: Style.space(32)
+        Layout.preferredHeight: Style.space(32)
+        horizontalPadding: 0
+        verticalPadding: 0
         iconText: "\uf021"
         tooltipText: "Refresh (r)"
         fontSize: Style.font.caption
         enabled: root.refreshEnabled && !root.busy
         onClicked: root.refreshClicked()
       }
+
       Button {
         Layout.alignment: Qt.AlignVCenter
-        text: "Edit"
+        Layout.preferredWidth: Style.space(32)
+        Layout.preferredHeight: Style.space(32)
+        horizontalPadding: 0
+        verticalPadding: 0
+        iconText: "\uf013"
         tooltipText: "Open the Stow Sync config file"
         fontSize: Style.font.caption
         enabled: !root.busy
         onClicked: root.editClicked()
       }
+
       Button {
         Layout.alignment: Qt.AlignVCenter
+        Layout.preferredWidth: Style.space(32)
+        Layout.preferredHeight: Style.space(32)
+        horizontalPadding: 0
+        verticalPadding: 0
         iconText: "\uf00d"
         tooltipText: "Close (Esc)"
         fontSize: Style.font.caption
@@ -148,16 +125,16 @@ Item {
     BorderSurface {
       Layout.fillWidth: true
       visible: root.message !== ""
-      implicitHeight: messageRow.implicitHeight + Style.spacing.sm
+      implicitHeight: messageRow.implicitHeight + Style.spacing.lg
       color: Util.alpha(root.isError ? Color.urgent : Color.accent, 0.10)
       borderSpec: Border.controlSpec(root.isError ? "selected" : "normal", root.isError ? Color.urgent : Color.accent, Color.accent)
-      radius: Style.cornerRadius
-      padding: Style.spacing.sm
+      radius: Style.space(10)
+      padding: Style.spacing.lg
 
       RowLayout {
         id: messageRow
         width: parent.width
-        spacing: Style.spacing.sm
+        spacing: Style.spacing.lg
         Text {
           Layout.fillWidth: true
           textFormat: Text.PlainText

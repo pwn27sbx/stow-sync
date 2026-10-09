@@ -19,6 +19,7 @@ Item {
   property bool hasAction: false
   property string actionText: "Fix"
   property bool focused: false
+  property bool motion: true
   property color foreground: Color.foreground
 
   signal toggled()
@@ -34,7 +35,7 @@ Item {
     implicitHeight: inner.implicitHeight + Style.spacing.sm * 2
     color: root.focused ? Util.alpha(Color.accent, 0.12) : Util.alpha(Color.foreground, 0.04)
     borderSpec: Border.controlSpec(root.focused ? "hover-cursor" : "normal", root.foreground, Color.accent)
-    radius: Style.cornerRadius
+    radius: Style.space(10)
     padding: Style.spacing.sm
 
     MouseArea {
@@ -57,7 +58,7 @@ Item {
           Layout.alignment: Qt.AlignVCenter
           textFormat: Text.PlainText
           text: root.expanded ? "\u25be" : "\u25b8"
-          color: Util.alpha(root.foreground, 0.8)
+          color: Util.alpha(root.foreground, 0.72)
           font.family: Style.font.family
           font.pixelSize: Style.font.body
         }
@@ -92,7 +93,7 @@ Item {
             visible: root.subtitle !== ""
             textFormat: Text.PlainText
             text: root.subtitle
-            color: Util.alpha(root.foreground, 0.8)
+            color: Util.alpha(root.foreground, 0.72)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
@@ -104,7 +105,7 @@ Item {
           Layout.maximumWidth: Style.space(140)
           textFormat: Text.PlainText
           text: root.count !== "" ? (root.count + (root.unit !== "" ? " " + root.unit : "")) : ""
-          color: Util.alpha(root.foreground, 0.8)
+          color: Util.alpha(root.foreground, 0.72)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
@@ -125,8 +126,13 @@ Item {
       Item {
         id: bodyWrap
         width: parent.width
-        visible: root.expanded
+        clip: true
         implicitHeight: root.expanded ? body.implicitHeight + root.bodyPadding * 2 : 0
+
+        Behavior on implicitHeight {
+          enabled: root.motion
+          NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+        }
 
         Column {
           id: body

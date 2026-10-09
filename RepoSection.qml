@@ -12,38 +12,24 @@ import "Model.js" as Model
 // positions them by height alone (what the Flickable contentHeight needs).
 Column {
   id: root
-  property var statusData: null
-  property int tab: 0
-  property string version: ""
-  property string now: ""
-  property bool busy: false
-  property var checkedPaths: ({})
-  property var hiddenPaths: []
-  property bool showHidden: false
-  property bool showExisting: false
-  property string focusedKey: ""
-  property var packages: []
+  property var statusData: null; property int tab: 0
+  property string version: ""; property string now: ""
+  property bool busy: false; property bool motion: true
+  property var checkedPaths: ({}); property var hiddenPaths: []
+  property bool showHidden: false; property bool showExisting: false
+  property string focusedKey: ""; property var packages: []
   property color foreground: Color.foreground
-  signal reviewRequested()
-  signal publishRequested()
-  signal updateRequested()
+  signal reviewRequested(); signal publishRequested(); signal updateRequested()
   signal restowRequested(string repo, string packageName)
-  signal adoptRequested(var candidate)
-  signal ignoreRequested(var candidate)
+  signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
   signal copyRequested(string value)
-  signal selectAllRequested()
-  signal selectRepoRequested()
-  signal clearSelectionRequested()
-  signal showHiddenToggled()
-  signal showExistingToggled()
-  signal changeToggled(string key, bool value)
-  signal changeHovered(string key)
+  signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
+  signal showHiddenToggled(); signal showExistingToggled()
+  signal changeToggled(string key, bool value); signal changeHovered(string key)
   signal diffRequested(string repo, string path)
-  property var expandedGroups: ({})
-  property var expandedRepos: ({})
-  property var expandedPackages: ({})
+  property var expandedGroups: ({}); property var expandedRepos: ({}); property var expandedPackages: ({})
+  property string packageKey: ""
   readonly property var repos: (root.statusData && root.statusData.repos) || []
-  readonly property var tiles: Model.statTiles(root.statusData)
   readonly property var groups: Model.overviewGroups(root.statusData)
   readonly property var changeView: Model.changesView(root.statusData, { hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting })
   readonly property int changes: Model.changeTotals(root.statusData).count
@@ -59,90 +45,101 @@ Column {
   function toggleRepo(path) { root.expandedRepos = root.setKey(root.expandedRepos, path, !root.repoExpanded(path, -1)) }
   function packageExpanded(key) { return root.expandedPackages[key] === true }
   function togglePackage(key) { root.expandedPackages = root.setKey(root.expandedPackages, key, !root.packageExpanded(key)) }
+  function togglePackageChip(key) { root.packageKey = root.packageKey === key ? "" : key }
   function isChecked(key) { return root.checkedPaths[key] !== false }
   width: parent ? parent.width : 0
   height: childrenRect.height
-  spacing: Style.spacing.md
+  spacing: Style.spacing.xxl
   // ---- Overview ---------------------------------------------------------
   Column {
     id: overviewBody
     width: root.width
     visible: root.tab === 0
-    spacing: Style.spacing.md
-    Text {
+    spacing: Style.spacing.xxl
+    Bridge {
       width: parent.width
-      textFormat: Text.PlainText
-      text: Model.explain(root.statusData)
-      color: Util.alpha(root.foreground, 0.8)
-      font.family: Style.font.family
-      font.pixelSize: Style.font.bodySmall
-      wrapMode: Text.WordWrap
+      bridge: Model.bridgeState(root.statusData)
+      sentence: Model.explain(root.statusData)
+      busy: root.busy
+      motion: root.motion
+      foreground: root.foreground
     }
-    Row {
-      id: tileRow
+    BorderSurface {
       width: parent.width
-      spacing: Style.spacing.sm
-      opacity: root.busy ? 0.6 : 1.0
-      readonly property int tileCount: Math.max(1, root.tiles.length)
-      readonly property real tileWidth: (width - spacing * (tileCount - 1)) / tileCount
-      Repeater {
-        model: root.tiles
-        StatTile {
-          required property var modelData
-          width: tileRow.tileWidth
-          icon: modelData.icon
-          value: modelData.value
-          label: modelData.label
-          tone: modelData.tone
-          foreground: root.foreground
+      visible: root.fresh > 0
+      implicitHeight: bannerRow.implicitHeight + Style.spacing.lg * 2
+      color: Util.alpha(Color.accent, 0.10)
+      borderSpec: Border.none()
+      radius: Style.space(10)
+      RowLayout {
+        id: bannerRow
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.leftMargin: Style.spacing.xxl
+        anchors.rightMargin: Style.spacing.xxl
+        spacing: Style.spacing.lg
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: Model.plural(root.fresh, " new config file is not in Stow", " new config files are not in Stow")
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
+        }
+        Text {
+          Layout.alignment: Qt.AlignVCenter
+          textFormat: Text.PlainText
+          text: "Review"
+          color: Color.accent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
         }
       }
+      MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleGroup("newConfigs") }
     }
     Row {
       width: parent.width
-      spacing: Style.spacing.sm
+      spacing: Style.spacing.lg
       Button { visible: root.changes > 0 || root.fresh > 0 || root.behind > 0; text: "Review Changes"; iconText: "\uf044"; fontSize: Style.font.caption; onClicked: root.reviewRequested() }
       Button { visible: root.behind > 0; text: "Update"; iconText: "\uf0ed"; fontSize: Style.font.caption; onClicked: root.updateRequested() }
       Button { visible: root.changes > 0; text: "Publish"; iconText: "\uf0ee"; fontSize: Style.font.caption; enabled: !root.busy; onClicked: root.publishRequested() }
       Button {
         visible: root.firstUnhealthy !== null; text: "Fix packages"; iconText: "\uf0ad"; fontSize: Style.font.caption; enabled: !root.busy
-        onClicked: if (root.firstUnhealthy) root.restowRequested(root.firstUnhealthy.repo, root.firstUnhealthy.package) }
+        onClicked: if (root.firstUnhealthy) root.restowRequested(root.firstUnhealthy.repo, root.firstUnhealthy.package)
+      }
     }
     Repeater {
       model: root.repos
-      InfoTable {
+      RepoLane {
         required property var modelData
         required property int index
         width: parent.width
+        lane: Model.repoLaneSummary(modelData, root.now)
         repo: modelData
         version: root.version
         now: root.now
         expanded: root.repoExpanded(String(modelData.path || ""), index)
+        motion: root.motion
         foreground: root.foreground
         onToggled: root.toggleRepo(String(modelData.path || ""))
         onCopyRequested: function(value) { root.copyRequested(value) }
       }
-    }
-    Text {
-      width: parent.width
-      visible: root.groups.length > 0
-      textFormat: Text.PlainText
-      text: "Groups below are collapsed. Press one to expand it."
-      color: Util.alpha(root.foreground, 0.8)
-      font.family: Style.font.family
-      font.pixelSize: Style.font.caption
-      wrapMode: Text.WordWrap
     }
     Repeater {
       model: root.groups
       GroupCard {
         required property var modelData
         width: parent.width
+        visible: modelData.key !== "newConfigs" || root.groupExpanded("newConfigs")
         title: modelData.title
         subtitle: modelData.subtitle
         count: String(modelData.count)
         unit: modelData.unit
         expanded: root.groupExpanded(modelData.key)
+        motion: root.motion
         foreground: root.foreground
         onToggled: root.toggleGroup(modelData.key)
         Repeater {
@@ -183,19 +180,19 @@ Column {
     id: changesBody
     width: root.width
     visible: root.tab === 1
-    spacing: Style.spacing.md
+    spacing: Style.spacing.xxl
     Text {
       width: parent.width
       textFormat: Text.PlainText
       text: Model.explain(root.statusData)
-      color: Util.alpha(root.foreground, 0.8)
+      color: Util.alpha(root.foreground, 0.72)
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall
       wrapMode: Text.WordWrap
     }
     Row {
       width: parent.width
-      spacing: Style.spacing.sm
+      spacing: Style.spacing.lg
       Button { text: "Select all"; fontSize: Style.font.caption; onClicked: root.selectAllRequested() }
       Button { text: "Select repo \u25b8"; fontSize: Style.font.caption; onClicked: root.selectRepoRequested() }
       Button { text: "Clear"; fontSize: Style.font.caption; onClicked: root.clearSelectionRequested() }
@@ -204,15 +201,15 @@ Column {
     Button { text: "Publish selected"; iconText: "\uf0ee"; fontSize: Style.font.caption; enabled: !root.busy; onClicked: root.publishRequested() }
     BorderSurface {
       width: parent.width
-      implicitHeight: toggleRow.implicitHeight + Style.spacing.sm * 2
+      implicitHeight: toggleRow.implicitHeight + Style.spacing.lg * 2
       color: Util.alpha(Color.foreground, 0.04)
-      borderSpec: Border.controlSpec("normal", Color.foreground, Color.accent)
-      radius: Style.cornerRadius
-      padding: Style.spacing.sm
+      borderSpec: Border.none()
+      radius: Style.space(10)
+      padding: Style.spacing.lg
       RowLayout {
         id: toggleRow
         width: parent.width
-        spacing: Style.spacing.sm
+        spacing: Style.spacing.lg
         ColumnLayout {
           Layout.fillWidth: true
           spacing: 0
@@ -221,7 +218,7 @@ Column {
             Layout.fillWidth: true
             textFormat: Text.PlainText
             text: "Files that already existed when Stow Sync was installed. They are not counted in the badge."
-            color: Util.alpha(root.foreground, 0.8)
+            color: Util.alpha(root.foreground, 0.72)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
@@ -240,6 +237,7 @@ Column {
         count: String(modelData.count)
         unit: modelData.unit
         expanded: root.packageExpanded("repo:" + modelData.key)
+        motion: root.motion
         onToggled: root.togglePackage("repo:" + modelData.key)
         Repeater {
           model: modelData.packages
@@ -251,7 +249,7 @@ Column {
               width: parent.width
               textFormat: Text.PlainText
               text: modelData.label + "  \u00b7  " + Model.pluralCount(modelData.count, "file")
-              color: Util.alpha(root.foreground, 0.8)
+              color: Util.alpha(root.foreground, 0.72)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -262,8 +260,8 @@ Column {
                 required property var modelData
                 width: parent ? parent.width : 0
                 primary: String(modelData.path)
-                secondary: String(modelData.package)
                 chip: String(modelData.chip)
+                splitPath: true
                 showCheckbox: true
                 checked: root.isChecked(modelData.key)
                 focused: root.focusedKey === modelData.key
@@ -283,17 +281,16 @@ Column {
     id: packagesBody
     width: root.width
     visible: root.tab === 2
-    spacing: Style.spacing.md
-    Repeater {
-      model: root.packages
-      PackageCard {
-        required property var modelData
-        width: parent.width
-        card: modelData
-        expanded: root.packageExpanded(String(modelData.repo) + ":" + String(modelData.name))
-        onToggled: root.togglePackage(String(modelData.repo) + ":" + String(modelData.name))
-        onRestowRequested: root.restowRequested(String(modelData.repo), String(modelData.name))
-      }
+    spacing: Style.spacing.xxl
+    PackageGrid {
+      width: parent.width
+      packages: root.packages
+      expandedKey: root.packageKey
+      busy: root.busy
+      motion: root.motion
+      foreground: root.foreground
+      onExpandRequested: function(key) { root.togglePackageChip(key) }
+      onRestowRequested: function(repo, packageName) { root.restowRequested(repo, packageName) }
     }
   }
 }

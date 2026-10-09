@@ -20,6 +20,7 @@ Item {
   property bool showAction: false
   property string actionText: "Fix"
   property bool dimmed: false
+  property bool splitPath: false
   property color foreground: Color.foreground
 
   signal hovered()
@@ -27,9 +28,18 @@ Item {
   signal activated()
   signal actionClicked()
 
+  readonly property int lastSlash: String(root.primary).lastIndexOf("/")
+  readonly property string dirText: root.splitPath && root.lastSlash > 0 ? String(root.primary).slice(0, root.lastSlash + 1) : ""
+  readonly property string nameText: root.splitPath ? (root.lastSlash >= 0 ? String(root.primary).slice(root.lastSlash + 1) : String(root.primary)) : root.primary
+
   function chipColor() {
+    // Status-pill letters win: D urgent, A a lighter accent variant,
+    // ? foreground 0.6, M accent (the default).
+    if (root.chip === "D") return Color.urgent
+    if (root.chip === "A") return Qt.lighter(Color.accent, 1.35)
+    if (root.chip === "?") return Util.alpha(root.foreground, 0.6)
     if (root.chipTone === "urgent") return Color.urgent
-    if (root.chipTone === "muted") return Util.alpha(root.foreground, 0.8)
+    if (root.chipTone === "muted") return Util.alpha(root.foreground, 0.6)
     return Color.accent
   }
 
@@ -58,7 +68,7 @@ Item {
       implicitHeight: Math.max(Style.spacing.controlHeight, content.implicitHeight + Style.spacing.sm)
       color: root.focused ? Util.alpha(Color.accent, 0.16) : "transparent"
       borderSpec: Border.none()
-      radius: Style.cornerRadius
+      radius: Style.space(6)
       opacity: root.dimmed ? 0.55 : 1.0
 
       MouseArea {
@@ -83,7 +93,7 @@ Item {
           visible: root.showCheckbox
           Layout.preferredWidth: Style.space(14)
           Layout.preferredHeight: Style.space(14)
-          radius: Style.cornerRadius
+          radius: Style.space(6)
           color: root.checked ? Color.accent : "transparent"
           border.width: 1
           border.color: root.checked ? Color.accent : Util.alpha(root.foreground, 0.5)
@@ -99,7 +109,7 @@ Item {
           visible: root.chip !== ""
           Layout.preferredWidth: Style.space(16)
           Layout.preferredHeight: Style.space(16)
-          radius: Style.cornerRadius
+          radius: Style.space(6)
           color: Util.alpha(root.chipColor(), 0.16)
           border.width: 1
           border.color: Util.alpha(root.chipColor(), 0.6)
@@ -119,14 +129,51 @@ Item {
           Layout.fillWidth: true
           spacing: 0
 
-          Text {
+          Item {
             Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: root.primary
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            elide: Text.ElideMiddle
+            implicitHeight: Math.max(plainText.implicitHeight, splitRow.implicitHeight)
+
+            Text {
+              id: plainText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              visible: !root.splitPath
+              textFormat: Text.PlainText
+              text: root.primary
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideMiddle
+            }
+
+            RowLayout {
+              id: splitRow
+              anchors.fill: parent
+              visible: root.splitPath
+              spacing: 0
+
+              Text {
+                textFormat: Text.PlainText
+                text: root.dirText
+                color: Util.alpha(root.foreground, 0.62)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideMiddle
+                Layout.maximumWidth: Math.max(0, splitRow.width * 0.6)
+              }
+
+              Text {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: root.nameText
+                color: root.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                elide: Text.ElideRight
+              }
+            }
           }
 
           Text {
@@ -134,7 +181,7 @@ Item {
             visible: root.secondary !== ""
             textFormat: Text.PlainText
             text: root.secondary
-            color: Util.alpha(root.foreground, 0.8)
+            color: Util.alpha(root.foreground, 0.72)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight

@@ -1147,3 +1147,169 @@ test("changesView carries the singular unit and subtitle the panel renders", () 
   // The per-package line the panel renders pluralizes too.
   assert.equal(Model.pluralCount(group.packages[0].count, "file"), "1 file")
 })
+
+// --- Unit 6: own visual identity view models ------------------------------
+
+test("bridgeState: clean bridge has no chips, no badge and an accent line", () => {
+  const bridge = Model.bridgeState(HERO.clean)
+  assert.equal(bridge.leftLabel, "This PC")
+  assert.equal(bridge.rightLabel, "GitHub")
+  assert.equal(bridge.up, 0)
+  assert.equal(bridge.down, 0)
+  assert.equal(bridge.hasUp, false)
+  assert.equal(bridge.hasDown, false)
+  assert.equal(bridge.upText, "")
+  assert.equal(bridge.downText, "")
+  assert.equal(bridge.badge, 0)
+  assert.equal(bridge.badgeText, "")
+  assert.equal(bridge.hasChanges, false)
+  assert.equal(bridge.lineTone, "accent")
+})
+
+test("bridgeState: to-upload shows an up chip in accent", () => {
+  const bridge = Model.bridgeState(HERO.ahead)
+  assert.equal(bridge.up, 2)
+  assert.equal(bridge.hasUp, true)
+  assert.equal(bridge.upText, "\u21912")
+  assert.equal(bridge.hasDown, false)
+  assert.equal(bridge.downText, "")
+  assert.equal(bridge.lineTone, "accent")
+})
+
+test("bridgeState: updates show a down chip", () => {
+  const bridge = Model.bridgeState(HERO.behind)
+  assert.equal(bridge.down, 3)
+  assert.equal(bridge.hasDown, true)
+  assert.equal(bridge.downText, "\u21933")
+  assert.equal(bridge.hasUp, false)
+})
+
+test("bridgeState: local changes put a count badge on the This PC node", () => {
+  const bridge = Model.bridgeState(HERO.changes)
+  assert.equal(bridge.badge, 3)
+  assert.equal(bridge.badgeText, "3")
+  assert.equal(bridge.hasChanges, true)
+})
+
+test("bridgeState: both flows at once keep both chips", () => {
+  const bridge = Model.bridgeState({
+    repos: [{ path: "~/a", ahead: 2, behind: 5, upstream: "origin/main", changes: [], untracked: [], packages: [] }],
+    candidates: []
+  })
+  assert.equal(bridge.up, 2)
+  assert.equal(bridge.down, 5)
+  assert.equal(bridge.upText, "\u21912")
+  assert.equal(bridge.downText, "\u21935")
+})
+
+test("bridgeState: attention turns the line urgent", () => {
+  assert.equal(Model.bridgeState(HERO.conflict).lineTone, "urgent")
+  assert.equal(Model.bridgeState(HERO.diverged).lineTone, "urgent")
+})
+
+test("bridgeState: badge caps at 99+ and tolerates missing data", () => {
+  const big = Model.bridgeState({
+    repos: [{ path: "~/a", changes: new Array(150).fill({ path: "x" }), untracked: [], packages: [] }],
+    candidates: []
+  })
+  assert.equal(big.badge, 150)
+  assert.equal(big.badgeText, "99+")
+  const empty = Model.bridgeState(null)
+  assert.equal(empty.up, 0)
+  assert.equal(empty.badge, 0)
+  assert.equal(empty.lineTone, "accent")
+})
+
+test("repoLaneSummary: collapsed lane carries name, branch, hash, time and count", () => {
+  const lane = Model.repoLaneSummary({
+    path: "~/.dotfiles", branch: "main", head: "abcdef1234567",
+    stowed_packages: 16, head_time: "2026-10-09T15:00:00-05:00", state: "clean"
+  }, "2026-10-09T18:00:00-05:00")
+  assert.equal(lane.name, "dotfiles")
+  assert.equal(lane.branch, "main")
+  assert.equal(lane.branchChip, "main")
+  assert.equal(lane.shortHash, "abcdef1")
+  assert.equal(lane.timeText, "3h ago")
+  assert.equal(lane.countText, "16 pkgs")
+  assert.equal(lane.count, 16)
+  assert.equal(lane.stripeTone, "accent")
+  assert.equal(lane.stripeAlpha, 0.5)
+})
+
+test("repoLaneSummary: pending work brightens the accent stripe", () => {
+  const dirty = Model.repoLaneSummary({ path: "~/.dotfiles", branch: "main", state: "dirty", changes: [{ path: "a" }], untracked: [], packages: [] })
+  assert.equal(dirty.stripeTone, "accent")
+  assert.equal(dirty.stripeAlpha, 1)
+  const pending = Model.repoLaneSummary({ path: "~/r", state: "clean", changes: [], untracked: [], packages: [{ name: "p", health: "pending" }] })
+  assert.equal(pending.stripeTone, "accent")
+  assert.equal(pending.stripeAlpha, 1)
+})
+
+test("repoLaneSummary: attention states use the urgent stripe", () => {
+  assert.equal(Model.repoLaneSummary({ path: "~/r", state: "diverged", packages: [] }).stripeTone, "urgent")
+  assert.equal(Model.repoLaneSummary({ path: "~/r", state: "clean", packages: [{ name: "p", health: "conflicts" }] }).stripeTone, "urgent")
+  assert.equal(Model.repoLaneSummary({ path: "~/gone", exists: false, state: "missing", packages: [] }).stripeTone, "urgent")
+})
+
+test("repoLaneSummary: singular count, short hash and empty data", () => {
+  const one = Model.repoLaneSummary({ path: "~/r", branch: "main", head: "abc", stowed_packages: 1 })
+  assert.equal(one.countText, "1 pkg")
+  assert.equal(one.shortHash, "abc")
+  assert.equal(one.branchChip, "main")
+  const detached = Model.repoLaneSummary({ path: "~/r", branch: "", packages: [] })
+  assert.equal(detached.branchChip, "")
+  const empty = Model.repoLaneSummary(null)
+  assert.equal(empty.name, "")
+  assert.equal(empty.countText, "0 pkgs")
+})
+
+test("packageChipState: ok, changed and needs-fixing tones", () => {
+  same(Model.packageChipState({ health: "ok", count: 0 }), { tone: "ok", fillAlpha: 0.06, outline: false, outlineTone: "" })
+  same(Model.packageChipState({ health: "ok", count: 2 }), { tone: "changed", fillAlpha: 0.06, outline: true, outlineTone: "accent" })
+  same(Model.packageChipState({ health: "pending", count: 0 }), { tone: "fixing", fillAlpha: 0.06, outline: true, outlineTone: "urgent" })
+  same(Model.packageChipState({ health: "conflicts", count: 0 }), { tone: "fixing", fillAlpha: 0.06, outline: true, outlineTone: "urgent" })
+  same(Model.packageChipState(null), { tone: "ok", fillAlpha: 0.06, outline: false, outlineTone: "" })
+})
+
+test("packageCards exposes health so the chip grid can colour it", () => {
+  const status = {
+    repos: [{
+      path: "~/r", exists: true, changes: [], untracked: [],
+      packages: [{ name: "a", health: "ok", pending_links: [], conflicts: [], dangling: [] }]
+    }],
+    candidates: []
+  }
+  assert.equal(Model.packageCards(status)[0].health, "ok")
+})
+
+test("tweenValue eases out cubic and clamps", () => {  assert.equal(Model.tweenValue(0, 100, 0), 0)
+  assert.equal(Model.tweenValue(0, 100, 1), 100)
+  assert.equal(Model.tweenValue(0, 100, 0.5), Math.round(100 * (1 - Math.pow(0.5, 3))))
+  assert.equal(Model.tweenValue(0, 100, -0.5), 0)
+  assert.equal(Model.tweenValue(0, 100, 1.5), 100)
+  assert.equal(Model.tweenValue(100, 0, 0), 100)
+  assert.equal(Model.tweenValue(100, 0, 1), 0)
+  assert.equal(Model.tweenValue(0, 50, Number.NaN), 0)
+  assert.equal(Model.tweenValue(0, 100, "0.5"), Math.round(100 * (1 - Math.pow(0.5, 3))))
+})
+
+test("firstNewCandidate prefers an unknown candidate and falls back", () => {
+  const unknown = { path: "~/.config/x", known: false }
+  const known = { path: "~/.config/y", known: true }
+  assert.equal(Model.firstNewCandidate([known, unknown]), unknown)
+  assert.equal(Model.firstNewCandidate([known]), known)
+  assert.equal(Model.firstNewCandidate([]), null)
+  assert.equal(Model.firstNewCandidate(null), null)
+  // A null entry is skipped, not returned.
+  assert.equal(Model.firstNewCandidate([null, known]), known)
+})
+
+test("shortRemote trims scheme, host and .git for the lane chip", () => {
+  assert.equal(Model.shortRemote("https://github.com/pwn27sbx/dotfiles.git"), "pwn27sbx/dotfiles")
+  assert.equal(Model.shortRemote("git@github.com:pwn27sbx/dotfiles.git"), "pwn27sbx/dotfiles")
+  assert.equal(Model.shortRemote("https://github.com/u/r"), "u/r")
+  assert.equal(Model.shortRemote("ssh://git@host.example.com:22/team/repo.git"), "team/repo")
+  assert.equal(Model.shortRemote(""), "")
+  assert.equal(Model.shortRemote(null), "")
+  assert.equal(Model.shortRemote("single"), "single")
+})

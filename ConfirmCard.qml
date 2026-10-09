@@ -90,7 +90,7 @@ Item {
       color: Color.popups.background
       borderSpec: Border.flat(root.destructive ? Color.urgent : Color.accent, Style.normalBorderWidth)
       padding: Style.space(16)
-      radius: Style.cornerRadius
+      radius: Style.space(10)
 
       MouseArea { anchors.fill: parent; onClicked: {} }
 
