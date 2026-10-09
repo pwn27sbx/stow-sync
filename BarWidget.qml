@@ -3,41 +3,57 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
-// Bar slot for Stow Sync. Unit 0 is scaffold only: the icon toggles an empty
-// panel that just shows the plugin name. Backend and panel content land in
-// later units.
-//
-// Shape contract for the bar host: expose opened/open/close and host the
-// nested Panel.qml, mirroring the first-party popup widgets.
+// Bar slot for Stow Sync: a git-branch glyph, a count badge colored by the
+// worst signal, and the popup. The glyph U+E725 is the Octicon "git-branch";
+// it was verified present in JetBrainsMono Nerd Font's cmap, the family the
+// bar font resolves to.
 BarWidget {
   id: root
   moduleName: "pwnsxb.stow-sync"
 
-  readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+  readonly property var panelItem: panelLoader.item
+  readonly property bool opened: panelItem ? panelItem.opened === true : false
 
   // Forwarded so this widget can stand in for the panel as the bar's popout
   // identity; the KeyboardPanel reads popoutSwitchClosing back off its owner.
-  readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
+  readonly property bool popoutSwitchClosing: panelItem ? panelItem.popoutSwitchClosing === true : false
+
+  readonly property var statusData: panelItem && "data" in panelItem ? panelItem.data : null
+  readonly property string badgeLabel: Model.badgeText(statusData)
+  readonly property color badgeColor: root.tokenColor(Model.badgeColor(statusData))
+  readonly property string summaryState: statusData && statusData.summary ? statusData.summary.state : "clean"
+
+  function tokenColor(token) {
+    if (token === "urgent") return Color.urgent
+    if (token === "accent") return Color.accent
+    if (token === "muted") return Color.muted
+    return Color.foreground
+  }
 
   function open() {
-    if (panelLoader.item) panelLoader.item.open()
+    if (panelItem) panelItem.open()
   }
 
   function close() {
-    if (panelLoader.item) panelLoader.item.close()
+    if (panelItem) panelItem.close()
   }
 
   function togglePanel() {
-    if (panelLoader.item) panelLoader.item.toggle()
+    if (panelItem) panelItem.toggle()
   }
 
   function closeForPopoutSwitch() {
-    if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
+    if (panelItem) panelItem.closeForPopoutSwitch()
+  }
+
+  function refreshWithFetch() {
+    if (panelItem && typeof panelItem.refreshWithFetch === "function") panelItem.refreshWithFetch()
   }
 
   function injectPanel() {
-    var target = panelLoader.item
+    var target = panelItem
     if (!target) return
     if ("bar" in target) target.bar = root.bar
     if ("settings" in target) target.settings = root.settings
@@ -70,6 +86,7 @@ BarWidget {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.togglePanel() }
+    function refresh(): void { root.refreshWithFetch() }
   }
 
   BarIconButton {
@@ -77,8 +94,35 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     active: root.opened
-    text: ""
-    tooltipText: "Stow Sync"
-    onPressed: root.togglePanel()
+    text: "\ue725"
+    tooltipText: "Stow Sync — " + Model.stateTitle(root.summaryState)
+    onPressed: function(button) {
+      if (button === Qt.RightButton) root.refreshWithFetch()
+      else root.togglePanel()
+    }
+  }
+
+  Rectangle {
+    id: badge
+    visible: root.badgeLabel !== ""
+    z: 2
+    anchors.right: parent.right
+    anchors.top: parent.top
+    width: Math.max(Style.space(12), badgeText.implicitWidth + Style.space(6))
+    height: Style.space(12)
+    radius: height / 2
+    color: root.badgeColor
+    border.width: 1
+    border.color: root.bar ? root.bar.background : Color.background
+
+    Text {
+      id: badgeText
+      anchors.centerIn: parent
+      text: root.badgeLabel
+      color: Color.background
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
   }
 }

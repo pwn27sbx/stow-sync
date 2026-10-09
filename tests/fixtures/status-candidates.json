@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "repos": [
+    {
+      "path": "~/.dotfiles",
+      "exists": true,
+      "branch": "main",
+      "upstream": "origin/main",
+      "ahead": 0,
+      "behind": 0,
+      "state": "clean",
+      "changes": [],
+      "untracked": [],
+      "packages": [{ "name": "systemd", "health": "ok", "pending_links": [], "conflicts": [], "dangling": [] }],
+      "operation": null,
+      "last_fetch": null,
+      "fetch_error": null
+    }
+  ],
+  "summary": { "state": "candidates", "count": 2 },
+  "candidates": [
+    { "path": "~/.config/zzz", "type": "dir", "size": 4096, "mtime": "2026-10-08T10:00:00-05:00", "group": "other", "suggested_package": "zzz", "known": false },
+    { "path": "~/.config/systemd/user/a.timer", "type": "file", "size": 512, "mtime": "2026-10-09T10:00:00-05:00", "group": "watched", "suggested_package": "systemd", "known": false },
+    { "path": "~/.local/bin/foo", "type": "file", "size": 2048, "mtime": "2026-01-01T10:00:00-05:00", "group": "watched", "suggested_package": "bin", "known": true },
+    { "path": "~/.config/aaa", "type": "dir", "size": 1024, "mtime": "2026-01-01T10:00:00-05:00", "group": "other", "suggested_package": "aaa", "known": true }
+  ],
+  "baseline_error": null
+}

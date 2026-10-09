@@ -1,0 +1,63 @@
+{
+  "ok": true,
+  "repos": [
+    {
+      "path": "~/.dotfiles",
+      "exists": true,
+      "branch": "main",
+      "upstream": "origin/main",
+      "ahead": 2,
+      "behind": 0,
+      "state": "dirty",
+      "changes": [
+        { "path": "hypr/.config/hypr/hyprland.conf", "package": "hypr", "x": "M", "y": " ", "kind": "modified" },
+        { "path": "fish/.config/fish/config.fish", "package": "fish", "x": "M", "y": " ", "kind": "modified" },
+        { "path": "fish/.config/fish/conf.d/abbr.fish", "package": "fish", "x": "A", "y": " ", "kind": "added" }
+      ],
+      "untracked": [
+        { "path": "omarchy/.config/omarchy/backgrounds/nord/new.png", "package": "omarchy" }
+      ],
+      "packages": [
+        { "name": "omarchy", "health": "ok", "pending_links": [], "conflicts": [], "dangling": [] },
+        { "name": "fish", "health": "pending", "pending_links": [{ "target": "~/.config/fish/config.fish", "source": "fish/.config/fish/config.fish" }], "conflicts": [], "dangling": [] },
+        { "name": "hypr", "health": "conflicts", "pending_links": [], "conflicts": [{ "message": "existing target is neither a link nor a directory: ~/.config/hypr/hyprland.conf" }], "dangling": [] }
+      ],
+      "operation": null,
+      "last_fetch": "2026-10-09T15:00:00-05:00",
+      "fetch_error": null
+    },
+    {
+      "path": "~/wallpapers",
+      "exists": true,
+      "branch": "main",
+      "upstream": "origin/main",
+      "ahead": 1,
+      "behind": 1,
+      "state": "diverged",
+      "changes": [],
+      "untracked": [],
+      "packages": [],
+      "operation": null,
+      "last_fetch": "2026-10-09T15:00:00-05:00",
+      "fetch_error": null
+    },
+    {
+      "path": "~/gone",
+      "exists": false,
+      "branch": "",
+      "upstream": "",
+      "ahead": 0,
+      "behind": 0,
+      "state": "missing",
+      "changes": [],
+      "untracked": [],
+      "packages": [],
+      "operation": null,
+      "last_fetch": null,
+      "fetch_error": null
+    }
+  ],
+  "summary": { "state": "missing", "count": 7 },
+  "candidates": [],
+  "baseline_error": null
+}

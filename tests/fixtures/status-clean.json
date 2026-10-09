@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "repos": [
+    {
+      "path": "~/.dotfiles",
+      "exists": true,
+      "branch": "main",
+      "upstream": "origin/main",
+      "ahead": 0,
+      "behind": 0,
+      "state": "clean",
+      "changes": [],
+      "untracked": [],
+      "packages": [
+        { "name": "fish", "health": "ok", "pending_links": [], "conflicts": [], "dangling": [] }
+      ],
+      "operation": null,
+      "last_fetch": "2026-10-09T15:00:00-05:00",
+      "fetch_error": null
+    }
+  ],
+  "summary": { "state": "clean", "count": 0 },
+  "candidates": [],
+  "baseline_error": null
+}
