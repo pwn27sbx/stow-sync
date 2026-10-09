@@ -2373,10 +2373,14 @@ class StatusShortTests(unittest.TestCase):
         )
         self.assertEqual(self.short(), "dotfiles: 1 changed · wallpapers: 1 changed")
 
-    def test_new_config_segment(self) -> None:
+    def test_first_run_creates_baseline_and_prints_nothing(self) -> None:
+        # §5.3b: --short shares the baseline logic. A fresh state dir creates
+        # baseline.json from the current candidates, so pre-existing files are
+        # known and never reported as "new config".
         write(self.home / ".local" / "bin" / "tool", "x\n")
         write_config(self.config, [], watch=["~/.local/bin"])
-        self.assertEqual(self.short(), "1 new config")
+        self.assertEqual(self.short(), "")
+        self.assertTrue((self.state_dir / "baseline.json").exists())
 
     def test_known_candidate_does_not_add_segment(self) -> None:
         write(self.home / ".local" / "bin" / "tool", "x\n")
@@ -2388,12 +2392,12 @@ class StatusShortTests(unittest.TestCase):
         )
         self.assertEqual(self.short(), "")
 
-    def test_does_not_create_baseline(self) -> None:
+    def test_new_file_after_baseline_shows_new_config(self) -> None:
         write(self.home / ".local" / "bin" / "tool", "x\n")
         write_config(self.config, [], watch=["~/.local/bin"])
-        self.short()
-        self.assertFalse((self.state_dir / "baseline.json").exists())
-        self.assertFalse(self.state_dir.exists())
+        self.short()  # first run creates the baseline
+        write(self.home / ".local" / "bin" / "another", "y\n")
+        self.assertEqual(self.short(), "1 new config")
 
     def test_skips_stow_health(self) -> None:
         repo = self._repo_with_remote(".dotfiles")

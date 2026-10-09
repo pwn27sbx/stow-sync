@@ -2028,21 +2028,6 @@ def cmd_suggest_message(
 # --------------------------------------------------------------------------
 
 
-def read_baseline_paths(state_dir: str) -> set[str]:
-    """Read the baseline path set without ever creating the file (read-only)."""
-    path = baseline_path(state_dir)
-    if not os.path.exists(path):
-        return set()
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        if not isinstance(data, dict):
-            return set()
-        return {str(p) for p in data.get("paths", []) if isinstance(p, str)}
-    except (OSError, ValueError, TypeError):
-        return set()
-
-
 def cmd_status_short(
     args: list[str],
     config_path: str | None = None,
@@ -2050,7 +2035,9 @@ def cmd_status_short(
 ) -> str:
     """One plain Starship line; empty when clean (README section 7).
 
-    Read-only: skips stow health for speed and never creates the baseline.
+    Shares the JSON ``status`` baseline logic (§5.3b): the first run in a fresh
+    state dir creates baseline.json from the current candidates, so pre-existing
+    files are known. Skips stow health for speed; the baseline is the only write.
     """
     config = load_config(config_path)
     segments: list[str] = []
@@ -2077,8 +2064,12 @@ def cmd_status_short(
         basename = os.path.basename(os.path.normpath(path))
         name = basename.lstrip(".") or basename
         segments.append(f"{name}: " + ", ".join(parts))
-    known = read_baseline_paths(resolve_state_dir(state_dir))
-    unknown = sum(1 for c in compute_candidates(config) if c["path"] not in known)
+    candidates = compute_candidates(config)
+    baseline = load_baseline(resolve_state_dir(state_dir), [c["path"] for c in candidates])
+    known = baseline["paths"]
+    for candidate in candidates:
+        candidate["known"] = candidate["path"] in known
+    unknown = compute_badge(candidates)
     if unknown > 0:
         segments.append(f"{unknown} new config")
     return " · ".join(segments)
