@@ -236,9 +236,9 @@ Column {
         required property var modelData
         width: parent.width
         title: modelData.title
-        subtitle: modelData.count + " files \u00b7 press to expand"
+        subtitle: modelData.subtitle
         count: String(modelData.count)
-        unit: "files"
+        unit: modelData.unit
         expanded: root.packageExpanded("repo:" + modelData.key)
         onToggled: root.togglePackage("repo:" + modelData.key)
         Repeater {
@@ -250,7 +250,7 @@ Column {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: modelData.label + "  \u00b7  " + modelData.count + " files"
+              text: modelData.label + "  \u00b7  " + Model.pluralCount(modelData.count, "file")
               color: Util.alpha(root.foreground, 0.8)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption

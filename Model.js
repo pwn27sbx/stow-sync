@@ -278,7 +278,7 @@ function packagesOkRow(repoPath, count, expanded) {
     repo: repoPath,
     count: count,
     expanded: !!expanded,
-    label: count + " packages OK",
+    label: pluralCount(count, "package") + " OK",
     stateColor: "muted"
   }
 }
@@ -755,8 +755,25 @@ function attentionFor(data) {
   return null
 }
 
+// Legacy helper: the singular/plural fragments carry their own leading space
+// (e.g. plural(1, " change", " changes") -> "1 change"). Kept for the prose
+// callers; new count+unit sites should use pluralCount/pluralUnit.
 function plural(count, singular, pluralForm) {
   return count + (count === 1 ? singular : pluralForm)
+}
+
+// Number plus a pluralized noun: "1 change" / "2 changes" / "0 items". Pass
+// pluralForm for a noun that does not just add an "s" (e.g. "person",
+// "people"). Non-numeric counts fall back to 0 via num().
+function pluralCount(count, singular, pluralForm) {
+  var n = num(count, 0)
+  return n + " " + (n === 1 ? singular : (pluralForm !== undefined ? pluralForm : singular + "s"))
+}
+
+// Bare pluralized unit word for a count+unit card: pluralUnit(1, "file") is
+// "file" and every other count is "files" (or the supplied pluralForm).
+function pluralUnit(count, singular, pluralForm) {
+  return num(count, 0) === 1 ? singular : (pluralForm !== undefined ? pluralForm : singular + "s")
 }
 
 // Top-of-panel state: one glyph, one plain sentence and one hint line.
@@ -1267,9 +1284,9 @@ function overviewGroup(key, title, unit, items) {
   return {
     key: key,
     title: title,
-    subtitle: items.length + " included \u00b7 press to expand",
+    subtitle: pluralCount(items.length, "item") + " included \u00b7 press to expand",
     count: items.length,
-    unit: unit,
+    unit: pluralUnit(items.length, unit),
     items: items,
     expanded: false
   }
@@ -1294,7 +1311,7 @@ function overviewGroups(data) {
     return byPackage !== 0 ? byPackage : compareStrings(a.path, b.path)
   })
   if (outgoing.length > 0) {
-    groups.push(overviewGroup("outgoing", "Outgoing \u2014 this machine", "files", outgoing))
+    groups.push(overviewGroup("outgoing", "Outgoing \u2014 this machine", "file", outgoing))
   }
 
   var incoming = []
@@ -1310,7 +1327,7 @@ function overviewGroups(data) {
     }
   }
   if (incoming.length > 0) {
-    groups.push(overviewGroup("incoming", "Incoming \u2014 from GitHub", "commits", incoming))
+    groups.push(overviewGroup("incoming", "Incoming \u2014 from GitHub", "commit", incoming))
   }
 
   var newConfigs = []
@@ -1325,7 +1342,7 @@ function overviewGroups(data) {
     })
   }
   if (newConfigs.length > 0) {
-    groups.push(overviewGroup("newConfigs", "New config files", "files", newConfigs))
+    groups.push(overviewGroup("newConfigs", "New config files", "file", newConfigs))
   }
 
   var fixing = []
@@ -1348,7 +1365,7 @@ function overviewGroups(data) {
     }
   }
   if (fixing.length > 0) {
-    groups.push(overviewGroup("fixing", "Needs fixing", "packages", fixing))
+    groups.push(overviewGroup("fixing", "Needs fixing", "package", fixing))
   }
 
   return groups
@@ -1413,8 +1430,9 @@ function changesGroups(data, options) {
       key: "changes:" + repoPath,
       repo: repoPath,
       title: repoDisplayName(repoPath),
+      subtitle: pluralCount(count, "change") + " \u00b7 press to expand",
       count: count,
-      unit: "files",
+      unit: pluralUnit(count, "file"),
       packages: packages
     })
   }
@@ -1469,8 +1487,9 @@ function changesView(data, options) {
         key: group.key,
         repo: group.repo,
         title: group.title,
+        subtitle: pluralCount(count, "change") + " \u00b7 press to expand",
         count: count,
-        unit: "files",
+        unit: pluralUnit(count, "file"),
         packages: packages
       })
     }
@@ -1562,7 +1581,7 @@ function packageCards(data) {
         title: name,
         description: (target ? target + " \u00b7 " : "\u00b7 ") + statusText,
         count: files.length,
-        unit: "files",
+        unit: pluralUnit(files.length, "file"),
         files: files,
         expanded: false
       })
@@ -1588,7 +1607,7 @@ function repoInfoRows(repo, version, now) {
     { label: "Ahead / behind", value: num(r.ahead, 0) + " / " + num(r.behind, 0) },
     { label: "Last commit", value: relativeTime(r.head_time, now) },
     { label: "Last publish", value: published === "" ? "never" : published },
-    { label: "Packages", value: num(r.stowed_packages, 0) + " stowed" },
+    { label: "Packages", value: pluralCount(num(r.stowed_packages, 0), "package") },
     { label: "Plugin", value: "stow-sync " + String(version || "") }
   ]
 }

@@ -850,7 +850,7 @@ test("overviewGroups builds only the non-empty collapsible groups", () => {
   assert.equal(outgoing.title, "Outgoing \u2014 this machine")
   assert.equal(outgoing.count, 4)
   assert.equal(outgoing.unit, "files")
-  assert.equal(outgoing.subtitle, "4 included \u00b7 press to expand")
+  assert.equal(outgoing.subtitle, "4 items included \u00b7 press to expand")
   assert.equal(outgoing.expanded, false)
   assert.equal(outgoing.items.length, 4)
   assert.equal(outgoing.items[0].package, "fish")
@@ -880,7 +880,7 @@ test("overviewGroups lists incoming commits supplied by the backend", () => {
   assert.equal(incoming.title, "Incoming \u2014 from GitHub")
   assert.equal(incoming.count, 2)
   assert.equal(incoming.unit, "commits")
-  assert.equal(incoming.subtitle, "2 included \u00b7 press to expand")
+  assert.equal(incoming.subtitle, "2 items included \u00b7 press to expand")
   same(incoming.items.map((i) => i.hash), ["abc1234", "def5678"])
   assert.equal(incoming.items[0].subject, "fix fish")
 })
@@ -1053,7 +1053,7 @@ test("repoInfoRows renders the info table with relative times", () => {
   assert.equal(rows[3].value, "0 / 0")
   assert.equal(rows[4].value, "3h ago")
   assert.equal(rows[5].value, "1d ago")
-  assert.equal(rows[6].value, "16 stowed")
+  assert.equal(rows[6].value, "16 packages")
   assert.equal(rows[7].value, "stow-sync 0.1.0")
 })
 
@@ -1065,4 +1065,85 @@ test("repoInfoRows shows never for an unknown last publish", () => {
   const rows = Model.repoInfoRows(repo, "0.1.0", "2026-10-09T18:00:00Z")
   assert.equal(rows[5].label, "Last publish")
   assert.equal(rows[5].value, "never")
+})
+
+// --- nits: pluralized counts ----------------------------------------------
+
+test("pluralCount pluralizes 0, 1, 2 and keeps irregular forms", () => {
+  assert.equal(Model.pluralCount(0, "item"), "0 items")
+  assert.equal(Model.pluralCount(1, "item"), "1 item")
+  assert.equal(Model.pluralCount(2, "item"), "2 items")
+  assert.equal(Model.pluralCount(1, "person", "people"), "1 person")
+  assert.equal(Model.pluralCount(2, "person", "people"), "2 people")
+  assert.equal(Model.pluralUnit(0, "file"), "files")
+  assert.equal(Model.pluralUnit(1, "file"), "file")
+  assert.equal(Model.pluralUnit(2, "file"), "files")
+  assert.equal(Model.pluralUnit(1, "person", "people"), "person")
+  assert.equal(Model.pluralUnit(2, "person", "people"), "people")
+  // The legacy leading-space helper keeps working unchanged.
+  assert.equal(Model.plural(1, " change", " changes"), "1 change")
+  assert.equal(Model.plural(3, " change", " changes"), "3 changes")
+})
+
+test("repoInfoRows pluralizes the stowed package count", () => {
+  const one = Model.repoInfoRows({ path: "~/x", stowed_packages: 1 }, "0.1.0")
+  assert.equal(one.find((r) => r.label === "Packages").value, "1 package")
+  const many = Model.repoInfoRows({ path: "~/x", stowed_packages: 16 }, "0.1.0")
+  assert.equal(many.find((r) => r.label === "Packages").value, "16 packages")
+})
+
+test("packageCards keeps a singular file unit at one", () => {
+  const status = {
+    repos: [{
+      path: "~/.dotfiles", exists: true,
+      packages: [
+        { name: "fish", health: "ok", pending_links: [], conflicts: [], dangling: [] },
+        { name: "nvim", health: "ok", pending_links: [], conflicts: [], dangling: [] }
+      ],
+      changes: [{ path: "fish/.config/fish/config.fish", package: "fish", kind: "modified" }],
+      untracked: [{ path: "nvim/init.lua", package: "nvim" }]
+    }],
+    candidates: []
+  }
+  const cards = Model.packageCards(status)
+  assert.equal(cards[0].count, 1)
+  assert.equal(cards[0].unit, "file")
+  assert.equal(Model.pluralCount(cards[0].count, cards[0].unit), "1 file")
+  assert.equal(cards[1].count, 1)
+  assert.equal(cards[1].unit, "file")
+})
+
+test("overviewGroups renders a single-item group with a singular unit", () => {
+  const status = {
+    repos: [{ path: "~/a", exists: true, changes: [{ path: "p/x", package: "p" }], untracked: [], packages: [] }],
+    candidates: []
+  }
+  const outgoing = Model.overviewGroups(status).find((g) => g.key === "outgoing")
+  assert.equal(outgoing.count, 1)
+  assert.equal(outgoing.unit, "file")
+  assert.ok(outgoing.subtitle.indexOf("1 item") !== -1, outgoing.subtitle)
+})
+
+test("changesGroups renders a single-change group with a singular unit and subtitle", () => {
+  const status = {
+    repos: [{ path: "~/.dotfiles", exists: true, changes: [{ path: "p/x", package: "p" }], untracked: [], packages: [] }],
+    candidates: []
+  }
+  const repo = Model.changesGroups(status, {})[0]
+  assert.equal(repo.count, 1)
+  assert.equal(repo.unit, "file")
+  assert.ok(repo.subtitle.indexOf("1 change") !== -1, repo.subtitle)
+})
+
+test("changesView carries the singular unit and subtitle the panel renders", () => {
+  const status = {
+    repos: [{ path: "~/.dotfiles", exists: true, changes: [{ path: "p/x", package: "p" }], untracked: [], packages: [] }],
+    candidates: []
+  }
+  const group = Model.changesView(status, {}).groups[0]
+  assert.equal(group.count, 1)
+  assert.equal(group.unit, "file")
+  assert.ok(group.subtitle.indexOf("1 change") !== -1, group.subtitle)
+  // The per-package line the panel renders pluralizes too.
+  assert.equal(Model.pluralCount(group.packages[0].count, "file"), "1 file")
 })

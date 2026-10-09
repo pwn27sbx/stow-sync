@@ -15,6 +15,7 @@ Item {
   property string count: ""
   property string unit: ""
   property bool expanded: false
+  property int bodyPadding: 0
   property bool hasAction: false
   property string actionText: "Fix"
   property bool focused: false
@@ -118,11 +119,19 @@ Item {
         }
       }
 
-      Column {
-        id: body
+      Item {
+        id: bodyWrap
         width: parent.width
         visible: root.expanded
-        spacing: Style.spacing.xs
+        implicitHeight: root.expanded ? body.implicitHeight + root.bodyPadding * 2 : 0
+
+        Column {
+          id: body
+          x: root.bodyPadding
+          y: root.bodyPadding
+          width: parent.width - root.bodyPadding * 2
+          spacing: Style.spacing.xs
+        }
       }
     }
   }

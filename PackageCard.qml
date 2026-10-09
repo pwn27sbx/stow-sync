@@ -22,7 +22,7 @@ GroupCard {
   title: String(root.cardObject.title || "")
   subtitle: String(root.cardObject.description || "")
   count: String(Model.num(root.cardObject.count, 0))
-  unit: String(root.cardObject.unit || "files")
+  unit: String(root.cardObject.unit || Model.pluralUnit(Model.num(root.cardObject.count, 0), "file"))
 
   function chipFor(state) {
     var s = String(state || "")

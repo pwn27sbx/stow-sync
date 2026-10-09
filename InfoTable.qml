@@ -22,9 +22,10 @@ GroupCard {
 
   title: Model.repoDisplayName(root.repoObject.path)
   subtitle: Model.stateTitle(root.repoObject.state) + "  \u00b7  " + Model.repoSubtitle(root.repoObject)
-  count: String(Model.num(root.repoObject.stowed_packages, 0))
-  unit: "packages"
+  count: Model.pluralCount(Model.num(root.repoObject.stowed_packages, 0), "package")
+  unit: ""
   icon: ""
+  bodyPadding: Style.space(10)
 
   Repeater {
     model: root.infoRows
