@@ -331,7 +331,7 @@ Panel {
 
           RepoSection {
             id: overviewTab
-            width: flick.width
+            width: Math.max(0, flick.width - Style.space(12))
             tab: root.activeTab
             statusData: root.statusData
             version: root.version

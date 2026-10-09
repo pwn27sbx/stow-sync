@@ -101,11 +101,14 @@ Item {
 
         Text {
           Layout.alignment: Qt.AlignVCenter
+          Layout.maximumWidth: Style.space(140)
           textFormat: Text.PlainText
           text: root.count !== "" ? (root.count + (root.unit !== "" ? " " + root.unit : "")) : ""
           color: Util.alpha(root.foreground, 0.8)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+          horizontalAlignment: Text.AlignRight
         }
 
         Button {
