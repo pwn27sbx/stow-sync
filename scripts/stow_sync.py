@@ -193,10 +193,12 @@ def _baseline_error(prefix: str, exc: BaseException) -> str:
     return (prefix + ": " + detail)[:200]
 
 
-def _write_json_atomic(path: str, data: dict[str, Any], mode: int = 0o600) -> None:
+def _write_json_atomic(
+    path: str, data: dict[str, Any], mode: int = 0o600, prefix: str = ".baseline-"
+) -> None:
     """Write JSON to ``path`` atomically with a fixed permission mode."""
     directory = os.path.dirname(path) or "."
-    fd, tmp_path = tempfile.mkstemp(prefix=".baseline-", suffix=".tmp", dir=directory)
+    fd, tmp_path = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False)
@@ -299,6 +301,197 @@ def record_publish(state_dir: str, repo_path: str, when: str | None = None) -> s
     os.makedirs(state_dir, 0o700, exist_ok=True)
     _write_json_atomic(publish_path(state_dir), times, 0o600)
     return stamp
+
+
+# --------------------------------------------------------------------------
+# Desktop notifications (README section 4 / 8, Unit 5): ``notify_after_hours``
+# decides when a repo that has been pending continuously long enough gets one
+# ``notify-send`` per calendar day. The decision is pure; the wiring lives in
+# ``cmd_status`` only (never ``status --short``).
+# --------------------------------------------------------------------------
+
+NOTIFY_VERSION = 1
+NOTIFY_FILENAME = "notify.json"
+
+
+def notify_state_path(state_dir: str) -> str:
+    """Path of the notification state file inside ``state_dir``."""
+    return os.path.join(state_dir, NOTIFY_FILENAME)
+
+
+def load_notify_state(state_dir: str) -> dict[str, dict[str, Any]]:
+    """Read ``{repo path: {first_pending, last_notified}}``; ``{}`` when unreadable.
+
+    The on-disk shape is ``{"version": 1, "repos": {...}}``; a read failure
+    (missing file, bad JSON, wrong shape) yields an empty mapping so a fresh
+    decision can simply rebuild it.
+    """
+    try:
+        with open(notify_state_path(state_dir), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    repos = data.get("repos")
+    if not isinstance(repos, dict):
+        return {}
+    clean: dict[str, dict[str, Any]] = {}
+    for key, value in repos.items():
+        if isinstance(key, str) and isinstance(value, dict):
+            clean[key] = value
+    return clean
+
+
+def save_notify_state(state_dir: str, repos_state: dict[str, dict[str, Any]]) -> None:
+    """Persist the notification state atomically (dir 0700, file 0600)."""
+    os.makedirs(state_dir, 0o700, exist_ok=True)
+    _write_json_atomic(
+        notify_state_path(state_dir),
+        {"version": NOTIFY_VERSION, "repos": repos_state},
+        0o600,
+        prefix=".notify-",
+    )
+
+
+def repo_pending(repo: dict[str, Any]) -> bool:
+    """True when ``repo`` has work: changes, untracked, ahead/behind, bad health."""
+    if repo.get("changes") or repo.get("untracked"):
+        return True
+    if repo.get("ahead", 0) > 0 or repo.get("behind", 0) > 0:
+        return True
+    for package in repo.get("packages", []) or []:
+        if str(package.get("health", "ok")) != "ok":
+            return True
+    return False
+
+
+def repo_pending_count(repo: dict[str, Any]) -> int:
+    """Number of attention items in ``repo`` (for the notification body)."""
+    count = len(repo.get("changes", []) or []) + len(repo.get("untracked", []) or [])
+    if repo.get("ahead", 0) > 0:
+        count += 1
+    if repo.get("behind", 0) > 0:
+        count += 1
+    for package in repo.get("packages", []) or []:
+        if str(package.get("health", "ok")) != "ok":
+            count += len(package.get("pending_links", []) or [])
+            count += len(package.get("conflicts", []) or [])
+            count += len(package.get("dangling", []) or [])
+    return count
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp; ``None`` for anything malformed."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def notify_decision(
+    repos: list[dict[str, Any]],
+    prior_state: dict[str, dict[str, Any]],
+    now_iso: str,
+    after_hours: float,
+) -> dict[str, Any]:
+    """Decide which repos get a desktop notification now (pure).
+
+    A repo is **pending** when it has changes/untracked files, is ahead/behind,
+    or has a package whose ``health != "ok"`` (see :func:`repo_pending`). State
+    per repo tracks ``first_pending`` and ``last_notified``; a repo that is no
+    longer pending is dropped. ``after_hours <= 0`` disables sending entirely.
+    A send is decided when the repo has been pending continuously for at least
+    ``after_hours`` and was not already notified on the same calendar day.
+
+    Returns ``{"sends": [<repo path>...], "state": {<repo path>: {...}}}``.
+    """
+    now = _parse_iso(now_iso) or datetime.now().astimezone()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    tries = float(after_hours)
+    threshold = tries * 3600
+    prior = prior_state if isinstance(prior_state, dict) else {}
+    sends: list[str] = []
+    state: dict[str, dict[str, Any]] = {}
+    for repo in repos:
+        path = repo.get("path")
+        if not path:
+            continue
+        if not repo_pending(repo):
+            continue
+        entry = prior.get(path) if isinstance(prior.get(path), dict) else {}
+        first = _parse_iso(entry.get("first_pending"))
+        if first is not None and first.tzinfo is None:
+            first = first.replace(tzinfo=now.tzinfo)
+        if first is None:
+            first = now
+            first_iso = now_iso
+        else:
+            first_iso = entry["first_pending"]
+        last = entry.get("last_notified")
+        last_dt = _parse_iso(last)
+        if last_dt is not None and last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=now.tzinfo)
+        new_entry: dict[str, Any] = {
+            "first_pending": first_iso,
+            "last_notified": last if isinstance(last, str) else None,
+        }
+        if tries > 0 and (now - first).total_seconds() >= threshold:
+            if last_dt is None or last_dt.date() != now.date():
+                new_entry["last_notified"] = now_iso
+                sends.append(str(path))
+        state[str(path)] = new_entry
+    return {"sends": sends, "state": state}
+
+
+def spawn_notify(repo_path: str, count: int) -> None:
+    """Fire one detached ``notify-send``; swallow every failure.
+
+    A missing ``notify-send`` or any spawn error must never fail ``status``.
+    """
+    body = f"{repo_path}: {count} items need attention"
+    try:
+        subprocess.Popen(
+            ["notify-send", "Stow Sync", body],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, ValueError):
+        pass
+
+
+def update_notifications(
+    repos: list[dict[str, Any]],
+    state_dir: str,
+    config: dict[str, Any],
+) -> list[str]:
+    """Read/decide/write notify state and spawn the decided notifications.
+
+    Never raises: a state-file or ``notify-send`` failure leaves the caller's
+    ``status`` at ``ok: true``. Returns the repo paths a send was decided for.
+    """
+    try:
+        after = float(config.get("notify_after_hours", 0) or 0)
+    except (TypeError, ValueError):
+        after = 0.0
+    try:
+        prior = load_notify_state(state_dir)
+        now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+        decision = notify_decision(repos, prior, now_iso, after)
+        try:
+            save_notify_state(state_dir, decision["state"])
+        except OSError:
+            pass
+        by_path = {repo.get("path"): repo for repo in repos}
+        for path in decision["sends"]:
+            spawn_notify(path, repo_pending_count(by_path.get(path, {})))
+        return list(decision["sends"])
+    except Exception:  # noqa: BLE001 - notifications must never fail status
+        return []
 
 
 def _package_ignores_everything(package_path: str) -> bool:
@@ -1537,12 +1730,14 @@ def cmd_status(
     for candidate in candidates:
         candidate["known"] = candidate["path"] in known
     badge_count = compute_badge(candidates)
+    notifications_sent = update_notifications(repos, state, config)
     return {
         "ok": True,
         "repos": repos,
         "summary": compute_summary(repos, badge_count),
         "candidates": candidates,
         "baseline_error": baseline["error"],
+        "notifications_sent": notifications_sent,
     }
 
 

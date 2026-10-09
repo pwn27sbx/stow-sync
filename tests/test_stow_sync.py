@@ -2686,5 +2686,247 @@ class PublishStampTests(unittest.TestCase):
         self.assertNotEqual(data[str(work)], "2000-01-01T00:00:00+00:00")
 
 
+# --------------------------------------------------------------------------
+# Unit 5: notify_after_hours desktop notifications (README section 4/8)
+# --------------------------------------------------------------------------
+
+
+def notify_repo(
+    path: str = "~/.dotfiles",
+    changes: list | None = None,
+    untracked: list | None = None,
+    ahead: int = 0,
+    behind: int = 0,
+    packages: list | None = None,
+) -> dict:
+    return {
+        "path": path,
+        "changes": changes if changes is not None else [],
+        "untracked": untracked if untracked is not None else [],
+        "ahead": ahead,
+        "behind": behind,
+        "packages": packages if packages is not None else [],
+    }
+
+
+class NotifyDecisionPureTests(unittest.TestCase):
+    NOW = "2026-10-09T12:00:00+00:00"
+
+    def decide(self, repos, prior, after_hours=6):
+        return ss.notify_decision(repos, prior, self.NOW, after_hours)
+
+    def test_clean_repo_never_sends_and_clears_state(self) -> None:
+        result = self.decide(
+            [notify_repo()],
+            {"~/.dotfiles": {"first_pending": "2026-10-01T00:00:00+00:00", "last_notified": None}},
+        )
+        self.assertEqual(result["sends"], [])
+        self.assertEqual(result["state"], {})
+
+    def test_first_pending_sets_timestamp_without_sending(self) -> None:
+        result = self.decide([notify_repo(changes=[{"path": "a"}])], {})
+        self.assertEqual(result["sends"], [])
+        entry = result["state"]["~/.dotfiles"]
+        self.assertEqual(entry["first_pending"], self.NOW)
+        self.assertIsNone(entry["last_notified"])
+
+    def test_pending_for_threshold_sends_and_stamps(self) -> None:
+        prior = {
+            "~/.dotfiles": {
+                "first_pending": "2026-10-09T02:00:00+00:00",
+                "last_notified": None,
+            }
+        }
+        result = self.decide([notify_repo(untracked=[{"path": "b"}])], prior)
+        self.assertEqual(result["sends"], ["~/.dotfiles"])
+        entry = result["state"]["~/.dotfiles"]
+        self.assertEqual(entry["last_notified"], self.NOW)
+        self.assertEqual(entry["first_pending"], "2026-10-09T02:00:00+00:00")
+
+    def test_below_threshold_does_not_send(self) -> None:
+        prior = {
+            "~/.dotfiles": {
+                "first_pending": "2026-10-09T11:00:00+00:00",
+                "last_notified": None,
+            }
+        }
+        result = self.decide([notify_repo(untracked=[{"path": "b"}])], prior)
+        self.assertEqual(result["sends"], [])
+        self.assertIsNone(result["state"]["~/.dotfiles"]["last_notified"])
+
+    def test_already_notified_today_does_not_send(self) -> None:
+        prior = {
+            "~/.dotfiles": {
+                "first_pending": "2026-10-09T02:00:00+00:00",
+                "last_notified": "2026-10-09T09:00:00+00:00",
+            }
+        }
+        result = self.decide([notify_repo(ahead=2)], prior)
+        self.assertEqual(result["sends"], [])
+        self.assertEqual(result["state"]["~/.dotfiles"]["last_notified"], "2026-10-09T09:00:00+00:00")
+
+    def test_notified_previous_day_sends_again(self) -> None:
+        prior = {
+            "~/.dotfiles": {
+                "first_pending": "2026-10-08T00:00:00+00:00",
+                "last_notified": "2026-10-08T09:00:00+00:00",
+            }
+        }
+        result = self.decide([notify_repo(behind=1)], prior)
+        self.assertEqual(result["sends"], ["~/.dotfiles"])
+
+    def test_after_hours_zero_is_off(self) -> None:
+        prior = {
+            "~/.dotfiles": {
+                "first_pending": "2026-10-01T00:00:00+00:00",
+                "last_notified": None,
+            }
+        }
+        result = self.decide([notify_repo(changes=[{"path": "a"}])], prior, after_hours=0)
+        self.assertEqual(result["sends"], [])
+
+    def test_ahead_behind_and_unhealthy_package_are_pending(self) -> None:
+        self.assertTrue(ss.repo_pending(notify_repo(ahead=1)))
+        self.assertTrue(ss.repo_pending(notify_repo(behind=1)))
+        self.assertTrue(
+            ss.repo_pending(
+                notify_repo(packages=[{"name": "p", "health": "pending"}])
+            )
+        )
+        self.assertFalse(ss.repo_pending(notify_repo()))
+
+    def test_counts_attention_items(self) -> None:
+        repo = notify_repo(
+            changes=[{"path": "a"}, {"path": "b"}],
+            untracked=[{"path": "c"}],
+            ahead=2,
+            behind=1,
+            packages=[
+                {"name": "p", "health": "conflicts", "pending_links": [], "conflicts": [{"x": 1}], "dangling": []},
+            ],
+        )
+        self.assertEqual(ss.repo_pending_count(repo), 6)
+
+    def test_sends_once_per_repo_in_order(self) -> None:
+        prior = {
+            "~/.dotfiles": {"first_pending": "2026-10-01T00:00:00+00:00", "last_notified": None},
+            "~/wallpapers": {"first_pending": "2026-10-01T00:00:00+00:00", "last_notified": None},
+        }
+        repos = [notify_repo("~/.dotfiles", ahead=1), notify_repo("~/wallpapers", behind=1)]
+        result = self.decide(repos, prior)
+        self.assertEqual(result["sends"], ["~/.dotfiles", "~/wallpapers"])
+
+    def test_malformed_first_pending_restarts_clock(self) -> None:
+        prior = {"~/.dotfiles": {"first_pending": "not-a-date", "last_notified": None}}
+        result = self.decide([notify_repo(ahead=1)], prior)
+        self.assertEqual(result["sends"], [])
+        self.assertEqual(result["state"]["~/.dotfiles"]["first_pending"], self.NOW)
+
+    def test_naive_timestamps_do_not_crash(self) -> None:
+        prior = {"~/.dotfiles": {"first_pending": "2026-10-09T02:00:00", "last_notified": None}}
+        result = ss.notify_decision(
+            [notify_repo(ahead=1)], prior, "2026-10-09T12:00:00", 6
+        )
+        self.assertEqual(result["sends"], ["~/.dotfiles"])
+
+
+class NotifyWiringTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        os.environ.pop("STOW_SYNC_STATE_DIR", None)
+        self.addCleanup(lambda: os.environ.pop("STOW_SYNC_STATE_DIR", None))
+        self.config = self.env.root / "config.json"
+        self.state_dir = self.env.root / "state"
+        self.notify_file = self.state_dir / "notify.json"
+        self.repo = self.env.root / "repo"
+        init_repo(self.repo)
+        write(self.repo / "a.txt", "a\n")
+        commit_all(self.repo, "c1")
+        write(self.repo / "new.txt", "n\n")  # untracked -> pending
+        self.cfg = {
+            "version": 1,
+            "repos": [{"path": str(self.repo), "target": "~", "packages": "auto"}],
+            "watch": [],
+            "ignore": [],
+            "fetch_minutes": 15,
+            "refresh_minutes": 5,
+            "notify_after_hours": 1,
+        }
+
+    def write_config(self, after_hours: int = 1) -> None:
+        self.cfg["notify_after_hours"] = after_hours
+        self.config.write_text(json.dumps(self.cfg), encoding="utf-8")
+
+    def seed_pending_since(self, when: str = "2000-01-01T00:00:00+00:00") -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.notify_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "repos": {
+                        str(self.repo): {"first_pending": when, "last_notified": None}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def status(self) -> dict:
+        return ss.dispatch(["status"], str(self.config), str(self.state_dir))
+
+    def test_status_writes_notify_state_and_spawns_detached(self) -> None:
+        self.write_config(1)
+        self.seed_pending_since()
+        calls: list[tuple] = []
+        with patch.object(ss, "spawn_notify", side_effect=lambda *a: calls.append(a)):
+            result = self.status()
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], str(self.repo))
+        self.assertGreaterEqual(calls[0][1], 1)
+        data = json.loads(self.notify_file.read_text(encoding="utf-8"))
+        self.assertEqual(data["version"], 1)
+        entry = data["repos"][str(self.repo)]
+        self.assertRegex(entry["last_notified"], ISO_RE)
+        self.assertEqual(self.notify_file.stat().st_mode & 0o777, 0o600)
+
+    def test_status_off_never_spawns(self) -> None:
+        self.write_config(0)
+        self.seed_pending_since()
+        calls: list[tuple] = []
+        with patch.object(ss, "spawn_notify", side_effect=lambda *a: calls.append(a)):
+            result = self.status()
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [])
+        self.assertEqual(result.get("notifications_sent"), [])
+
+    def test_missing_notify_send_is_swallowed(self) -> None:
+        self.write_config(1)
+        self.seed_pending_since()
+        real_popen = subprocess.Popen
+
+        def fake_popen(argv, *args, **kwargs):
+            if isinstance(argv, (list, tuple)) and argv and argv[0] == "notify-send":
+                raise FileNotFoundError("notify-send")
+            return real_popen(argv, *args, **kwargs)
+
+        with patch.object(ss.subprocess, "Popen", side_effect=fake_popen):
+            result = self.status()
+        self.assertTrue(result["ok"])
+        self.assertEqual([str(self.repo)], result.get("notifications_sent"))
+
+    def test_status_short_does_not_touch_notify_state(self) -> None:
+        self.write_config(1)
+        self.seed_pending_since()
+        before = self.notify_file.read_text(encoding="utf-8")
+        with patch("sys.stdout", new_callable=io.StringIO):
+            ss.main(["status", "--short", "--config", str(self.config), "--state-dir", str(self.state_dir)])
+        self.assertEqual(self.notify_file.read_text(encoding="utf-8"), before)
+
+
 if __name__ == "__main__":
     unittest.main()
