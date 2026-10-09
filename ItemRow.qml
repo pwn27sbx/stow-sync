@@ -29,7 +29,7 @@ Item {
 
   function chipColor() {
     if (root.chipTone === "urgent") return Color.urgent
-    if (root.chipTone === "muted") return Color.muted
+    if (root.chipTone === "muted") return Util.alpha(root.foreground, 0.8)
     return Color.accent
   }
 
@@ -45,7 +45,7 @@ Item {
       visible: root.header !== ""
       textFormat: Text.PlainText
       text: root.header
-      color: Color.muted
+      color: Util.alpha(root.foreground, 0.8)
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
       font.bold: true
@@ -134,7 +134,7 @@ Item {
             visible: root.secondary !== ""
             textFormat: Text.PlainText
             text: root.secondary
-            color: Color.muted
+            color: Util.alpha(root.foreground, 0.8)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight

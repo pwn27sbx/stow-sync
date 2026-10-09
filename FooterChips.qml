@@ -9,7 +9,7 @@ Item {
   id: root
 
   property var chips: ["1-3 tabs", "r refresh", "p publish", "u update", "Esc close"]
-  property color foreground: Color.muted
+  property color foreground: Color.foreground
 
   implicitHeight: row.implicitHeight
 
@@ -28,7 +28,7 @@ Item {
         implicitHeight: chipText.implicitHeight + Style.spacing.xxs * 2
         implicitWidth: chipText.implicitWidth + Style.spacing.sm * 2
         color: Util.alpha(Color.foreground, 0.04)
-        borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+        borderSpec: Border.controlSpec("normal", Util.alpha(root.foreground, 0.45), Color.accent)
         radius: Style.cornerRadius
 
         Text {
@@ -36,7 +36,7 @@ Item {
           anchors.centerIn: parent
           textFormat: Text.PlainText
           text: modelData
-          color: root.foreground
+          color: Util.alpha(root.foreground, 0.8)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }

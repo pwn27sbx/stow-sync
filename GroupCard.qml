@@ -56,7 +56,7 @@ Item {
           Layout.alignment: Qt.AlignVCenter
           textFormat: Text.PlainText
           text: root.expanded ? "\u25be" : "\u25b8"
-          color: Color.muted
+          color: Util.alpha(root.foreground, 0.8)
           font.family: Style.font.family
           font.pixelSize: Style.font.body
         }
@@ -91,7 +91,7 @@ Item {
             visible: root.subtitle !== ""
             textFormat: Text.PlainText
             text: root.subtitle
-            color: Color.muted
+            color: Util.alpha(root.foreground, 0.8)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
@@ -102,7 +102,7 @@ Item {
           Layout.alignment: Qt.AlignVCenter
           textFormat: Text.PlainText
           text: root.count !== "" ? (root.count + (root.unit !== "" ? " " + root.unit : "")) : ""
-          color: Color.muted
+          color: Util.alpha(root.foreground, 0.8)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }

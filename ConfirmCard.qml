@@ -117,7 +117,7 @@ Item {
 
           Text {
             width: parent.width; visible: root.message !== ""; textFormat: Text.PlainText
-            text: root.message; color: Color.muted; font.family: Style.font.family
+            text: root.message; color: Util.alpha(root.foreground, 0.8); font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
           }
 
@@ -136,7 +136,7 @@ Item {
             Text {
               required property var modelData
               width: chrome.width; textFormat: Text.PlainText; text: modelData.text
-              color: modelData.urgent ? Color.urgent : Color.muted; font.family: Style.font.family
+              color: modelData.urgent ? Color.urgent : Util.alpha(root.foreground, 0.8); font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
             }
           }
@@ -183,7 +183,7 @@ Item {
         Text {
           anchors.left: parent.left; anchors.bottom: buttonRow.top; anchors.bottomMargin: Style.spacing.sm
           visible: root.bodyMode && root.diffTruncated; text: "Diff truncated"
-          color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.caption
+          color: Util.alpha(root.foreground, 0.8); font.family: Style.font.family; font.pixelSize: Style.font.caption
         }
 
         Row {
@@ -237,7 +237,7 @@ Item {
 
       Text {
         width: parent.width; visible: root.adoptSuggestions.length > 0; textFormat: Text.PlainText
-        text: "Existing packages"; color: Color.muted; font.family: Style.font.family
+        text: "Existing packages"; color: Util.alpha(root.foreground, 0.8); font.family: Style.font.family
         font.pixelSize: Style.font.caption
       }
 

@@ -18,7 +18,7 @@ BorderSurface {
   function toneColor() {
     if (root.tone === "urgent") return Color.urgent
     if (root.tone === "accent") return Color.accent
-    return Color.muted
+    return Util.alpha(root.foreground, 0.5)
   }
 
   implicitHeight: column.implicitHeight + Style.spacing.sm * 2
@@ -39,7 +39,7 @@ BorderSurface {
       text: root.icon
       color: root.toneColor()
       font.family: Style.font.family
-      font.pixelSize: Style.font.bodySmall
+      font.pixelSize: Style.font.title
     }
 
     Text {
@@ -56,7 +56,7 @@ BorderSurface {
       anchors.horizontalCenter: parent.horizontalCenter
       textFormat: Text.PlainText
       text: root.label
-      color: Color.muted
+      color: Util.alpha(root.foreground, 0.8)
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
     }

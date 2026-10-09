@@ -797,6 +797,14 @@ test("relativeTime formats ISO deltas and tolerates junk", () => {
   assert.equal(Model.relativeTime("bogus", "2026-10-09T15:00:00Z"), "")
 })
 
+test("relativeTime accepts the panel's epoch-milliseconds now string", () => {
+  // Panel passes `now` as String(Date.now()) (epoch milliseconds as a string).
+  const now = String(Date.parse("2026-10-09T17:00:00Z"))
+  assert.equal(Model.relativeTime("2026-10-09T15:00:00Z", now), "2h ago")
+  assert.equal(Model.relativeTime("2026-10-06T17:00:00Z", now), "3d ago")
+  assert.equal(Model.relativeTime("2026-10-09T19:00:00Z", now), "just now")
+})
+
 test("explain describes each state in plain words", () => {
   assert.ok(Model.explain(HERO.clean).indexOf("Everything is saved and synced") !== -1)
   const changes = Model.explain(HERO.changes)
@@ -1047,4 +1055,14 @@ test("repoInfoRows renders the info table with relative times", () => {
   assert.equal(rows[5].value, "1d ago")
   assert.equal(rows[6].value, "16 stowed")
   assert.equal(rows[7].value, "stow-sync 0.1.0")
+})
+
+test("repoInfoRows shows never for an unknown last publish", () => {
+  const repo = {
+    path: "~/x", branch: "main", head: "abc", ahead: 0, behind: 0,
+    head_time: "2026-10-09T15:00:00Z", last_publish: null, stowed_packages: 1
+  }
+  const rows = Model.repoInfoRows(repo, "0.1.0", "2026-10-09T18:00:00Z")
+  assert.equal(rows[5].label, "Last publish")
+  assert.equal(rows[5].value, "never")
 })

@@ -74,7 +74,7 @@ Item {
           Layout.fillWidth: true
           textFormat: Text.PlainText
           text: String(root.candidate.group || "watched") + "  \u00b7  package: " + root.packageName
-          color: Color.muted
+          color: Util.alpha(root.foreground, 0.8)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight

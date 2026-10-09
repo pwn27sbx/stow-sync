@@ -275,7 +275,7 @@ Panel {
     centerOnBar: true
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(560))
-    contentHeight: panel.fittedContentHeight(Style.space(580))
+    contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight, Style.space(580))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -292,7 +292,7 @@ Panel {
       onTabRequested: function(direction) { if (root.overlayMode === "") root.switchTab(direction >= 0 ? 1 : -1) }
       onTextKey: function(text) { if (root.overlayMode === "") root.handleTextKey(text) }
 
-      ColumnLayout {
+      ColumnLayout { id: contentColumn
         anchors.fill: parent
         spacing: Style.spacing.sm
 
@@ -321,7 +321,7 @@ Panel {
         Flickable {
           id: flick
           Layout.fillWidth: true
-          Layout.fillHeight: true
+          Layout.fillHeight: true; Layout.preferredHeight: overviewTab.implicitHeight
           clip: true
           contentWidth: width
           contentHeight: overviewTab.height

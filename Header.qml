@@ -78,7 +78,7 @@ Item {
             Layout.alignment: Qt.AlignBaseline
             textFormat: Text.PlainText
             text: root.version !== "" ? "v" + root.version : ""
-            color: Color.muted
+            color: Util.alpha(root.foreground, 0.8)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }

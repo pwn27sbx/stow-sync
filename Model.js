@@ -1155,7 +1155,8 @@ function parseIsoMillis(iso) {
   return ((days * 86400) + hour * 3600 + minute * 60 + second - offsetSeconds) * 1000 + ms
 }
 
-// "3h ago", "just now", "1d ago", ... `now` accepts epoch ms or an ISO string;
+// "3h ago", "just now", "1d ago", ... `now` accepts epoch milliseconds (as a
+// number or a numeric string, the form the panel passes) or an ISO string;
 // when omitted the value reads as "just now".
 function relativeTime(iso, now) {
   var then = parseIsoMillis(iso)
@@ -1163,6 +1164,7 @@ function relativeTime(iso, now) {
   var current
   if (now === undefined || now === null || now === "") current = then
   else if (typeof now === "number") current = now
+  else if (/^\d+$/.test(String(now))) current = Number(now)
   else current = parseIsoMillis(now)
   if (current !== current) current = then
   var diff = current - then
@@ -1578,13 +1580,14 @@ function repoInfoRows(repo, version, now) {
   var branchValue = branch
   if (head) branchValue = branch ? branch + " @ " + head : "@ " + head
   var remote = String(r.remote_url || "")
+  var published = relativeTime(r.last_publish, now)
   return [
     { label: "Repo", value: String(r.path || "") },
     { label: "Remote", value: remote, copy: remote !== "" },
     { label: "Branch", value: branchValue },
     { label: "Ahead / behind", value: num(r.ahead, 0) + " / " + num(r.behind, 0) },
     { label: "Last commit", value: relativeTime(r.head_time, now) },
-    { label: "Last publish", value: relativeTime(r.last_publish, now) },
+    { label: "Last publish", value: published === "" ? "never" : published },
     { label: "Packages", value: num(r.stowed_packages, 0) + " stowed" },
     { label: "Plugin", value: "stow-sync " + String(version || "") }
   ]

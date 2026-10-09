@@ -73,7 +73,7 @@ Column {
       width: parent.width
       textFormat: Text.PlainText
       text: Model.explain(root.statusData)
-      color: Color.muted
+      color: Util.alpha(root.foreground, 0.8)
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall
       wrapMode: Text.WordWrap
@@ -128,7 +128,7 @@ Column {
       visible: root.groups.length > 0
       textFormat: Text.PlainText
       text: "Groups below are collapsed. Press one to expand it."
-      color: Color.muted
+      color: Util.alpha(root.foreground, 0.8)
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
       wrapMode: Text.WordWrap
@@ -188,7 +188,7 @@ Column {
       width: parent.width
       textFormat: Text.PlainText
       text: Model.explain(root.statusData)
-      color: Color.muted
+      color: Util.alpha(root.foreground, 0.8)
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall
       wrapMode: Text.WordWrap
@@ -221,7 +221,7 @@ Column {
             Layout.fillWidth: true
             textFormat: Text.PlainText
             text: "Files that already existed when Stow Sync was installed. They are not counted in the badge."
-            color: Color.muted
+            color: Util.alpha(root.foreground, 0.8)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
@@ -251,7 +251,7 @@ Column {
               width: parent.width
               textFormat: Text.PlainText
               text: modelData.label + "  \u00b7  " + modelData.count + " files"
-              color: Color.muted
+              color: Util.alpha(root.foreground, 0.8)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
               font.bold: true

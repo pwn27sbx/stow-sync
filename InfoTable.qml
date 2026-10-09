@@ -39,7 +39,7 @@ GroupCard {
         Layout.alignment: Qt.AlignVCenter
         textFormat: Text.PlainText
         text: modelData.label
-        color: Color.muted
+        color: Util.alpha(root.foreground, 0.8)
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
       }
