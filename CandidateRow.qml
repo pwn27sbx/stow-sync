@@ -3,9 +3,9 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// One candidate row, optionally prefixed by its group header ("New configs",
-// "Existing untracked"). The package picker is a Button that asks the panel to
-// open the shared picker; Adopt and Ignore emit their own signals.
+// One new/existing config candidate. The package is chosen inside the Adopt
+// confirm card (an editable field prefilled with the suggested package), so
+// this row only shows the path, size, suggestion and the two actions.
 Item {
   id: root
 
@@ -15,11 +15,11 @@ Item {
   property string header: ""
   property bool showBulk: false
   property string packageName: ""
+  property color foreground: Color.foreground
 
   signal hovered(int index)
   signal adoptRequested()
   signal ignoreRequested()
-  signal pickRequested()
   signal bulkIgnoreRequested()
 
   implicitHeight: column.implicitHeight
@@ -27,7 +27,7 @@ Item {
   Column {
     id: column
     width: parent.width
-    spacing: Style.spacing.xs
+    spacing: Style.spacing.xxs
 
     RowLayout {
       width: parent.width
@@ -63,6 +63,7 @@ Item {
       MouseArea {
         anchors.fill: parent
         hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
         onEntered: root.hovered(root.rowIndex)
         onClicked: root.adoptRequested()
       }
@@ -92,7 +93,7 @@ Item {
             Layout.fillWidth: true
             textFormat: Text.PlainText
             text: root.row === null ? "" : String(root.row.path)
-            color: Color.foreground
+            color: root.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.body
             elide: Text.ElideRight
@@ -101,18 +102,12 @@ Item {
           Text {
             Layout.fillWidth: true
             textFormat: Text.PlainText
-            text: root.row === null ? "" : (String(root.row.itemType) + "  ·  " + String(root.row.sizeText))
+            text: root.row === null ? "" : (String(root.row.itemType) + "  ·  " + String(root.row.sizeText) + "  ·  package: " + root.packageName)
             color: Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
           }
-        }
-
-        Button {
-          Layout.alignment: Qt.AlignVCenter
-          text: root.packageName !== "" ? root.packageName : "package…"
-          tooltipText: "Suggested package — click to change"
-          onClicked: root.pickRequested()
         }
 
         Button {

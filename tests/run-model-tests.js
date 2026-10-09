@@ -467,3 +467,318 @@ test("activateIntent maps a row to its primary action", () => {
   assert.equal(Model.activateIntent({ type: "candidate" }).kind, "adopt")
   assert.equal(Model.activateIntent(null).kind, "none")
 })
+
+// --- request queue (Runner's FIFO, moved out of QML) ----------------------
+
+function statusRequest(fetch) {
+  return {
+    isStatus: true,
+    fetch: !!fetch,
+    tag: fetch ? "status-fetch" : "status",
+    args: fetch ? ["status", "--fetch"] : ["status"],
+    stdin: ""
+  }
+}
+
+function actionRequest(tag) {
+  return { isStatus: false, fetch: false, tag: tag, args: [tag], stdin: "" }
+}
+
+test("nextRequest shifts the front and reports an empty queue", () => {
+  const action = actionRequest("push")
+  const first = Model.nextRequest([action, statusRequest(false)])
+  assert.equal(first.request, action)
+  same(first.queue.map((r) => r.tag), ["status"])
+  const last = Model.nextRequest(first.queue)
+  assert.equal(last.request.isStatus, true)
+  same(last.queue, [])
+  const empty = Model.nextRequest([])
+  assert.equal(empty.request, null)
+  same(empty.queue, [])
+})
+
+test("enqueue dedupes identical pending status requests but never to zero", () => {
+  let queue = Model.enqueue([], statusRequest(false))
+  assert.equal(queue.length, 1)
+  queue = Model.enqueue(queue, statusRequest(false))
+  assert.equal(queue.length, 1) // collapsed, never zero and never two
+  // A different fetch flag is a different request and stays queued.
+  queue = Model.enqueue(queue, statusRequest(true))
+  assert.equal(queue.length, 2)
+  // Non-status requests are never deduped.
+  let actions = Model.enqueue([], actionRequest("push"))
+  actions = Model.enqueue(actions, actionRequest("push"))
+  assert.equal(actions.length, 2)
+})
+
+test("a status refresh during an action is kept and runs right after it", () => {
+  // The action is running, so it has already been shifted out of the queue.
+  const taken = Model.nextRequest(Model.enqueue([], actionRequest("commit")))
+  assert.equal(taken.request.tag, "commit")
+  let queue = taken.queue
+  // The panel asks for a refresh while the action is still in flight.
+  queue = Model.enqueue(queue, statusRequest(false))
+  assert.equal(queue.length, 1)
+  // When the action finishes the refresh is the very next request.
+  const after = Model.nextRequest(queue)
+  assert.equal(after.request.isStatus, true)
+  assert.equal(after.request.fetch, false)
+  same(after.queue, [])
+})
+
+test("queue helpers tolerate missing input", () => {
+  same(Model.enqueue(null, null), [])
+  same(Model.enqueue(undefined, null), [])
+  assert.equal(Model.enqueue(undefined, statusRequest(false)).length, 1)
+  const empty = Model.nextRequest(null)
+  assert.equal(empty.request, null)
+  same(empty.queue, [])
+})
+
+// --- heroState / primaryAction (Unit 4c) ---------------------------------
+
+const HERO = fixture("hero-cases.json")
+const GLYPH_CHECK = "\uf00c"
+const GLYPH_WARN = "\uf071"
+
+test("heroState: everything clean shows the check glyph and last checked time", () => {
+  const hero = Model.heroState(HERO.clean)
+  assert.equal(hero.glyph, GLYPH_CHECK)
+  assert.equal(hero.title, "Everything is saved and synced")
+  assert.equal(hero.hint, "Last checked 15:00")
+  assert.equal(hero.tone, "muted")
+})
+
+test("heroState: clean without a fetch time falls back to now", () => {
+  const hero = Model.heroState(HERO.cleanNoFetch, "09:41")
+  assert.equal(hero.glyph, GLYPH_CHECK)
+  assert.equal(hero.hint, "Last checked 09:41")
+})
+
+test("heroState: local changes count every file and name the repos", () => {
+  const hero = Model.heroState(HERO.changes)
+  assert.equal(hero.title, "3 changes to publish")
+  assert.equal(hero.hint, "in dotfiles, wallpapers")
+  assert.equal(hero.tone, "accent")
+})
+
+test("heroState: a single change uses singular wording", () => {
+  assert.equal(Model.heroState(HERO.singleChange).title, "1 change to publish")
+})
+
+test("heroState: ahead only counts commits waiting to be uploaded", () => {
+  const hero = Model.heroState(HERO.ahead)
+  assert.equal(hero.title, "2 commits waiting to be uploaded")
+  assert.equal(hero.hint, "in dotfiles")
+  assert.equal(hero.tone, "accent")
+})
+
+test("heroState: behind offers updates from GitHub", () => {
+  const hero = Model.heroState(HERO.behind)
+  assert.equal(hero.title, "Updates available from GitHub")
+  assert.equal(hero.hint, "in wallpapers")
+  assert.equal(hero.tone, "accent")
+})
+
+test("heroState: diverged is attention and names the repo and problem", () => {
+  const hero = Model.heroState(HERO.diverged)
+  assert.equal(hero.glyph, GLYPH_WARN)
+  assert.equal(hero.title, "Needs your attention")
+  assert.equal(hero.tone, "urgent")
+  assert.ok(hero.hint.indexOf("dotfiles") !== -1, hero.hint)
+})
+
+test("heroState: an in-progress operation is attention", () => {
+  const hero = Model.heroState(HERO.operation)
+  assert.equal(hero.title, "Needs your attention")
+  assert.equal(hero.tone, "urgent")
+  assert.ok(hero.hint.toLowerCase().indexOf("merge") !== -1, hero.hint)
+})
+
+test("heroState: a stow conflict is attention", () => {
+  const hero = Model.heroState(HERO.conflict)
+  assert.equal(hero.glyph, GLYPH_WARN)
+  assert.equal(hero.title, "Needs your attention")
+  assert.equal(hero.tone, "urgent")
+})
+
+test("heroState: new configs only counts files not in Stow", () => {
+  const hero = Model.heroState(HERO.newConfigs)
+  assert.equal(hero.title, "2 new config files not in Stow")
+  assert.equal(hero.tone, "accent")
+})
+
+test("heroState: attention outranks local changes", () => {
+  assert.equal(Model.heroState(HERO.diverged).title, "Needs your attention")
+})
+
+test("primaryAction precedence and labels", () => {
+  assert.equal(Model.primaryAction(HERO.conflict).kind, "review")
+  assert.equal(Model.primaryAction(HERO.conflict).label, "Review")
+  assert.equal(Model.primaryAction(HERO.changes).kind, "publish")
+  assert.equal(Model.primaryAction(HERO.changes).label, "Publish")
+  assert.equal(Model.primaryAction(HERO.ahead).kind, "upload")
+  assert.equal(Model.primaryAction(HERO.ahead).label, "Upload")
+  assert.equal(Model.primaryAction(HERO.behind).kind, "update")
+  assert.equal(Model.primaryAction(HERO.behind).label, "Update")
+  assert.equal(Model.primaryAction(HERO.newConfigs).kind, "review-new")
+  assert.equal(Model.primaryAction(HERO.newConfigs).label, "Review new configs")
+  const none = Model.primaryAction(HERO.clean)
+  assert.equal(none.kind, "none")
+  assert.equal(none.label, "")
+})
+
+// --- tab builders (Unit 4c) ----------------------------------------------
+
+test("repoDisplayName strips the dot-prefixed basename", () => {
+  assert.equal(Model.repoDisplayName("~/.dotfiles"), "dotfiles")
+  assert.equal(Model.repoDisplayName("~/wallpapers"), "wallpapers")
+  assert.equal(Model.repoDisplayName("~/wallpapers/"), "wallpapers")
+  assert.equal(Model.repoDisplayName(""), "")
+})
+
+test("repoPlainStatus describes a repo in plain words", () => {
+  assert.equal(Model.repoPlainStatus({ exists: true, changes: [{ path: "a" }], untracked: [], packages: [] }), "1 change to publish")
+  assert.equal(Model.repoPlainStatus({ exists: true, changes: [], untracked: [], ahead: 2, packages: [] }), "2 commits to upload")
+  assert.equal(Model.repoPlainStatus({ exists: true, behind: 1, changes: [], untracked: [], packages: [] }), "1 update available")
+  assert.equal(Model.repoPlainStatus({ exists: false }), "Repository is missing")
+  assert.equal(Model.repoPlainStatus({ exists: true, changes: [], untracked: [], packages: [{ name: "p", health: "conflicts" }] }), "1 package needs fixing")
+  assert.equal(Model.repoPlainStatus({ exists: true, changes: [], untracked: [], ahead: 0, behind: 0, packages: [] }), "Everything is saved and synced")
+})
+
+test("overviewTabRows lists each repo then its unhealthy packages", () => {
+  const rows = Model.overviewTabRows(fixture("status-mixed.json"))
+  same(rows.map((r) => r.type), ["repo", "health", "health", "repo", "repo"])
+  assert.equal(rows[0].statusText, "4 changes to publish")
+  same(rows.slice(1, 3).map((r) => r.package), ["fish", "hypr"])
+  assert.equal(rows[1].attention, true)
+  assert.equal(rows[3].statusText, "Changes on both sides — needs a manual merge")
+  assert.equal(rows[4].statusText, "Repository is missing")
+})
+
+test("changeTabRows groups by repo then package and stamps headers", () => {
+  const rows = Model.changeTabRows(fixture("status-mixed.json"))
+  same(rows.map((r) => r.type), ["change", "change", "change", "change"])
+  same(rows.map((r) => r.path), [
+    "fish/.config/fish/conf.d/abbr.fish",
+    "fish/.config/fish/config.fish",
+    "hypr/.config/hypr/hyprland.conf",
+    "omarchy/.config/omarchy/backgrounds/nord/new.png"
+  ])
+  same(rows.map((r) => r.header), [
+    "dotfiles  ›  fish", "", "dotfiles  ›  hypr", "dotfiles  ›  omarchy"
+  ])
+})
+
+test("candidateTabRows splits new from a collapsible existing group", () => {
+  const collapsed = Model.candidateTabRows(fixture("status-candidates.json"), { showExisting: false })
+  same(collapsed.rows.map((r) => r.type), ["candidate", "candidate", "group"])
+  same(collapsed.rows.slice(0, 2).map((r) => r.path), ["~/.config/systemd/user/a.timer", "~/.config/zzz"])
+  assert.equal(collapsed.newCount, 2)
+  assert.equal(collapsed.existingCount, 2)
+  same(collapsed.existingPaths, ["~/.local/bin/foo", "~/.config/aaa"])
+  assert.equal(collapsed.rows[0].header, "New configs (2)")
+  assert.equal(collapsed.rows[2].label, "Existing untracked (2)")
+  assert.equal(collapsed.rows[2].expanded, false)
+  assert.equal(collapsed.rows[2].showAction, false)
+
+  const expanded = Model.candidateTabRows(fixture("status-candidates.json"), { showExisting: true })
+  same(expanded.rows.map((r) => r.type), ["candidate", "candidate", "group", "candidate", "candidate"])
+  assert.equal(expanded.rows[2].expanded, true)
+  assert.equal(expanded.rows[2].showAction, true)
+  same(expanded.rows.slice(3).map((r) => r.path), ["~/.local/bin/foo", "~/.config/aaa"])
+})
+
+test("publishPlan commits then pushes every repo with selected changes", () => {
+  const plan = Model.publishPlan(fixture("status-mixed.json"), {}, "chore: update", false)
+  same(plan.map((s) => s.tag), ["publish-commit", "publish-push"])
+  assert.equal(plan[0].args.join(" "), "commit --repo ~/.dotfiles")
+  assert.equal(plan[1].args.join(" "), "push --repo ~/.dotfiles")
+  same(JSON.parse(plan[0].stdin), { message: "chore: update", paths: [
+    "fish/.config/fish/conf.d/abbr.fish",
+    "fish/.config/fish/config.fish",
+    "hypr/.config/hypr/hyprland.conf",
+    "omarchy/.config/omarchy/backgrounds/nord/new.png"
+  ] })
+
+  const twoRepos = {
+    repos: [
+      { path: "~/.dotfiles", upstream: "origin/main", changes: [{ path: "a", package: "p" }], untracked: [] },
+      { path: "~/wallpapers", upstream: "origin/main", changes: [], untracked: [{ path: "w", package: "walls" }] }
+    ],
+    candidates: []
+  }
+  const both = Model.publishPlan(twoRepos, {}, "m", true)
+  same(both.map((s) => s.tag), ["publish-commit", "publish-push", "publish-commit", "publish-push"])
+  same(JSON.parse(both[0].stdin).allow_secrets, true)
+  same(both[0].args, ["commit", "--repo", "~/.dotfiles"])
+  same(both[2].args, ["commit", "--repo", "~/wallpapers"])
+})
+
+test("publishPlan honours the checked map", () => {
+  const rows = Model.changeTabRows(fixture("status-mixed.json"))
+  const checked = {}
+  for (const row of rows) checked[row.key] = true
+  checked["change:~/.dotfiles:fish/.config/fish/config.fish"] = false
+  const plan = Model.publishPlan(fixture("status-mixed.json"), checked, "m", false)
+  const paths = JSON.parse(plan[0].stdin).paths
+  assert.equal(paths.indexOf("fish/.config/fish/config.fish"), -1)
+  assert.equal(paths.length, 3)
+})
+
+test("publishPlan is empty when nothing is selected", () => {
+  same(Model.publishPlan(fixture("status-clean.json"), {}, "m", false), [])
+})
+
+test("publishCard flattens file lines and names each target", () => {
+  const card = Model.publishCard(HERO.changes, {}, "")
+  same(card.lines, ["fish/a", "fish/b", "walls/x.png"])
+  same(card.targets, ["dotfiles → origin/main", "wallpapers → origin/main"])
+  const filtered = Model.publishCard(HERO.changes, {}, "~/.dotfiles")
+  same(filtered.lines, ["fish/a", "fish/b"])
+  assert.equal(Model.commitStepCount(Model.publishPlan(HERO.changes, {}, "m", false)), 2)
+})
+
+// --- B2: adopt prefill (never the first package) --------------------------
+
+test("packageFor never falls back to the first package", () => {
+  // The suggestion wins over any package list ordering.
+  assert.equal(Model.packageFor({ key: "k", suggestedPackage: "stow-sync", path: "~/.config/stow-sync" }, {}), "stow-sync")
+  // An explicit override wins.
+  assert.equal(Model.packageFor({ key: "k", suggestedPackage: "cava", path: "~/.config/x" }, { k: "mine" }), "mine")
+  // No suggestion: derive from the basename, not from a list.
+  assert.equal(Model.packageFor({ key: "k", suggestedPackage: "", path: "~/.config/MyTool" }, {}), "mytool")
+})
+
+test("pickerOptions offers the repo packages plus the suggestion", () => {
+  same(Model.pickerOptions(["cava", "fish"], "stow-sync", "stow-sync"), ["stow-sync", "cava", "fish"])
+  same(Model.pickerOptions([], "stow-sync", ""), ["stow-sync"])
+})
+
+test("publishRepos pairs each repo with its selected paths and upstream", () => {
+  const list = Model.publishRepos(HERO.changes, {})
+  same(list.map((r) => r.repo), ["~/.dotfiles", "~/wallpapers"])
+  same(list[0].paths, ["fish/a", "fish/b"])
+  same(list[1].paths, ["walls/x.png"])
+  assert.equal(list[0].upstream, "origin/main")
+})
+
+test("uploadPlan and updatePlan target only ahead/behind repos", () => {
+  const status = {
+    repos: [
+      { path: "~/a", upstream: "origin/main", ahead: 2, behind: 0 },
+      { path: "~/b", upstream: "origin/main", ahead: 0, behind: 1 },
+      { path: "~/c", upstream: "", ahead: 1, behind: 0 }
+    ],
+    candidates: []
+  }
+  same(Model.uploadPlan(status).map((s) => s.args.join(" ")), ["push --repo ~/a"])
+  same(Model.updatePlan(status).map((s) => s.args.join(" ")), ["pull --repo ~/b"])
+  same(Model.uploadPlan({ repos: [] }), [])
+})
+
+test("confirmSpec covers upload and update in plain words", () => {
+  assert.equal(Model.confirmSpec("upload", { repos: ["~/.dotfiles"] }).confirmText, "Upload")
+  assert.equal(Model.confirmSpec("update", { repos: ["~/.dotfiles"] }).confirmText, "Update")
+  assert.equal(Model.confirmSpec("pull", { repo: "~/.dotfiles" }).confirmText, "Update")
+})

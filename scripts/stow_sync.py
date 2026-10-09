@@ -1094,23 +1094,34 @@ def _inside_stowed_dir(path: str, repo_reals: list[str]) -> bool:
 
 
 def suggest_package(path: str, repo_reals: list[str]) -> str:
-    """Suggest a package for a candidate (README section 5.3)."""
-    parent = os.path.dirname(path)
-    try:
-        siblings = sorted(os.listdir(parent))
-    except OSError:
-        siblings = []
-    for name in siblings:
-        sibling = os.path.join(parent, name)
-        if sibling == path or not os.path.islink(sibling):
-            continue
-        real = os.path.realpath(sibling)
-        for repo in repo_reals:
-            if _under(real, repo):
-                segment = os.path.relpath(real, repo).split(os.sep, 1)[0]
-                if segment and segment != "..":
-                    return segment
-    base = os.path.basename(path) if os.path.isdir(path) else os.path.basename(parent)
+    """Suggest a package for a candidate (README section 5.3).
+
+    A directory candidate (e.g. ``~/.config/stow-sync``) suggests its own
+    lowercased basename: the sibling rule only helps a regular file that a
+    package already stows next to it, and scanning ``~/.config`` would
+    otherwise hijack every directory with whatever stowed app sorts first
+    (``cava``). A regular file keeps the sibling rule, then falls back to its
+    parent's basename (``user`` -> ``systemd``).
+    """
+    if os.path.isdir(path):
+        base = os.path.basename(path)
+    else:
+        parent = os.path.dirname(path)
+        try:
+            siblings = sorted(os.listdir(parent))
+        except OSError:
+            siblings = []
+        for name in siblings:
+            sibling = os.path.join(parent, name)
+            if sibling == path or not os.path.islink(sibling):
+                continue
+            real = os.path.realpath(sibling)
+            for repo in repo_reals:
+                if _under(real, repo):
+                    segment = os.path.relpath(real, repo).split(os.sep, 1)[0]
+                    if segment and segment != "..":
+                        return segment
+        base = os.path.basename(parent)
     base = base.lower()
     if base == "user":
         return "systemd"

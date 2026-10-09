@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell.Io
+import "Model.js" as Model
 
 // FIFO process queue for the Stow Sync helper. Non-visual: the panel owns the
 // step-by-step flow and receives results through the three signals below.
@@ -71,19 +72,19 @@ Item {
   }
 
   function enqueue(request) {
-    if (request.isStatus) {
-      for (var i = 0; i < root.queue.length; i++) {
-        if (root.queue[i].isStatus && root.queue[i].fetch === request.fetch) return
-      }
-    }
-    root.queue = root.queue.concat([request])
+    root.queue = Model.enqueue(root.queue, request)
     root.pump()
   }
 
   function pump() {
-    if (proc.running || root.queue.length === 0) return
-    root.current = root.queue[0]
-    root.queue = root.queue.slice(1)
+    // `current` is set for the whole life of a run and cleared in `finish`
+    // (or the timeout); guarding on it too stops a stop event from starting
+    // the next request before the current one has been handled.
+    if (proc.running || root.current !== null) return
+    var next = Model.nextRequest(root.queue)
+    if (!next.request) return
+    root.current = next.request
+    root.queue = next.queue
     root.timedOut = false
     // Open the write channel before starting so the helper can read stdin.
     proc.stdinEnabled = true
@@ -131,12 +132,11 @@ Item {
   }
 
   function afterStop() {
-    // A timed-out run had its stdout suppressed; restart the queue once the
-    // terminated process has actually finished.
-    if (root.timedOut) {
-      root.timedOut = false
-      root.pump()
-    }
+    // The process has actually stopped. `pump` no-ops while a run is still in
+    // `current`, so a normal completion is advanced by `finish` and a timeout
+    // is restarted here once the terminated process has finished.
+    if (root.timedOut) root.timedOut = false
+    root.pump()
   }
 
   Process {

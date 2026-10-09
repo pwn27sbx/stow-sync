@@ -1,0 +1,116 @@
+{
+  "clean": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 0, "state": "clean", "changes": [], "untracked": [],
+        "packages": [{ "name": "fish", "health": "ok", "pending_links": [], "conflicts": [], "dangling": [] }],
+        "operation": null, "last_fetch": "2026-10-09T15:00:00-05:00", "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "cleanNoFetch": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 0, "state": "clean", "changes": [], "untracked": [],
+        "packages": [], "operation": null, "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "changes": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 0, "state": "dirty",
+        "changes": [{ "path": "fish/a" }, { "path": "fish/b" }], "untracked": [],
+        "packages": [], "operation": null, "last_fetch": null, "fetch_error": null
+      },
+      {
+        "path": "~/wallpapers", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 0, "state": "dirty", "changes": [],
+        "untracked": [{ "path": "walls/x.png" }],
+        "packages": [], "operation": null, "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "singleChange": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 0, "state": "dirty",
+        "changes": [{ "path": "fish/a" }], "untracked": [],
+        "packages": [], "operation": null, "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "ahead": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 2, "behind": 0, "state": "ahead", "changes": [], "untracked": [],
+        "packages": [], "operation": null, "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "behind": {
+    "repos": [
+      {
+        "path": "~/wallpapers", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 3, "state": "behind", "changes": [], "untracked": [],
+        "packages": [], "operation": null, "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "diverged": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 1, "behind": 1, "state": "diverged",
+        "changes": [{ "path": "fish/a" }], "untracked": [],
+        "packages": [], "operation": null, "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "operation": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 0, "state": "operation", "changes": [], "untracked": [],
+        "packages": [], "operation": "merge", "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "conflict": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 0, "state": "clean", "changes": [], "untracked": [],
+        "packages": [{ "name": "hypr", "health": "conflicts", "pending_links": [], "conflicts": [{ "message": "x" }], "dangling": [] }],
+        "operation": null, "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": []
+  },
+  "newConfigs": {
+    "repos": [
+      {
+        "path": "~/.dotfiles", "exists": true, "branch": "main", "upstream": "origin/main",
+        "ahead": 0, "behind": 0, "state": "clean", "changes": [], "untracked": [],
+        "packages": [], "operation": null, "last_fetch": null, "fetch_error": null
+      }
+    ],
+    "candidates": [
+      { "path": "~/.config/x", "known": false, "suggested_package": "x" },
+      { "path": "~/.config/y", "known": false, "suggested_package": "y" }
+    ]
+  }
+}

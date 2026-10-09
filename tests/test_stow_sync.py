@@ -839,6 +839,22 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual([c["path"] for c in candidates], ["~/.config/kitty"])
         self.assertEqual(candidates[0]["suggested_package"], "kitty")
 
+    def test_directory_candidate_suggests_own_name_over_stowed_sibling(self) -> None:
+        # A stowed app (cava) already owns a sibling in ~/.config; a new
+        # directory candidate must suggest its own name, not that app.
+        write(self.repo / "cava" / ".config" / "cava" / "conf", "c\n")
+        write(self.home / ".config" / "keep.conf", "k\n")  # keep ~/.config a real dir
+        stow_apply(self.repo, self.home, "cava")
+        write(self.home / ".config" / "stow-sync" / "config.json", "{}\n")
+        candidates = self._candidates(
+            ["~/.config/*"],
+            repos=[{"path": str(self.repo), "target": str(self.home), "packages": ["cava"]}],
+        )
+        by_path = {c["path"]: c for c in candidates}
+        self.assertIn("~/.config/stow-sync", by_path)
+        self.assertEqual(by_path["~/.config/stow-sync"]["type"], "dir")
+        self.assertEqual(by_path["~/.config/stow-sync"]["suggested_package"], "stow-sync")
+
     def test_candidate_fields_are_exact(self) -> None:
         content = "hello\n"
         write(self.home / ".local" / "bin" / "tool", content)
