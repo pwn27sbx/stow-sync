@@ -3,54 +3,34 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// One change row (checkbox + file path) or one stow-health row (Fix button).
-// A change row may carry a group header ("dotfiles  ›  fish") stamped by the
-// model above it. Enter opens a diff (change) or the restow confirm (health).
+// One row inside a GroupCard: optional checkbox, optional status chip, a
+// primary line, a muted secondary line and an optional action button. The
+// panel computes the display strings; this component only renders them.
 Item {
   id: root
 
-  property var row: null
-  property int rowIndex: 0
+  property string primary: ""
+  property string secondary: ""
+  property string chip: ""
+  property string chipTone: "accent"
+  property string header: ""
   property bool focused: false
   property bool checked: true
   property bool showCheckbox: false
   property bool showAction: false
   property string actionText: "Fix"
-  property string header: ""
+  property bool dimmed: false
   property color foreground: Color.foreground
 
-  signal hovered(int index)
-  signal activated()
+  signal hovered()
   signal toggled(bool value)
+  signal activated()
   signal actionClicked()
 
-  readonly property bool isHealth: root.row !== null && root.row.type === "health"
-  readonly property bool isGroup: root.row !== null && root.row.type === "group"
-  readonly property string primary: root.row === null ? ""
-    : (root.isGroup ? String(root.row.label) : (root.isHealth ? String(root.row.packageLabel) : String(root.row.path)))
-  readonly property string secondary: root.isGroup ? (root.row.expanded ? "Click to hide" : "Click to show")
-    : (root.isHealth ? root.healthDetail() : root.changeDetail())
-
-  function tokenColor(token) {
-    if (token === "urgent") return Color.urgent
-    if (token === "accent") return Color.accent
-    if (token === "muted") return Color.muted
-    return Color.foreground
-  }
-
-  function healthDetail() {
-    if (root.row === null) return ""
-    var parts = []
-    if (root.row.conflicts > 0) parts.push(root.row.conflicts + (root.row.conflicts > 1 ? " conflicts" : " conflict"))
-    if (root.row.pending > 0) parts.push(root.row.pending + " pending")
-    if (root.row.dangling > 0) parts.push(root.row.dangling + " dangling")
-    if (parts.length === 0) parts.push("stowed")
-    return parts.join("  ·  ")
-  }
-
-  function changeDetail() {
-    if (root.row === null) return ""
-    return String(root.row.packageLabel) + "  ·  " + String(root.row.kind)
+  function chipColor() {
+    if (root.chipTone === "urgent") return Color.urgent
+    if (root.chipTone === "muted") return Color.muted
+    return Color.accent
   }
 
   implicitHeight: column.implicitHeight
@@ -79,12 +59,13 @@ Item {
       color: root.focused ? Util.alpha(Color.accent, 0.16) : "transparent"
       borderSpec: Border.none()
       radius: Style.cornerRadius
+      opacity: root.dimmed ? 0.55 : 1.0
 
       MouseArea {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onEntered: root.hovered(root.rowIndex)
+        onEntered: root.hovered()
         onClicked: root.activated()
       }
 
@@ -113,22 +94,25 @@ Item {
           }
         }
 
-        Text {
-          Layout.alignment: Qt.AlignVCenter
-          visible: root.isGroup
-          text: root.isGroup && root.row.expanded ? "▾" : "▸"
-          color: Color.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
         Rectangle {
           Layout.alignment: Qt.AlignVCenter
-          visible: root.row !== null
-          Layout.preferredWidth: Style.space(8)
-          Layout.preferredHeight: Style.space(8)
-          radius: Style.space(4)
-          color: root.tokenColor(root.row === null ? "muted" : root.row.stateColor)
+          visible: root.chip !== ""
+          Layout.preferredWidth: Style.space(16)
+          Layout.preferredHeight: Style.space(16)
+          radius: Style.cornerRadius
+          color: Util.alpha(root.chipColor(), 0.16)
+          border.width: 1
+          border.color: Util.alpha(root.chipColor(), 0.6)
+
+          Text {
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: root.chip
+            color: root.chipColor()
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
         }
 
         ColumnLayout {
@@ -141,12 +125,13 @@ Item {
             text: root.primary
             color: root.foreground
             font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            elide: Text.ElideRight
+            font.pixelSize: Style.font.bodySmall
+            elide: Text.ElideMiddle
           }
 
           Text {
             Layout.fillWidth: true
+            visible: root.secondary !== ""
             textFormat: Text.PlainText
             text: root.secondary
             color: Color.muted
@@ -160,6 +145,9 @@ Item {
           Layout.alignment: Qt.AlignVCenter
           visible: root.showAction
           text: root.actionText
+          fontSize: Style.font.caption
+          horizontalPadding: Style.spacing.sm
+          verticalPadding: Style.spacing.xxs
           onClicked: root.actionClicked()
         }
       }

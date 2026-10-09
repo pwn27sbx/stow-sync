@@ -20,9 +20,11 @@ BarWidget {
   // identity; the KeyboardPanel reads popoutSwitchClosing back off its owner.
   readonly property bool popoutSwitchClosing: panelItem ? panelItem.popoutSwitchClosing === true : false
 
-  readonly property var statusData: panelItem && "data" in panelItem ? panelItem.data : null
+  readonly property var statusData: panelItem && "statusData" in panelItem ? panelItem.statusData : null
   readonly property string badgeLabel: Model.badgeText(statusData)
-  readonly property color badgeColor: root.tokenColor(Model.badgeColor(statusData))
+  // The badge tone is the same heroState the panel header shows, so the two
+  // never disagree about the overall state.
+  readonly property color badgeColor: root.tokenColor(Model.heroState(statusData).tone)
   readonly property string summaryState: statusData && statusData.summary ? statusData.summary.state : "clean"
 
   function tokenColor(token) {

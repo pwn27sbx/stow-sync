@@ -3,124 +3,100 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// One new/existing config candidate. The package is chosen inside the Adopt
-// confirm card (an editable field prefilled with the suggested package), so
-// this row only shows the path, size, suggestion and the two actions.
+// One new-config candidate inside the Overview "New config files" group. The
+// package is chosen in the Adopt confirm card (an editable field prefilled
+// with the suggestion), so this row only shows the path, size, suggestion and
+// the Adopt / Ignore actions.
 Item {
   id: root
 
   property var row: null
-  property int rowIndex: 0
   property bool focused: false
-  property string header: ""
-  property bool showBulk: false
   property string packageName: ""
   property color foreground: Color.foreground
 
-  signal hovered(int index)
+  signal hovered()
   signal adoptRequested()
   signal ignoreRequested()
-  signal bulkIgnoreRequested()
 
-  implicitHeight: column.implicitHeight
+  readonly property var candidate: root.row || ({})
 
-  Column {
-    id: column
+  implicitHeight: card.implicitHeight
+
+  BorderSurface {
+    id: card
     width: parent.width
-    spacing: Style.spacing.xxs
+    implicitHeight: Math.max(Style.spacing.controlHeight, content.implicitHeight + Style.spacing.sm)
+    color: root.focused ? Util.alpha(Color.accent, 0.16) : "transparent"
+    borderSpec: Border.none()
+    radius: Style.cornerRadius
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: root.hovered()
+      onClicked: root.adoptRequested()
+    }
 
     RowLayout {
-      width: parent.width
-      visible: root.header !== ""
+      id: content
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.spacing.controlPaddingX
+      anchors.rightMargin: Style.spacing.controlPaddingX
       spacing: Style.spacing.sm
 
-      Text {
+      Rectangle {
+        Layout.alignment: Qt.AlignVCenter
+        Layout.preferredWidth: Style.space(8)
+        Layout.preferredHeight: Style.space(8)
+        radius: width / 2
+        color: Color.accent
+      }
+
+      ColumnLayout {
         Layout.fillWidth: true
-        textFormat: Text.PlainText
-        text: root.header
-        color: Color.muted
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
-        font.bold: true
+        spacing: 0
+
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: String(root.candidate.path || "")
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideMiddle
+        }
+
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: String(root.candidate.group || "watched") + "  \u00b7  package: " + root.packageName
+          color: Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
       }
 
       Button {
         Layout.alignment: Qt.AlignVCenter
-        visible: root.showBulk
-        text: "Ignore all shown"
-        onClicked: root.bulkIgnoreRequested()
-      }
-    }
-
-    BorderSurface {
-      id: card
-      width: parent.width
-      implicitHeight: Math.max(Style.spacing.controlHeight, content.implicitHeight + Style.spacing.sm)
-      color: root.focused ? Util.alpha(Color.accent, 0.16) : "transparent"
-      borderSpec: Border.none()
-      radius: Style.cornerRadius
-
-      MouseArea {
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onEntered: root.hovered(root.rowIndex)
+        text: "Adopt"
+        fontSize: Style.font.caption
+        horizontalPadding: Style.spacing.sm
+        verticalPadding: Style.spacing.xxs
         onClicked: root.adoptRequested()
       }
 
-      RowLayout {
-        id: content
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        anchors.leftMargin: Style.spacing.controlPaddingX
-        anchors.rightMargin: Style.spacing.controlPaddingX
-        spacing: Style.spacing.sm
-
-        Rectangle {
-          Layout.alignment: Qt.AlignVCenter
-          Layout.preferredWidth: Style.space(8)
-          Layout.preferredHeight: Style.space(8)
-          radius: width / 2
-          color: root.row === null ? Color.muted : (root.row.known ? Color.muted : Color.accent)
-        }
-
-        ColumnLayout {
-          Layout.fillWidth: true
-          spacing: 0
-
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: root.row === null ? "" : String(root.row.path)
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            elide: Text.ElideRight
-          }
-
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: root.row === null ? "" : (String(root.row.itemType) + "  ·  " + String(root.row.sizeText) + "  ·  package: " + root.packageName)
-            color: Color.muted
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-          }
-        }
-
-        Button {
-          Layout.alignment: Qt.AlignVCenter
-          text: "Adopt"
-          onClicked: root.adoptRequested()
-        }
-
-        Button {
-          Layout.alignment: Qt.AlignVCenter
-          text: "Ignore"
-          onClicked: root.ignoreRequested()
-        }
+      Button {
+        Layout.alignment: Qt.AlignVCenter
+        text: "Ignore"
+        fontSize: Style.font.caption
+        horizontalPadding: Style.spacing.sm
+        verticalPadding: Style.spacing.xxs
+        onClicked: root.ignoreRequested()
       }
     }
   }

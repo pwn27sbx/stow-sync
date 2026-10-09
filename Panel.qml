@@ -1,43 +1,47 @@
+pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
-
-// Stow Sync popup: a fixed hero with one primary button, three tabs and a
-// scrolling content list. Thin shell over Model.js (pure view model) and
-// Runner.qml (process queue); ConfirmCard.qml owns every overlay. Every
-// mutation is confirmed before Runner runs it.
+// Stow Sync popup: config-sync parity layout. A fixed header and tab bar, a
+// scrolling Flickable body (RepoSection.qml renders the active tab) and one
+// overlay host. Thin shell over Model.js (pure view model) and Runner.qml
+// (process queue); ConfirmCard.qml owns every overlay. Every mutation is
+// confirmed before Runner runs it.
 Panel {
   id: root
   moduleName: "pwnsxb.stow-sync"
   ipcTarget: "pwnsxb.stow-sync"
   manageIpc: false
-
   property var anchorItem: null
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
   readonly property string scriptPath: String(Qt.resolvedUrl("scripts/stow_sync.py")).replace(/^file:\/\//, "")
-
-  property var data: null
+  readonly property string version: "0.1.0"
+  readonly property string configPath: {
+    var custom = String(root.setting("configPath", ""))
+    return custom !== "" ? custom : (Quickshell.env("HOME") + "/.config/stow-sync/config.json")
+  }
+  property var statusData: null
   property int activeTab: 0
   property var checkedPaths: ({})
+  property var hiddenPaths: []
+  property bool showHidden: false
   property bool showExisting: false
-  property int cursor: 0
+  property string focusedKey: ""
+  property int repoCycleIndex: 0
   property string errorText: ""
-  property bool started: false
-  property string clock: Qt.formatTime(new Date(), "HH:mm")
-  // Feedback under the hero; `busyVerb` drives the "Publishing…" label.
   property string resultText: ""
-  property bool resultError: false
+  property bool started: false
+  property double nowMs: Date.now()
   property string busyVerb: ""
-
   property string overlayMode: ""
   property string confirmKind: ""
   property var confirmPayload: ({})
-
   // Publish card and cumulative batch state (publish / upload / update).
   property string publishMessage: ""
   property var publishLines: []
@@ -52,7 +56,6 @@ Panel {
   property string batchKind: ""
   property int batchRemaining: 0
   property string batchError: ""
-
   // Adopt and diff cards.
   property string adoptRepo: ""
   property string adoptPath: ""
@@ -62,23 +65,20 @@ Panel {
   property string diffTitle: ""
   property string diffBody: ""
   property bool diffTruncated: false
-
-  readonly property var repos: data && data.repos ? data.repos : []
-  readonly property var hero: Model.heroState(root.data, root.clock)
-  readonly property var primary: Model.primaryAction(root.data)
-  readonly property var tabs: ["Overview", "Changes", "New configs"]
-  readonly property var overviewRows: Model.overviewTabRows(root.data)
-  readonly property var changeRows: Model.changeTabRows(root.data)
-  readonly property var candidateResult: Model.candidateTabRows(root.data, { showExisting: root.showExisting })
-  readonly property var rows: root.activeTab === 0 ? root.overviewRows : (root.activeTab === 1 ? root.changeRows : root.candidateResult.rows)
-  readonly property int newCount: Model.newCandidateCount(root.data)
-  readonly property int existingCount: root.candidateResult.existingCount
-  readonly property var existingPaths: root.candidateResult.existingPaths
+  readonly property string clock: Qt.formatTime(new Date(root.nowMs), "HH:mm")
+  readonly property var hero: Model.heroState(root.statusData, root.clock)
+  readonly property var primary: Model.primaryAction(root.statusData)
+  readonly property var tabs: ["Overview", "Changes", "Packages"]
+  readonly property var changeView: Model.changesView(root.statusData, {
+    hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting
+  })
+  readonly property var changeRows: root.changeView.rows
+  readonly property var packages: Model.packageCards(root.statusData)
+  readonly property int changeCount: Model.changeTotals(root.statusData).count
   readonly property bool busy: runner.busy
-  readonly property bool primaryVisible: root.primary.kind !== "none"
-  readonly property string busyLabel: root.busyVerb !== "" ? root.busyVerb + "…" : "Working…"
-  readonly property string feedbackText: root.resultText !== "" ? root.resultText : root.errorText
-  readonly property bool feedbackError: root.resultText === "" ? root.errorText !== "" : root.resultError
+  readonly property string stateText: root.hero.title + (root.busy ? "  \u00b7  updating" : "")
+  readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
+  readonly property bool feedbackError: root.errorText !== ""
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5)
   readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
   Runner {
@@ -92,25 +92,60 @@ Panel {
   function refresh() { runner.refreshStatus(false) }
   function refreshWithFetch() { runner.refreshStatus(true) }
   function ensureStarted() { if (root.started) return; root.started = true; root.refresh() }
-  function setCursor(index) { if (index >= 0 && index < root.rows.length) root.cursor = index }
-  function isChecked(key) { return root.checkedPaths[key] !== false }
-  function applyStatus(payload) { root.data = payload; root.errorText = "" }
-  function setChecked(key, value) { var next = {}; for (var k in root.checkedPaths) next[k] = root.checkedPaths[k]; next[key] = value; root.checkedPaths = next }
-  function openConfirm(kind, payload) { root.confirmKind = kind; root.confirmPayload = payload || {}; root.overlayMode = "confirm" }
-  function bulkIgnore() { if (root.existingPaths.length > 0) root.openConfirm("ignore-all", { paths: root.existingPaths }) }
-  function markAllKnown() { root.openConfirm("baseline", { count: root.newCount }) }
-  function toggleExisting() { root.showExisting = !root.showExisting }
-  function switchTabTo(index) { root.activeTab = index; root.cursor = 0 }
-  function switchTab(dx) { var n = root.tabs.length; if (n > 0) root.switchTabTo((root.activeTab + dx + n) % n) }
-  function moveCursor(dy) { root.setCursor(Model.moveCursorIndex(root.rows, root.cursor, 0, dy)) }
+  function dismissError() { root.errorText = "" }
   function setResult(text, isError) {
-    root.resultText = String(text === undefined || text === null ? "" : text); root.resultError = isError === true
-    if (root.resultError) resultTimer.stop(); else resultTimer.restart()
+    var value = String(text === undefined || text === null ? "" : text)
+    if (isError) { root.errorText = value; root.resultText = ""; resultTimer.stop() }
+    else { root.resultText = value; resultTimer.restart() }
+  }
+  function applyStatus(payload) { root.statusData = payload; root.errorText = "" }
+  function switchTabTo(index) { root.activeTab = index; root.focusedKey = "" }
+  function switchTab(dx) { var n = root.tabs.length; if (n > 0) root.switchTabTo((root.activeTab + dx + n) % n) }
+  function isChecked(key) { return root.checkedPaths[key] !== false }
+  function setChecked(key, value) { var next = {}; for (var k in root.checkedPaths) next[k] = root.checkedPaths[k]; next[key] = value; root.checkedPaths = next }
+  function selectAll() { var next = {}; for (var i = 0; i < root.changeRows.length; i++) next[root.changeRows[i].key] = true; root.checkedPaths = next }
+  function clearSelection() { var next = {}; for (var i = 0; i < root.changeRows.length; i++) next[root.changeRows[i].key] = false; root.checkedPaths = next }
+  function selectRepoCycle() {
+    var repos = []
+    for (var g = 0; g < root.changeView.groups.length; g++) repos.push(String(root.changeView.groups[g].repo))
+    if (repos.length === 0) return
+    var repo = repos[root.repoCycleIndex % repos.length]
+    root.repoCycleIndex = (root.repoCycleIndex + 1) % repos.length
+    var next = {}
+    for (var i = 0; i < root.changeRows.length; i++) next[root.changeRows[i].key] = String(root.changeRows[i].repo) === repo
+    root.checkedPaths = next
+    root.setResult("Selected " + Model.repoDisplayName(repo), false)
+  }
+  function toggleHidden(row) {
+    if (!row) return
+    var next = []
+    var removed = false
+    for (var i = 0; i < root.hiddenPaths.length; i++) {
+      if (String(root.hiddenPaths[i]) === String(row.path)) { removed = true; continue }
+      next.push(root.hiddenPaths[i])
+    }
+    if (!removed) next.push(String(row.path))
+    root.hiddenPaths = next
+    if (!removed) root.setChecked(row.key, false)
+  }
+  function focusedChange() { for (var i = 0; i < root.changeRows.length; i++) if (root.changeRows[i].key === root.focusedKey) return root.changeRows[i]; return null }
+  function moveCursor(dy) {
+    if (root.changeRows.length === 0) return
+    var index = 0
+    for (var i = 0; i < root.changeRows.length; i++) if (root.changeRows[i].key === root.focusedKey) index = i
+    index = Math.max(0, Math.min(root.changeRows.length - 1, index + dy))
+    root.focusedKey = root.changeRows[index].key
+  }
+  function openConfirm(kind, payload) { root.confirmKind = kind; root.confirmPayload = payload || {}; root.overlayMode = "confirm" }
+  function requestUpdate() {
+    if (Model.flowTotals(root.statusData, "behind").count > 0) {
+      root.confirmKind = "update"; root.confirmPayload = { repos: Model.repoNames(root.statusData, "behind") }; root.overlayMode = "confirm"
+    }
   }
   function acceptConfirm() {
     if (root.busy) return
-    if (root.confirmKind === "upload") { root.startBatch("push", Model.uploadPlan(root.data)); return }
-    if (root.confirmKind === "update") { root.startBatch("pull", Model.updatePlan(root.data)); return }
+    if (root.confirmKind === "upload") { root.startBatch("push", Model.uploadPlan(root.statusData)); return }
+    if (root.confirmKind === "update") { root.startBatch("pull", Model.updatePlan(root.statusData)); return }
     var mutation = Model.mutationFor(root.confirmKind, root.confirmPayload)
     runner.runAction(mutation.tag, mutation.args, mutation.stdin)
   }
@@ -124,7 +159,7 @@ Panel {
   function finishBatch(text, isError) { root.busyVerb = ""; root.batchKind = ""; root.batchRemaining = 0; root.setResult(text, isError) }
   function openPublish(repoFilter) {
     root.publishRepoFilter = String(repoFilter || "")
-    var card = Model.publishCard(root.data, root.checkedPaths, root.publishRepoFilter)
+    var card = Model.publishCard(root.statusData, root.checkedPaths, root.publishRepoFilter)
     if (card.list.length === 0) { root.setResult("Nothing to publish.", true); return }
     root.publishLines = card.lines; root.publishTargets = card.targets
     root.publishMessage = ""; root.publishSecrets = []; root.publishAllowSecrets = false; root.publishError = ""
@@ -134,7 +169,7 @@ Panel {
   function publishConfirmed() {
     if (root.busy) return
     if (String(root.publishMessage).trim() === "") { root.publishError = "Commit message must not be empty."; return }
-    var card = Model.publishCard(root.data, root.checkedPaths, root.publishRepoFilter)
+    var card = Model.publishCard(root.statusData, root.checkedPaths, root.publishRepoFilter)
     var plan = Model.publishPlanFrom(card.list, root.publishMessage, root.publishAllowSecrets)
     if (plan.length === 0) { root.publishError = "Nothing to publish."; return }
     root.publishUpstream = card.list.length > 0 && card.list[0].upstream !== "" ? card.list[0].upstream : "GitHub"
@@ -143,10 +178,10 @@ Panel {
   }
   function adoptCandidate(row) {
     if (!row) return
-    var target = Model.adoptTarget(root.repos)
+    var target = Model.adoptTarget(root.statusData ? root.statusData.repos : [])
     if (target.repo === "") { root.setResult("No repository is configured to adopt into.", true); return }
     root.adoptRepo = target.repo; root.adoptPath = String(row.path || "")
-    root.adoptPackage = Model.packageFor(row, {})
+    root.adoptPackage = Model.packageFor({ key: row.path, suggestedPackage: row.package, path: row.path }, {})
     root.adoptSuggestions = Model.pickerOptions(target.packages, root.adoptPackage, root.adoptPackage)
     root.adoptError = ""; root.overlayMode = "adopt"
   }
@@ -155,6 +190,7 @@ Panel {
     if (String(root.adoptPackage).trim() === "") { root.adoptError = "Package name must not be empty."; return }
     runner.runAction("adopt", ["adopt", "--repo", root.adoptRepo, "--package", root.adoptPackage, "--path", root.adoptPath])
   }
+  function openDiff(repo, path) { root.diffTitle = "Diff \u2014 " + path; root.diffBody = ""; root.diffTruncated = false; runner.runAction("diff", ["diff", "--repo", repo, "--path", path]) }
   function applyAction(tag, payload) {
     var outcome = Model.actionOutcome(tag, payload)
     if (outcome.kind === "diff") { root.diffBody = outcome.body; root.diffTruncated = outcome.truncated; root.overlayMode = "diff"; return }
@@ -163,10 +199,9 @@ Panel {
     if (root.batchKind === "push" || root.batchKind === "pull") { root.batchStep(outcome); return }
     root.overlayMode = ""
     if (outcome.kind === "mutation-error" || outcome.kind === "commit-error") { root.setResult(outcome.error, true); return }
-    if (outcome.kind === "commit-secrets") { root.setResult("Secrets detected — review before publishing.", true); return }
+    if (outcome.kind === "commit-secrets") { root.setResult("Secrets detected \u2014 review before publishing.", true); return }
     root.busyVerb = ""; root.setResult(Model.actionSuccessText(tag), false); root.refresh()
   }
-
   function publishResult(outcome) {
     if (outcome.kind === "commit-secrets") { root.publishSecrets = outcome.secrets; root.publishAllowSecrets = true; root.publishError = "" }
     else if (outcome.kind === "commit-ok") root.publishCommitDone++
@@ -180,7 +215,6 @@ Panel {
     else root.setResult(Model.publishSummaryText(root.publishCommitDone, root.publishUpstream), false)
     root.refresh()
   }
-
   function batchStep(outcome) {
     if (outcome.kind === "mutation-error") root.batchError = outcome.error
     root.batchRemaining--
@@ -188,7 +222,6 @@ Panel {
     var text = root.batchKind === "push" ? "Uploaded commits" : "Updated from GitHub"
     root.finishBatch(root.batchError !== "" ? root.batchError : text, root.batchError !== ""); root.refresh()
   }
-
   function applyFailure(tag, message) {
     var outcome = Model.failureOutcome(tag, message)
     if (outcome.kind === "ignore") return
@@ -205,49 +238,34 @@ Panel {
     }
     root.overlayMode = ""; root.busyVerb = ""; root.setResult(outcome.error, true)
   }
-
-  function activateRow(row) {
-    if (!row) return
-    if (row.type === "group") root.toggleExisting()
-    else if (row.type === "change") root.openDiff(String(row.repo || ""), String(row.path || ""))
-    else if (row.type === "health") root.openConfirm("restow", { repo: row.repo, package: row.package })
-    else if (row.type === "candidate") root.adoptCandidate(row)
-    else if (row.type === "repo" && (row.changesCount > 0 || row.untrackedCount > 0)) root.openPublish(String(row.name || ""))
-    else if (row.type === "repo" && row.behind > 0) root.openConfirm("pull", { repo: String(row.name || "") })
-  }
-
-  function openDiff(repo, path) { root.diffTitle = "Diff — " + path; root.diffBody = ""; root.diffTruncated = false; runner.runAction("diff", ["diff", "--repo", repo, "--path", path]) }
-
   function primaryClicked() {
     var kind = root.primary.kind
     if (kind === "review") root.switchTabTo(1)
-    else if (kind === "review-new") root.switchTabTo(2)
+    else if (kind === "review-new") { root.switchTabTo(0); overviewTab.expandGroup("newConfigs") }
     else if (kind === "publish") root.openPublish("")
-    else if (kind === "upload") { root.confirmKind = "upload"; root.confirmPayload = { repos: Model.repoNames(root.data, "ahead") }; root.overlayMode = "confirm" }
-    else if (kind === "update") { root.confirmKind = "update"; root.confirmPayload = { repos: Model.repoNames(root.data, "behind") }; root.overlayMode = "confirm" }
+    else if (kind === "upload") { root.confirmKind = "upload"; root.confirmPayload = { repos: Model.repoNames(root.statusData, "ahead") }; root.overlayMode = "confirm" }
+    else if (kind === "update") root.requestUpdate()
   }
-
-  function activateCursor() { if (root.overlayMode === "diff") { root.overlayMode = ""; return } root.activateRow(root.rows[root.cursor]) }
+  function editConfig() { Util.execArgv(["xdg-open", root.configPath]) }
   function overlayCancel() { if (!root.busy) root.overlayMode = "" }
   function handleEscape() { if (root.overlayMode !== "") root.overlayCancel(); else root.close() }
-
+  function activateCursor() {
+    if (root.overlayMode === "diff") { root.overlayMode = ""; return }
+    if (root.activeTab === 1) { var row = root.focusedChange(); if (row) root.openDiff(String(row.repo), String(row.path)) }
+  }
   function handleTextKey(text) {
     if (text >= "1" && text <= "3") root.switchTabTo(parseInt(text) - 1)
     else if (text === "r") root.refreshWithFetch()
-    else if (text === "p" || text === "u") root.primaryClicked()
-    else if (text === "a") { var row = root.rows[root.cursor]; if (row && row.type === "candidate") root.adoptCandidate(row) }
-    else if (text === "i") { var cand = root.rows[root.cursor]; if (cand && cand.type === "candidate") root.openConfirm("ignore", { path: cand.path }) }
+    else if (text === "p") { if (root.changeCount > 0) root.openPublish(""); else root.primaryClicked() }
+    else if (text === "u") root.requestUpdate()
+    else if (text === "i") root.toggleHidden(root.focusedChange())
   }
 
   onOpenedChanged: if (root.opened) { root.ensureStarted(); root.refresh(); Qt.callLater(function() { keyCatcher.forceActiveFocus() }) }
-  onRowsChanged: if (root.cursor >= root.rows.length) root.cursor = Math.max(0, root.rows.length - 1)
-  onCursorChanged: { list.currentIndex = root.cursor; list.positionViewAtIndex(root.cursor, ListView.Contain) }
-
-  Timer { interval: 30000; running: true; repeat: true; onTriggered: root.clock = Qt.formatTime(new Date(), "HH:mm") }
+  Timer { interval: 30000; running: true; repeat: true; onTriggered: root.nowMs = Date.now() }
   Timer { id: resultTimer; interval: 6000; repeat: false; onTriggered: root.resultText = "" }
   Timer { interval: root.refreshMinutes * 60000; running: true; repeat: true; onTriggered: if (!root.busy && root.overlayMode === "") root.refresh() }
   Timer { interval: root.fetchMinutes * 60000; running: true; repeat: true; onTriggered: if (!root.busy && root.overlayMode === "") root.refreshWithFetch() }
-
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -256,14 +274,19 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(420))
-    contentHeight: panel.fittedContentHeight(Style.space(360), Style.space(620))
+    contentWidth: panel.fittedContentWidth(Style.space(560))
+    contentHeight: panel.fittedContentHeight(Style.space(580))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       blocked: overlay.contentActiveFocus || overlay.contentPopupOpen
-      onMoveRequested: function(dx, dy) { if (root.overlayMode !== "") return; if (dx !== 0) root.switchTab(dx > 0 ? 1 : -1); else root.moveCursor(dy) }
+      onMoveRequested: function(dx, dy) {
+        if (root.overlayMode !== "") return
+        if (dx !== 0) root.switchTab(dx > 0 ? 1 : -1)
+        else if (root.activeTab === 1) root.moveCursor(dy)
+        else flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, flick.contentY + dy * Style.space(28)))
+      }
       onActivateRequested: if (root.overlayMode === "") root.activateCursor()
       onCloseRequested: root.handleEscape()
       onTabRequested: function(direction) { if (root.overlayMode === "") root.switchTab(direction >= 0 ? 1 : -1) }
@@ -273,23 +296,21 @@ Panel {
         anchors.fill: parent
         spacing: Style.spacing.sm
 
-        Hero {
+        Header {
           Layout.fillWidth: true
-          glyph: root.hero.glyph
-          title: root.hero.title
-          hint: root.hero.hint
-          tone: root.hero.tone
-          primaryLabel: root.primary.label
-          primaryVisible: root.primaryVisible
-          primaryEnabled: !root.busy
+          version: root.version
+          stateText: root.stateText
+          stateTone: root.hero.tone
           busy: root.busy
-          busyLabel: root.busyLabel
-          resultText: root.feedbackText
-          resultError: root.feedbackError
           refreshEnabled: !root.busy
-          onPrimaryClicked: root.primaryClicked()
+          message: root.feedbackText
+          isError: root.feedbackError
           onRefreshClicked: root.refreshWithFetch()
+          onEditClicked: root.editConfig()
+          onCloseClicked: root.close()
+          onDismissed: root.dismissError()
         }
+
         Tabs {
           Layout.fillWidth: true
           tabs: root.tabs
@@ -297,71 +318,50 @@ Panel {
           onSelected: function(index) { root.switchTabTo(index) }
         }
 
-        // The list is the scroll region under the fixed hero and tabs.
-        ListView {
-          id: list
+        Flickable {
+          id: flick
           Layout.fillWidth: true
           Layout.fillHeight: true
           clip: true
-          model: root.rows
+          contentWidth: width
+          contentHeight: overviewTab.height
           boundsBehavior: Flickable.StopAtBounds
-          spacing: Style.spacing.xs
+          flickableDirection: Flickable.VerticalFlick
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-          delegate: Item {
-            id: delegateRoot
-            required property var modelData
-            required property int index
-            width: list.width
-            implicitHeight: Math.max(repoCard.implicitHeight, itemRow.implicitHeight, candRow.implicitHeight)
-
-            RepoSection {
-              id: repoCard
-              width: parent.width
-              visible: delegateRoot.modelData.type === "repo"
-              row: delegateRoot.modelData
-              rowIndex: delegateRoot.index
-              focused: root.cursor === delegateRoot.index
-              onHovered: root.setCursor(delegateRoot.index)
-              onPublishRequested: root.openPublish(String(delegateRoot.modelData.name || ""))
-              onUpdateRequested: root.openConfirm("pull", { repo: String(delegateRoot.modelData.name || "") })
-              onActivated: root.activateRow(delegateRoot.modelData)
-            }
-
-            ItemRow {
-              id: itemRow
-              width: parent.width
-              visible: delegateRoot.modelData.type === "change" || delegateRoot.modelData.type === "health" || delegateRoot.modelData.type === "group"
-              row: delegateRoot.modelData
-              rowIndex: delegateRoot.index
-              focused: root.cursor === delegateRoot.index
-              header: String(delegateRoot.modelData.header || "")
-              checked: root.isChecked(delegateRoot.modelData.key)
-              showCheckbox: delegateRoot.modelData.type === "change"
-              showAction: delegateRoot.modelData.type === "health" || delegateRoot.modelData.showAction === true
-              actionText: delegateRoot.modelData.type === "group" ? "Ignore all" : "Fix"
-              onHovered: root.setCursor(delegateRoot.index)
-              onToggled: function(value) { root.setChecked(delegateRoot.modelData.key, value) }
-              onActivated: root.activateRow(delegateRoot.modelData)
-              onActionClicked: function() { if (delegateRoot.modelData.type === "group") root.bulkIgnore(); else root.openConfirm("restow", { repo: delegateRoot.modelData.repo, package: delegateRoot.modelData.package }) }
-            }
-
-            CandidateRow {
-              id: candRow
-              width: parent.width
-              visible: delegateRoot.modelData.type === "candidate"
-              row: delegateRoot.modelData
-              rowIndex: delegateRoot.index
-              focused: root.cursor === delegateRoot.index
-              header: String(delegateRoot.modelData.header || "")
-              showBulk: delegateRoot.modelData.showBulk === true
-              packageName: Model.packageFor(delegateRoot.modelData, {})
-              onHovered: root.setCursor(delegateRoot.index)
-              onAdoptRequested: root.adoptCandidate(delegateRoot.modelData)
-              onIgnoreRequested: root.openConfirm("ignore", { path: delegateRoot.modelData.path })
-              onBulkIgnoreRequested: root.bulkIgnore()
-            }
+          RepoSection {
+            id: overviewTab
+            width: flick.width
+            tab: root.activeTab
+            statusData: root.statusData
+            version: root.version
+            now: String(root.nowMs)
+            busy: root.busy
+            checkedPaths: root.checkedPaths
+            hiddenPaths: root.hiddenPaths
+            showHidden: root.showHidden
+            showExisting: root.showExisting
+            focusedKey: root.focusedKey
+            packages: root.packages
+            onReviewRequested: root.switchTabTo(1)
+            onPublishRequested: root.openPublish("")
+            onUpdateRequested: root.requestUpdate()
+            onRestowRequested: function(repo, packageName) { root.openConfirm("restow", { repo: repo, package: packageName }) }
+            onAdoptRequested: function(candidate) { root.adoptCandidate(candidate) }
+            onIgnoreRequested: function(candidate) { root.openConfirm("ignore", { path: String(candidate.path || "") }) }
+            onCopyRequested: function(value) { Util.execArgv(["wl-copy", value]) }
+            onSelectAllRequested: root.selectAll()
+            onSelectRepoRequested: root.selectRepoCycle()
+            onClearSelectionRequested: root.clearSelection()
+            onShowHiddenToggled: root.showHidden = !root.showHidden
+            onShowExistingToggled: root.showExisting = !root.showExisting
+            onChangeToggled: function(key, value) { root.setChecked(key, value) }
+            onChangeHovered: function(key) { root.focusedKey = key }
+            onDiffRequested: function(repo, path) { root.openDiff(repo, path) }
           }
         }
+
+        FooterChips { Layout.fillWidth: true }
       }
     }
 
