@@ -31,6 +31,8 @@ Panel {
   property bool showExisting: false
   property string lastRefresh: ""
   property string errorText: ""
+  // First refresh runs only after the host injects `settings` (see ensureStarted).
+  property bool started: false
 
   property string overlayMode: ""
   property string confirmKind: ""
@@ -61,13 +63,15 @@ Panel {
     id: runner
     scriptPath: root.scriptPath
     settings: root.settings
-    onStatusReady: root.applyStatus(payload)
-    onActionReady: root.applyAction(tag, payload)
-    onFailed: root.applyFailure(tag, message)
+    onStatusReady: function(result, fetch) { root.applyStatus(result) }
+    onActionReady: function(tag, result) { root.applyAction(tag, result) }
+    onFailed: function(tag, message) { root.applyFailure(tag, message) }
   }
 
   function refresh() { runner.refreshStatus(false) }
   function refreshWithFetch() { runner.refreshStatus(true) }
+  // Host calls this after injecting settings; runs the first refresh once.
+  function ensureStarted() { if (root.started) return; root.started = true; root.refresh() }
   function setCursor(index) { if (index >= 0 && index < root.rows.length) root.cursor = index }
   function moveCursor(dx, dy) { root.setCursor(Model.moveCursorIndex(root.rows, root.cursor, dx, dy)) }
   function moveSection(direction) { var index = Model.nextSectionIndex(root.rows, root.cursor, direction); if (index >= 0) root.setCursor(index) }
@@ -241,15 +245,11 @@ Panel {
 
   function toggleExisting() { root.showExisting = !root.showExisting; root.rebuildRows() }
 
-  onOpenedChanged: if (root.opened) {
-    root.refresh()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
-  }
+  onOpenedChanged: if (root.opened) { root.ensureStarted(); root.refresh(); Qt.callLater(function() { keyCatcher.forceActiveFocus() }) }
   onCursorChanged: {
     list.currentIndex = root.cursor
     list.positionViewAtIndex(root.cursor, ListView.Contain)
   }
-  Component.onCompleted: root.refresh()
 
   Timer {
     interval: root.refreshMinutes * 60000

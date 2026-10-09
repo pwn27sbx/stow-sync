@@ -13,8 +13,10 @@ Item {
   property string scriptPath: ""
   property var settings: ({})
 
-  signal statusReady(var data, bool fetch)
-  signal actionReady(string tag, var data)
+  // The payload parameter is `result`, not `data`: `data` is Item's default
+  // property and a signal parameter of that name shadows it.
+  signal statusReady(var result, bool fetch)
+  signal actionReady(string tag, var result)
   signal failed(string tag, string message)
 
   readonly property bool busy: proc.running || queue.length > 0
@@ -111,19 +113,19 @@ Item {
       root.finish()
       return
     }
-    var data
+    var result
     try {
-      data = JSON.parse(raw)
+      result = JSON.parse(raw)
     } catch (error) {
       root.failed(request.tag, "Could not parse Stow Sync helper output.")
       root.finish()
       return
     }
     if (request.isStatus) {
-      if (data.ok) root.statusReady(data, request.fetch)
-      else root.failed(request.tag, String(data.error || "Status failed."))
+      if (result.ok) root.statusReady(result, request.fetch)
+      else root.failed(request.tag, String(result.error || "Status failed."))
     } else {
-      root.actionReady(request.tag, data)
+      root.actionReady(request.tag, result)
     }
     root.finish()
   }

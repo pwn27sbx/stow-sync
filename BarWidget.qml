@@ -59,6 +59,9 @@ BarWidget {
     if ("settings" in target) target.settings = root.settings
     if ("anchorItem" in target) target.anchorItem = button
     if ("hostWidget" in target) target.hostWidget = root
+    // Settings are set now; let the panel run its first refresh (it waits for
+    // this so it never runs the helper with the wrong config).
+    if (typeof target.ensureStarted === "function") target.ensureStarted()
   }
 
   implicitWidth: button.implicitWidth
