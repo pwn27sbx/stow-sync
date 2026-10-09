@@ -12,6 +12,7 @@ import errno
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -2441,6 +2442,248 @@ class StatusShortTests(unittest.TestCase):
             code = ss.main(["--config", str(self.config), "--state-dir", str(self.state_dir), "status", "--short"])
         self.assertEqual(code, 0)
         self.assertEqual(buffer.getvalue(), "")
+
+
+# --------------------------------------------------------------------------
+# Unit 4d Task 1: repo info fields (README section 8, Unit 4d)
+# --------------------------------------------------------------------------
+
+
+ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+class SanitizeUrlTests(unittest.TestCase):
+    def test_strips_user_and_password(self) -> None:
+        self.assertEqual(
+            ss.sanitize_url("https://user:secret@github.com/u/r.git"),
+            "https://github.com/u/r.git",
+        )
+
+    def test_strips_token_only_userinfo(self) -> None:
+        self.assertEqual(
+            ss.sanitize_url("https://ghp_secretToken123@github.com/u/r.git"),
+            "https://github.com/u/r.git",
+        )
+
+    def test_keeps_conventional_ssh_username(self) -> None:
+        # ``git@`` is the standard SSH user, not a credential.
+        self.assertEqual(
+            ss.sanitize_url("ssh://git@github.com/u/r.git"),
+            "ssh://git@github.com/u/r.git",
+        )
+        self.assertEqual(
+            ss.sanitize_url("git@github.com:u/r.git"),
+            "git@github.com:u/r.git",
+        )
+
+    def test_plain_and_empty_values_pass_through(self) -> None:
+        self.assertEqual(ss.sanitize_url("https://github.com/u/r.git"), "https://github.com/u/r.git")
+        self.assertEqual(ss.sanitize_url(""), "")
+        self.assertEqual(ss.sanitize_url(None), "")
+
+
+class StatusInfoFieldTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.config = self.env.root / "config.json"
+        self.state_dir = self.env.root / "state"
+
+    def status(self, *extra: str) -> dict:
+        return ss.dispatch(["status", *extra], str(self.config), str(self.state_dir))
+
+    def _use(self, repo: Path, packages="auto") -> None:
+        write_config(
+            self.config,
+            [{"path": str(repo), "target": str(self.home), "packages": packages}],
+        )
+
+    def test_remote_head_subject_and_time(self) -> None:
+        bare, repo = make_bare_and_clone(self.env.root)
+        write(repo / "a.txt", "a\n")
+        commit_all(repo, "c1 first commit")
+        git(repo, "push", "-q", "origin", "main")
+        self._use(repo)
+        entry = self.status()["repos"][0]
+        self.assertEqual(entry["remote_url"], str(bare))
+        self.assertEqual(entry["head"], git(repo, "rev-parse", "--short", "HEAD").stdout.strip())
+        self.assertEqual(entry["head_subject"], "c1 first commit")
+        self.assertIsNotNone(entry["head_time"])
+        self.assertRegex(entry["head_time"], ISO_RE)
+
+    def test_remote_url_strips_embedded_credentials(self) -> None:
+        repo = self.env.root / "repo"
+        init_repo(repo)
+        write(repo / "a.txt", "a\n")
+        commit_all(repo, "c1")
+        git(repo, "remote", "add", "origin", "https://user:secret@example.com/x.git")
+        self._use(repo)
+        entry = self.status()["repos"][0]
+        self.assertEqual(entry["remote_url"], "https://example.com/x.git")
+        self.assertNotIn("secret", entry["remote_url"])
+
+    def test_no_origin_has_empty_remote_url(self) -> None:
+        repo = self.env.root / "repo"
+        init_repo(repo)
+        write(repo / "a.txt", "a\n")
+        commit_all(repo, "c1")
+        self._use(repo)
+        self.assertEqual(self.status()["repos"][0]["remote_url"], "")
+
+    def test_missing_repo_info_defaults(self) -> None:
+        self._use(self.env.root / "nope")
+        entry = self.status()["repos"][0]
+        self.assertFalse(entry["exists"])
+        self.assertEqual(entry["remote_url"], "")
+        self.assertEqual(entry["head"], "")
+        self.assertEqual(entry["head_subject"], "")
+        self.assertIsNone(entry["head_time"])
+        self.assertEqual(entry["stowed_packages"], 0)
+        self.assertEqual(entry["stowed_files"], 0)
+        self.assertIsNone(entry["last_publish"])
+        self.assertEqual(entry["incoming_commits"], [])
+
+    def test_stowed_packages_and_files_count_only_healthy(self) -> None:
+        repo = self.env.root / "repo"
+        init_repo(repo)
+        write(repo / "fish" / ".config" / "fish" / "config.fish", "set -gx X 1\n")
+        write(repo / "fish" / ".config" / "fish" / "conf.d" / "abbr.fish", "abbr -a g git\n")
+        write(repo / "extra" / ".config" / "extra" / "conf", "x\n")
+        commit_all(repo, "c1")
+        stow_apply(repo, self.home, "fish")
+        self._use(repo)
+        entry = self.status()["repos"][0]
+        health = {p["name"]: p["health"] for p in entry["packages"]}
+        self.assertEqual(health, {"fish": "ok", "extra": "pending"})
+        self.assertEqual(entry["stowed_packages"], 1)
+        self.assertEqual(entry["stowed_files"], 2)
+
+    def test_last_publish_reads_state_dir_file(self) -> None:
+        repo = self.env.root / "repo"
+        init_repo(repo)
+        write(repo / "a.txt", "a\n")
+        commit_all(repo, "c1")
+        when = "2026-10-09T12:34:56-05:00"
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "publish.json").write_text(
+            json.dumps({str(repo): when}), encoding="utf-8"
+        )
+        self._use(repo)
+        self.assertEqual(self.status()["repos"][0]["last_publish"], when)
+
+    def test_last_publish_null_without_file(self) -> None:
+        repo = self.env.root / "repo"
+        init_repo(repo)
+        write(repo / "a.txt", "a\n")
+        commit_all(repo, "c1")
+        self._use(repo)
+        self.assertIsNone(self.status()["repos"][0]["last_publish"])
+
+    def test_incoming_commits_lists_remote_commits_when_behind(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        other = self.env.root / "other"
+        subprocess.run(["git", "clone", str(bare), str(other)], check=True, capture_output=True, env=git_test_env())
+        git(other, "config", "user.name", "Test")
+        git(other, "config", "user.email", "test@example.com")
+        write(other / "b.txt", "b\n")
+        commit_all(other, "c2 from remote")
+        git(other, "push", "-q", "origin", "main")
+        git(work, "fetch", "-q", "origin")
+        self._use(work)
+        entry = self.status()["repos"][0]
+        self.assertEqual(entry["behind"], 1)
+        self.assertEqual([c["subject"] for c in entry["incoming_commits"]], ["c2 from remote"])
+        self.assertTrue(entry["incoming_commits"][0]["hash"])
+
+    def test_status_info_fields_do_not_mutate_repo(self) -> None:
+        repo = self.env.root / "repo"
+        init_repo(repo)
+        write(repo / "a.txt", "a\n")
+        commit_all(repo, "c1")
+        before = git(repo, "status", "--porcelain").stdout
+        before_head = git(repo, "rev-parse", "HEAD").stdout
+        self._use(repo)
+        self.status()
+        self.assertEqual(git(repo, "status", "--porcelain").stdout, before)
+        self.assertEqual(git(repo, "rev-parse", "HEAD").stdout, before_head)
+
+
+class PublishStampTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.config = self.env.root / "config.json"
+        self.state_dir = self.env.root / "state"
+        self.publish_file = self.state_dir / "publish.json"
+
+    def _use(self, repo: Path) -> None:
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+
+    def push(self, repo: Path) -> dict:
+        return ss.dispatch(["push", "--repo", str(repo)], str(self.config), str(self.state_dir))
+
+    def test_successful_push_records_publish_time(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        write(work / "b.txt", "b\n")
+        commit_all(work, "c2")
+        self._use(work)
+        result = self.push(work)
+        self.assertTrue(result.get("pushed"))
+        data = json.loads(self.publish_file.read_text(encoding="utf-8"))
+        self.assertIn(str(work), data)
+        self.assertRegex(data[str(work)], ISO_RE)
+        self.assertEqual(self.publish_file.stat().st_mode & 0o777, 0o600)
+
+    def test_failed_push_does_not_record(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        other = self.env.root / "other"
+        subprocess.run(["git", "clone", str(bare), str(other)], check=True, capture_output=True, env=git_test_env())
+        git(other, "config", "user.name", "Test")
+        git(other, "config", "user.email", "test@example.com")
+        write(other / "b.txt", "b\n")
+        commit_all(other, "c2")
+        git(other, "push", "-q", "origin", "main")
+        write(work / "c.txt", "c\n")
+        commit_all(work, "c3")
+        self._use(work)
+        result = self.push(work)
+        self.assertIn("push_error", result)
+        recorded = {}
+        if self.publish_file.exists():
+            recorded = json.loads(self.publish_file.read_text(encoding="utf-8"))
+        self.assertNotIn(str(work), recorded)
+
+    def test_successful_push_refreshes_existing_stamp(self) -> None:
+        bare, work = make_bare_and_clone(self.env.root)
+        write(work / "a.txt", "a\n")
+        commit_all(work, "c1")
+        git(work, "push", "-q", "origin", "main")
+        write(work / "b.txt", "b\n")
+        commit_all(work, "c2")
+        self._use(work)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.publish_file.write_text(
+            json.dumps({str(work): "2000-01-01T00:00:00+00:00"}), encoding="utf-8"
+        )
+        self.push(work)
+        data = json.loads(self.publish_file.read_text(encoding="utf-8"))
+        self.assertNotEqual(data[str(work)], "2000-01-01T00:00:00+00:00")
 
 
 if __name__ == "__main__":

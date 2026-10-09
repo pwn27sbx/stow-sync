@@ -54,6 +54,30 @@ def _shorten(text: str, limit: int = 300) -> str:
     return collapsed[:limit]
 
 
+# Userinfo inside a scheme:// URL (``user:pass@`` or ``token@``). The
+# conventional SSH username ``git@`` is not a credential and is preserved.
+_CREDENTIAL_URL = re.compile(
+    r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)(?P<userinfo>[^@/]+)@(?P<rest>.+)$"
+)
+
+
+def sanitize_url(url: Any) -> str:
+    """Strip embedded credentials from a git URL for display (README Unit 4d).
+
+    ``https://user:token@host/x`` and ``https://token@host/x`` become
+    ``https://host/x``. A bare ``git@host:path`` (scp form) and
+    ``ssh://git@host/x`` keep their conventional SSH username.
+    """
+    text = "" if url is None else str(url)
+    match = _CREDENTIAL_URL.match(text)
+    if not match:
+        return text
+    userinfo = match.group("userinfo")
+    if ":" in userinfo or userinfo != "git":
+        return match.group("scheme") + match.group("rest")
+    return text
+
+
 # Defaults from the handoff README section 4. Stored verbatim (with ``~``);
 # they are expanded in memory when a config is loaded.
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -234,6 +258,47 @@ def load_baseline(
     result["created"] = created
     return result
 
+
+# --------------------------------------------------------------------------
+# Publish stamps (README section 8, Unit 4d): the last successful push time
+# per repo, kept in the plugin's own state dir.
+# --------------------------------------------------------------------------
+
+PUBLISH_FILENAME = "publish.json"
+
+
+def publish_path(state_dir: str) -> str:
+    """Path of the publish stamp file inside ``state_dir``."""
+    return os.path.join(state_dir, PUBLISH_FILENAME)
+
+
+def load_publish_times(state_dir: str) -> dict[str, str]:
+    """Read ``{repo path: iso}`` from ``publish.json``; ``{}`` when unreadable."""
+    try:
+        with open(publish_path(state_dir), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in data.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+def record_publish(state_dir: str, repo_path: str, when: str | None = None) -> str:
+    """Refresh the last successful publish stamp for ``repo_path`` (0600).
+
+    ``status`` stays read-only; only a successful ``push`` calls this.
+    """
+    stamp = when or datetime.now().astimezone().isoformat(timespec="seconds")
+    times = load_publish_times(state_dir)
+    times[os.path.normpath(repo_path)] = stamp
+    os.makedirs(state_dir, 0o700, exist_ok=True)
+    _write_json_atomic(publish_path(state_dir), times, 0o600)
+    return stamp
 
 
 def _package_ignores_everything(package_path: str) -> bool:
@@ -1247,7 +1312,86 @@ def compute_badge(candidates: list[dict[str, Any]]) -> int:
 
 
 
-def _repo_status(repo_cfg: dict[str, Any], do_fetch: bool = False) -> dict[str, Any]:
+# Bounded walk of a package's source tree so a pathological package can never
+# stall ``status`` (README Unit 4d ``stowed_files``).
+MAX_STOWED_FILE_SCAN = 20000
+
+
+def package_file_count(repo_path: str, package: str) -> int:
+    """Number of regular source files a package would link (bounded)."""
+    if not package:
+        return 0
+    pkg_root = os.path.join(repo_path, package)
+    if not os.path.isdir(pkg_root):
+        return 0
+    count = 0
+    for dirpath, _dirnames, filenames in os.walk(pkg_root):
+        for name in filenames:
+            if os.path.islink(os.path.join(dirpath, name)):
+                continue
+            count += 1
+            if count >= MAX_STOWED_FILE_SCAN:
+                return count
+    return count
+
+
+def _git_output(repo_path: str, args: list[str], timeout: float = 20) -> str | None:
+    """Run git and return decoded stdout, or ``None`` on any failure."""
+    try:
+        result = run_git(repo_path, args, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    return _decode(result.stdout)
+
+
+# Cap on the incoming commit list (README Unit 4d overview "Incoming" group).
+INCOMING_COMMITS_LIMIT = 20
+
+
+def repo_info(repo_path: str, upstream: str) -> dict[str, Any]:
+    """Remote URL, HEAD metadata and the bounded incoming commit list.
+
+    All reads are read-only and best-effort: a fresh repo with no commits, or
+    no origin, yields empty values rather than an error.
+    """
+    info: dict[str, Any] = {
+        "remote_url": "",
+        "head": "",
+        "head_subject": "",
+        "head_time": None,
+        "incoming_commits": [],
+    }
+    remote = _git_output(repo_path, ["remote", "get-url", "origin"])
+    if remote is not None:
+        info["remote_url"] = sanitize_url(remote.strip())
+    log = _git_output(repo_path, ["log", "-1", "--pretty=%h%x1f%s%x1f%cI"])
+    if log:
+        parts = log.rstrip("\n").split("\x1f")
+        if len(parts) >= 3:
+            info["head"] = parts[0]
+            info["head_subject"] = parts[1]
+            info["head_time"] = parts[2] if parts[2] else None
+    if upstream:
+        incoming = _git_output(
+            repo_path,
+            ["log", f"--max-count={INCOMING_COMMITS_LIMIT}", "--pretty=%h%x1f%s", "HEAD.." + upstream],
+        )
+        for line in (incoming or "").splitlines():
+            if not line:
+                continue
+            tokens = line.split("\x1f", 1)
+            if len(tokens) == 2:
+                info["incoming_commits"].append({"hash": tokens[0], "subject": tokens[1]})
+    return info
+
+
+def _repo_status(
+    repo_cfg: dict[str, Any],
+    do_fetch: bool = False,
+    publish_times: dict[str, str] | None = None,
+) -> dict[str, Any]:
     raw_path = repo_cfg.get("path", "")
     path = expand_path(raw_path) if raw_path else ""
     entry: dict[str, Any] = {
@@ -1264,6 +1408,14 @@ def _repo_status(repo_cfg: dict[str, Any], do_fetch: bool = False) -> dict[str, 
         "operation": None,
         "last_fetch": None,
         "fetch_error": None,
+        "remote_url": "",
+        "head": "",
+        "head_subject": "",
+        "head_time": None,
+        "incoming_commits": [],
+        "stowed_packages": 0,
+        "stowed_files": 0,
+        "last_publish": None,
     }
     if not path or _git_dir(path) is None:
         return entry
@@ -1307,6 +1459,22 @@ def _repo_status(repo_cfg: dict[str, Any], do_fetch: bool = False) -> dict[str, 
                 changes=status["changes"],
                 untracked=status["untracked"],
             ),
+        }
+    )
+    info = repo_info(path, status["upstream"])
+    healthy = [p for p in entry["packages"] if str(p.get("health", "ok")) == "ok"]
+    entry.update(
+        {
+            "remote_url": info["remote_url"],
+            "head": info["head"],
+            "head_subject": info["head_subject"],
+            "head_time": info["head_time"],
+            "incoming_commits": info["incoming_commits"],
+            "stowed_packages": len(healthy),
+            "stowed_files": sum(
+                package_file_count(path, str(p.get("name", ""))) for p in healthy
+            ),
+            "last_publish": (publish_times or {}).get(os.path.normpath(path)),
         }
     )
     return entry
@@ -1354,10 +1522,15 @@ def cmd_status(
     """
     do_fetch = "--fetch" in args
     config = load_config(config_path)
-    repos = [_repo_status(repo_cfg, do_fetch) for repo_cfg in config.get("repos", [])]
+    state = resolve_state_dir(state_dir)
+    publish_times = load_publish_times(state)
+    repos = [
+        _repo_status(repo_cfg, do_fetch, publish_times)
+        for repo_cfg in config.get("repos", [])
+    ]
     candidates = compute_candidates(config)
     baseline = load_baseline(
-        resolve_state_dir(state_dir),
+        state,
         [candidate["path"] for candidate in candidates],
     )
     known = baseline["paths"]
@@ -1619,6 +1792,10 @@ def cmd_push(
     except subprocess.TimeoutExpired:
         return {"ok": True, "push_error": "Push timed out after 300s."}
     if result.returncode == 0:
+        try:
+            record_publish(resolve_state_dir(state_dir), repo["path"])
+        except OSError:
+            pass  # a stamp failure must never fail a successful push
         return {"ok": True, "pushed": True}
     text = _decode(result.stderr) + "\n" + _decode(result.stdout)
     return {"ok": True, "push_error": _push_error_text(text)}

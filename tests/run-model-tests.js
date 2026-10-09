@@ -782,3 +782,269 @@ test("confirmSpec covers upload and update in plain words", () => {
   assert.equal(Model.confirmSpec("update", { repos: ["~/.dotfiles"] }).confirmText, "Update")
   assert.equal(Model.confirmSpec("pull", { repo: "~/.dotfiles" }).confirmText, "Update")
 })
+
+// --- Unit 4d: config-sync parity view models ------------------------------
+
+test("relativeTime formats ISO deltas and tolerates junk", () => {
+  assert.equal(Model.relativeTime("2026-10-09T15:00:00-05:00", "2026-10-09T18:00:00-05:00"), "3h ago")
+  assert.equal(Model.relativeTime("2026-10-09T15:00:00Z", Date.parse("2026-10-09T15:00:20Z")), "just now")
+  assert.equal(Model.relativeTime("2026-10-09T15:00:00Z", "2026-10-09T15:30:00Z"), "30m ago")
+  assert.equal(Model.relativeTime("2026-10-08T15:00:00Z", "2026-10-09T15:00:00Z"), "1d ago")
+  assert.equal(Model.relativeTime("2026-10-01T15:00:00Z", "2026-10-09T15:00:00Z"), "1w ago")
+  assert.equal(Model.relativeTime("2026-08-09T15:00:00Z", "2026-10-09T15:00:00Z"), "2mo ago")
+  assert.equal(Model.relativeTime("2025-10-09T15:00:00Z", "2026-10-09T15:00:00Z"), "1y ago")
+  assert.equal(Model.relativeTime(null, "2026-10-09T15:00:00Z"), "")
+  assert.equal(Model.relativeTime("bogus", "2026-10-09T15:00:00Z"), "")
+})
+
+test("explain describes each state in plain words", () => {
+  assert.ok(Model.explain(HERO.clean).indexOf("Everything is saved and synced") !== -1)
+  const changes = Model.explain(HERO.changes)
+  assert.ok(changes.indexOf("Your dotfiles and wallpapers have 3 local changes.") !== -1, changes)
+  assert.ok(Model.explain(HERO.changes).indexOf("Publish") !== -1)
+  const ahead = Model.explain(HERO.ahead)
+  assert.ok(ahead.indexOf("2 commits waiting to upload in dotfiles") !== -1, ahead)
+  const behind = Model.explain(HERO.behind)
+  assert.ok(behind.indexOf("3 newer commits for wallpapers") !== -1, behind)
+  const attention = Model.explain(HERO.diverged)
+  assert.ok(attention.indexOf("attention") !== -1, attention)
+  assert.ok(attention.indexOf("dotfiles") !== -1, attention)
+  const fresh = Model.explain(HERO.newConfigs)
+  assert.ok(fresh.indexOf("2 new config files are not in Stow yet") !== -1, fresh)
+})
+
+test("statTiles returns four tiles with real nerd-font glyphs", () => {
+  const tiles = Model.statTiles(HERO.changes)
+  same(tiles.map((t) => t.key), ["changes", "upload", "updates", "newConfigs"])
+  assert.equal(tiles[0].value, "3")
+  assert.equal(tiles[0].label, "Changes")
+  assert.equal(tiles[0].icon, "\uf040")
+  assert.equal(tiles[0].tone, "accent")
+  assert.equal(tiles[1].value, "0")
+  assert.equal(tiles[1].label, "To upload")
+  assert.equal(tiles[1].icon, "\uf0ee")
+  assert.equal(tiles[1].tone, "muted")
+  assert.equal(tiles[2].value, "0")
+  assert.equal(tiles[2].label, "Updates")
+  assert.equal(tiles[2].icon, "\uf0ed")
+  assert.equal(tiles[2].tone, "muted")
+  assert.equal(tiles[3].value, "0")
+  assert.equal(tiles[3].label, "New configs")
+  assert.equal(tiles[3].icon, "\uf0752")
+  assert.equal(Model.statTiles(HERO.newConfigs)[3].value, "2")
+  assert.equal(Model.statTiles(HERO.newConfigs)[3].tone, "accent")
+})
+
+test("overviewGroups builds only the non-empty collapsible groups", () => {
+  const groups = Model.overviewGroups(fixture("status-mixed.json"))
+  same(groups.map((g) => g.key), ["outgoing", "fixing"])
+  const outgoing = groups[0]
+  assert.equal(outgoing.title, "Outgoing \u2014 this machine")
+  assert.equal(outgoing.count, 4)
+  assert.equal(outgoing.unit, "files")
+  assert.equal(outgoing.subtitle, "4 included \u00b7 press to expand")
+  assert.equal(outgoing.expanded, false)
+  assert.equal(outgoing.items.length, 4)
+  assert.equal(outgoing.items[0].package, "fish")
+  assert.equal(outgoing.items[0].chip, "A")
+  const fixing = groups[1]
+  assert.equal(fixing.title, "Needs fixing")
+  assert.equal(fixing.count, 2)
+  assert.equal(fixing.unit, "packages")
+  same(fixing.items.map((i) => i.package), ["fish", "hypr"])
+  assert.equal(fixing.items[1].stateColor, "urgent")
+})
+
+test("overviewGroups lists incoming commits supplied by the backend", () => {
+  const status = {
+    repos: [{
+      path: "~/a", exists: true, state: "behind", ahead: 0, behind: 2,
+      changes: [], untracked: [], packages: [],
+      incoming_commits: [
+        { hash: "abc1234", subject: "fix fish" },
+        { hash: "def5678", subject: "add walls" }
+      ]
+    }],
+    candidates: []
+  }
+  const groups = Model.overviewGroups(status)
+  const incoming = groups.find((g) => g.key === "incoming")
+  assert.equal(incoming.title, "Incoming \u2014 from GitHub")
+  assert.equal(incoming.count, 2)
+  assert.equal(incoming.unit, "commits")
+  assert.equal(incoming.subtitle, "2 included \u00b7 press to expand")
+  same(incoming.items.map((i) => i.hash), ["abc1234", "def5678"])
+  assert.equal(incoming.items[0].subject, "fix fish")
+})
+
+test("changesGroups nests repos then packages with checkbox rows", () => {
+  const groups = Model.changesGroups(fixture("status-mixed.json"), {})
+  same(groups.map((g) => g.repo), ["~/.dotfiles"])
+  const dotfiles = groups[0]
+  assert.equal(dotfiles.title, "dotfiles")
+  assert.equal(dotfiles.count, 4)
+  assert.equal(dotfiles.unit, "files")
+  same(dotfiles.packages.map((p) => p.package), ["fish", "hypr", "omarchy"])
+  const fish = dotfiles.packages[0]
+  assert.equal(fish.count, 2)
+  same(fish.items.map((i) => i.path), [
+    "fish/.config/fish/conf.d/abbr.fish",
+    "fish/.config/fish/config.fish"
+  ])
+  same(fish.items.map((i) => i.chip), ["A", "M"])
+  assert.equal(fish.items[0].checked, true)
+  assert.equal(fish.items[0].hidden, false)
+  assert.equal(dotfiles.packages[2].items[0].chip, "?")
+})
+
+test("changesGroups honours hiddenPaths and selectedRepos", () => {
+  const hidden = Model.changesGroups(fixture("status-mixed.json"), {
+    hiddenPaths: ["fish/.config/fish/config.fish"]
+  })
+  const target = hidden[0].packages[0].items.find((i) => i.path === "fish/.config/fish/config.fish")
+  assert.equal(target.hidden, true)
+  same(Model.changesGroups(fixture("status-mixed.json"), { selectedRepos: ["~/wallpapers"] }), [])
+  same(Model.changesGroups(null, {}), [])
+})
+
+test("changesGroups hides known untracked rows unless showExisting", () => {
+  const status = {
+    repos: [{ path: "~/a", exists: true, changes: [], untracked: [{ path: "p/known", package: "p", known: true }], packages: [] }],
+    candidates: []
+  }
+  assert.equal(Model.changesGroups(status, { showExisting: true })[0].packages[0].items[0].hidden, false)
+  assert.equal(Model.changesGroups(status, { showExisting: false })[0].packages[0].items[0].hidden, true)
+})
+
+test("packageCards describes each package and maps a real icon", () => {
+  const status = {
+    repos: [{
+      path: "~/.dotfiles", exists: true,
+      packages: [
+        { name: "fish", health: "ok", pending_links: [], conflicts: [], dangling: [] },
+        { name: "nvim", health: "conflicts", pending_links: [], conflicts: [{ message: "x" }], dangling: [] },
+        { name: "omarchy", health: "ok", pending_links: [], conflicts: [], dangling: [] }
+      ],
+      changes: [
+        { path: "fish/.config/fish/config.fish", package: "fish", x: "M", y: " ", kind: "modified" },
+        { path: "fish/.config/fish/conf.d/abbr.fish", package: "fish", x: "A", y: " ", kind: "added" }
+      ],
+      untracked: []
+    }],
+    candidates: []
+  }
+  const cards = Model.packageCards(status)
+  same(cards.map((c) => c.name), ["fish", "nvim", "omarchy"])
+  const fish = cards[0]
+  assert.equal(fish.repo, "~/.dotfiles")
+  assert.equal(fish.icon, "\uf120")
+  assert.equal(fish.title, "fish")
+  assert.equal(fish.description, "~/.config/fish \u00b7 2 changes")
+  assert.equal(fish.count, 2)
+  assert.equal(fish.unit, "files")
+  same(fish.files.map((f) => f.path), [
+    "fish/.config/fish/conf.d/abbr.fish",
+    "fish/.config/fish/config.fish"
+  ])
+  same(fish.files.map((f) => f.state), ["added", "modified"])
+  assert.equal(fish.expanded, false)
+  assert.equal(cards[1].icon, "\ue83a")
+  assert.ok(cards[1].description.indexOf("Needs fixing") !== -1, cards[1].description)
+  assert.equal(cards[2].icon, "\uf03d8")
+  assert.ok(cards[2].description.indexOf("Stowed") !== -1, cards[2].description)
+  assert.equal(cards[2].count, 0)
+})
+
+test("packageCards defaults maps each documented package to a glyph", () => {
+  const status = {
+    repos: [{
+      path: "~/r", exists: true, changes: [], untracked: [],
+      packages: [
+        { name: "walls", health: "ok", pending_links: [], conflicts: [], dangling: [] },
+        { name: "ai-tools", health: "ok", pending_links: [], conflicts: [], dangling: [] },
+        { name: "misc", health: "ok", pending_links: [], conflicts: [], dangling: [] }
+      ]
+    }],
+    candidates: []
+  }
+  const cards = Model.packageCards(status)
+  const byName = {}
+  for (const card of cards) byName[card.name] = card.icon
+  assert.equal(byName["walls"], "\uf03e")
+  assert.equal(byName["ai-tools"], "\uf0ad")
+  assert.equal(byName["misc"], "\uf07b")
+})
+
+test("changesView drops hidden rows unless showHidden and flattens the visible ones", () => {
+  const view = Model.changesView(fixture("status-mixed.json"), {
+    hiddenPaths: ["fish/.config/fish/config.fish"]
+  })
+  same(view.groups.map((g) => g.repo), ["~/.dotfiles"])
+  same(view.groups[0].packages.map((p) => p.package), ["fish", "hypr", "omarchy"])
+  assert.equal(view.groups[0].packages[0].count, 1)
+  same(view.groups[0].packages[0].items.map((i) => i.path), ["fish/.config/fish/conf.d/abbr.fish"])
+  same(view.rows.map((r) => r.path), [
+    "fish/.config/fish/conf.d/abbr.fish",
+    "hypr/.config/hypr/hyprland.conf",
+    "omarchy/.config/omarchy/backgrounds/nord/new.png"
+  ])
+  assert.equal(view.rows[0].key, "change:~/.dotfiles:fish/.config/fish/conf.d/abbr.fish")
+  assert.equal(view.groups[0].count, 3)
+})
+
+test("changesView keeps hidden rows when showHidden and drops empty groups", () => {
+  const shown = Model.changesView(fixture("status-mixed.json"), {
+    hiddenPaths: ["fish/.config/fish/config.fish"],
+    showHidden: true
+  })
+  assert.equal(shown.groups[0].packages[0].count, 2)
+  assert.equal(shown.rows.length, 4)
+  // Selecting a repo with no changes yields no groups and no rows.
+  const none = Model.changesView(fixture("status-mixed.json"), { selectedRepos: ["~/wallpapers"] })
+  same(none.groups, [])
+  same(none.rows, [])
+  // Tolerates missing data.
+  same(Model.changesView(null, {}).groups, [])
+})
+
+test("healthLabel spells out each package health", () => {
+  assert.equal(Model.healthLabel("conflicts"), "conflict")
+  assert.equal(Model.healthLabel("pending"), "pending link")
+  assert.equal(Model.healthLabel("dangling"), "dangling link")
+  assert.equal(Model.healthLabel("weird"), "weird")
+  assert.equal(Model.healthLabel(null), "ok")
+})
+
+test("firstUnhealthy finds the first unhealthy package in config order", () => {
+  const status = {
+    repos: [
+      { path: "~/a", packages: [{ name: "ok1", health: "ok" }] },
+      { path: "~/b", packages: [{ name: "ok2", health: "ok" }, { name: "bad", health: "pending" }, { name: "worse", health: "conflicts" }] }
+    ]
+  }
+  same(Model.firstUnhealthy(status), { repo: "~/b", package: "bad" })
+  assert.equal(Model.firstUnhealthy({ repos: [{ path: "~/a", packages: [{ name: "x", health: "ok" }] }] }), null)
+  assert.equal(Model.firstUnhealthy(null), null)
+  assert.equal(Model.firstUnhealthy({}), null)
+})
+
+test("repoInfoRows renders the info table with relative times", () => {
+  const repo = {
+    path: "~/.dotfiles", remote_url: "https://github.com/u/r.git", branch: "main", head: "abc1234",
+    ahead: 0, behind: 0, head_time: "2026-10-09T15:00:00-05:00",
+    last_publish: "2026-10-08T15:00:00-05:00", stowed_packages: 16
+  }
+  const rows = Model.repoInfoRows(repo, "0.1.0", "2026-10-09T18:00:00-05:00")
+  same(rows.map((r) => r.label), [
+    "Repo", "Remote", "Branch", "Ahead / behind", "Last commit", "Last publish", "Packages", "Plugin"
+  ])
+  assert.equal(rows[0].value, "~/.dotfiles")
+  assert.equal(rows[1].value, "https://github.com/u/r.git")
+  assert.equal(rows[1].copy, true)
+  assert.equal(rows[2].value, "main @ abc1234")
+  assert.equal(rows[3].value, "0 / 0")
+  assert.equal(rows[4].value, "3h ago")
+  assert.equal(rows[5].value, "1d ago")
+  assert.equal(rows[6].value, "16 stowed")
+  assert.equal(rows[7].value, "stow-sync 0.1.0")
+})

@@ -710,6 +710,30 @@ function unhealthyCount(repo) {
   return count
 }
 
+// Plain-words label for a package health token (the Overview "Needs fixing"
+// rows and the "Fix packages" button).
+function healthLabel(health) {
+  var h = String(health === undefined || health === null ? "ok" : health)
+  if (h === "conflicts") return "conflict"
+  if (h === "pending") return "pending link"
+  if (h === "dangling") return "dangling link"
+  return h
+}
+
+// First unhealthy package in repo/package order, or null when every package is
+// healthy. The Overview "Fix packages" button restows exactly this package.
+function firstUnhealthy(data) {
+  var repos = (data && data.repos) || []
+  for (var i = 0; i < repos.length; i++) {
+    var packages = (repos[i] && repos[i].packages) || []
+    for (var j = 0; j < packages.length; j++) {
+      if (String((packages[j] && packages[j].health) || "ok") !== "ok")
+        return { repo: String((repos[i] && repos[i].path) || ""), package: String((packages[j] && packages[j].name) || "") }
+    }
+  }
+  return null
+}
+
 // The first thing that needs the owner's attention, with a plain-words hint
 // that names the repo. Returns null when nothing blocks save/sync.
 function attentionFor(data) {
@@ -1040,4 +1064,528 @@ function nextRequest(queue) {
   var pending = (queue || []).slice()
   if (pending.length === 0) return { request: null, queue: pending }
   return { request: pending.shift(), queue: pending }
+}
+
+// --------------------------------------------------------------------------
+// Unit 4d: config-sync parity view models. All pure, all tested.
+//
+// Nerd Font glyphs, verified against the installed CaskaydiaCove Nerd Font
+// (scripts in the plan folder pin the codepoints):
+//   pencil        U+F040   (fa-pencil, stat tile "Changes")
+//   cloud-upload  U+F0EE   (fa-cloud-upload, stat tile "To upload")
+//   cloud-down    U+F0ED   (fa-cloud-download, stat tile "Updates")
+//   file-plus     U+F0752  (md-file_plus, stat tile "New configs")
+//   editor        U+E83A   (dev-neovim, package "nvim")
+//   terminal      U+F120   (fa-terminal, packages "fish"/"zsh")
+//   window        U+F2D0   (fa-window-maximize, "ghostty"/"tmux")
+//   palette       U+F03D8  (md-palette, package "omarchy")
+//   image         U+F03E   (fa-image, package "walls")
+//   wrench        U+F0AD   (fa-wrench, "ai-tools"/"wallpaper-tint")
+//   folder        U+F07B   (fa-folder, default package icon)
+// --------------------------------------------------------------------------
+
+var ICON = {
+  changes: "\uf040",
+  upload: "\uf0ee",
+  updates: "\uf0ed",
+  newConfigs: "\uf0752",
+  editor: "\ue83a",
+  terminal: "\uf120",
+  window: "\uf2d0",
+  palette: "\uf03d8",
+  image: "\uf03e",
+  wrench: "\uf0ad",
+  folder: "\uf07b"
+}
+
+var PACKAGE_ICON_BY_NAME = {
+  nvim: ICON.editor,
+  fish: ICON.terminal,
+  zsh: ICON.terminal,
+  ghostty: ICON.window,
+  tmux: ICON.window,
+  omarchy: ICON.palette,
+  walls: ICON.image,
+  "ai-tools": ICON.wrench,
+  "wallpaper-tint": ICON.wrench
+}
+
+// Exact name first, then a substring match (so "neovim"/"oh-my-zsh" hit),
+// then the default folder.
+function packageIcon(name) {
+  var key = String(name || "")
+  if (PACKAGE_ICON_BY_NAME[key] !== undefined) return PACKAGE_ICON_BY_NAME[key]
+  for (var prefix in PACKAGE_ICON_BY_NAME) {
+    if (key.indexOf(prefix) >= 0) return PACKAGE_ICON_BY_NAME[prefix]
+  }
+  return ICON.folder
+}
+
+// --- relative time (no Date object in the vm sandbox: parse ISO manually) --
+
+function daysFromCivil(year, month, day) {
+  var y = month <= 2 ? year - 1 : year
+  var era = Math.floor(y / 400)
+  var yoe = y - era * 400
+  var doy = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1
+  var doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy
+  return era * 146097 + doe - 719468
+}
+
+// Epoch milliseconds for an ISO 8601 string, or NaN when unparseable.
+function parseIsoMillis(iso) {
+  var text = String(iso === undefined || iso === null ? "" : iso)
+  var m = text.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$/)
+  if (!m) return NaN
+  var year = Number(m[1])
+  var month = Number(m[2])
+  var day = Number(m[3])
+  var hour = Number(m[4])
+  var minute = Number(m[5])
+  var second = Number(m[6] || 0)
+  var ms = Math.floor(Number("0." + (m[7] || "0")) * 1000)
+  var zone = m[8] || "Z"
+  var offsetSeconds = 0
+  if (zone !== "Z") {
+    var z = zone.match(/^([+-])(\d{2}):?(\d{2})$/)
+    var sign = z[1] === "-" ? -1 : 1
+    offsetSeconds = sign * (Number(z[2]) * 60 + Number(z[3])) * 60
+  }
+  var days = daysFromCivil(year, month, day)
+  return ((days * 86400) + hour * 3600 + minute * 60 + second - offsetSeconds) * 1000 + ms
+}
+
+// "3h ago", "just now", "1d ago", ... `now` accepts epoch ms or an ISO string;
+// when omitted the value reads as "just now".
+function relativeTime(iso, now) {
+  var then = parseIsoMillis(iso)
+  if (then !== then) return ""
+  var current
+  if (now === undefined || now === null || now === "") current = then
+  else if (typeof now === "number") current = now
+  else current = parseIsoMillis(now)
+  if (current !== current) current = then
+  var diff = current - then
+  if (diff < 0) diff = 0
+  var seconds = Math.floor(diff / 1000)
+  if (seconds < 45) return "just now"
+  var minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return minutes + "m ago"
+  var hours = Math.floor(minutes / 60)
+  if (hours < 24) return hours + "h ago"
+  var days = Math.floor(hours / 24)
+  if (days < 7) return days + "d ago"
+  if (days < 30) return Math.floor(days / 7) + "w ago"
+  if (days < 365) return Math.floor(days / 30) + "mo ago"
+  return Math.floor(days / 365) + "y ago"
+}
+
+// --- explain: one plain-words paragraph for the Overview tab ---------------
+
+function joinNames(names) {
+  var list = names || []
+  if (list.length === 0) return ""
+  if (list.length === 1) return String(list[0])
+  if (list.length === 2) return String(list[0]) + " and " + String(list[1])
+  return list.slice(0, -1).join(", ") + " and " + list[list.length - 1]
+}
+
+function explain(data) {
+  var d = data || {}
+  var attention = attentionFor(d)
+  if (attention) {
+    return "Something needs your attention: " + attention.hint +
+      ". Open Changes to review it before publishing."
+  }
+  var changes = changeTotals(d)
+  if (changes.count > 0) {
+    return "Your " + joinNames(changes.repos) + " have " +
+      plural(changes.count, " local change", " local changes") +
+      ". Review them in Changes, or Publish to save and upload everything."
+  }
+  var ahead = flowTotals(d, "ahead")
+  if (ahead.count > 0) {
+    return "You have " + plural(ahead.count, " commit", " commits") +
+      " waiting to upload in " + joinNames(ahead.repos) + ". Upload to send them to GitHub."
+  }
+  var behind = flowTotals(d, "behind")
+  if (behind.count > 0) {
+    return "GitHub has " + plural(behind.count, " newer commit", " newer commits") +
+      " for " + joinNames(behind.repos) + ". Update to bring them in."
+  }
+  var fresh = newCandidateCount(d)
+  if (fresh > 0) {
+    return plural(fresh, " new config file is", " new config files are") +
+      " not in Stow yet. Open New configs to adopt or ignore them."
+  }
+  return "Everything is saved and synced. Nothing to do."
+}
+
+// --- statTiles: the 4 equal tiles on the Overview tab ----------------------
+
+function statTiles(data) {
+  var d = data || {}
+  var changes = changeTotals(d).count
+  var ahead = flowTotals(d, "ahead").count
+  var behind = flowTotals(d, "behind").count
+  var fresh = newCandidateCount(d)
+  return [
+    { key: "changes", icon: ICON.changes, value: String(changes), label: "Changes", tone: changes > 0 ? "accent" : "muted" },
+    { key: "upload", icon: ICON.upload, value: String(ahead), label: "To upload", tone: ahead > 0 ? "accent" : "muted" },
+    { key: "updates", icon: ICON.updates, value: String(behind), label: "Updates", tone: behind > 0 ? "accent" : "muted" },
+    { key: "newConfigs", icon: ICON.newConfigs, value: String(fresh), label: "New configs", tone: fresh > 0 ? "accent" : "muted" }
+  ]
+}
+
+// --- overviewGroups: collapsible groups, hidden when empty -----------------
+
+function changeChip(change, untracked) {
+  if (untracked) return "?"
+  var x = String((change && change.x) || "").replace(/\s/g, "")
+  if (x) return x.charAt(0)
+  var y = String((change && change.y) || "").replace(/\s/g, "")
+  if (y) return y.charAt(0)
+  return "?"
+}
+
+function changeItem(repoPath, change, untracked) {
+  var c = change || {}
+  return {
+    type: "change",
+    repo: repoPath,
+    path: String(c.path || ""),
+    package: c.package ? String(c.package) : "",
+    chip: changeChip(c, untracked),
+    untracked: !!untracked,
+    stateColor: "accent"
+  }
+}
+
+function overviewGroup(key, title, unit, items) {
+  return {
+    key: key,
+    title: title,
+    subtitle: items.length + " included \u00b7 press to expand",
+    count: items.length,
+    unit: unit,
+    items: items,
+    expanded: false
+  }
+}
+
+function overviewGroups(data) {
+  var d = data || {}
+  var repos = d.repos || []
+  var groups = []
+
+  var outgoing = []
+  for (var i = 0; i < repos.length; i++) {
+    var repo = repos[i] || {}
+    var repoPath = String(repo.path || "")
+    var tracked = repo.changes || []
+    for (var t = 0; t < tracked.length; t++) outgoing.push(changeItem(repoPath, tracked[t], false))
+    var untracked = repo.untracked || []
+    for (var u = 0; u < untracked.length; u++) outgoing.push(changeItem(repoPath, untracked[u], true))
+  }
+  outgoing.sort(function(a, b) {
+    var byPackage = compareStrings(a.package, b.package)
+    return byPackage !== 0 ? byPackage : compareStrings(a.path, b.path)
+  })
+  if (outgoing.length > 0) {
+    groups.push(overviewGroup("outgoing", "Outgoing \u2014 this machine", "files", outgoing))
+  }
+
+  var incoming = []
+  for (var c = 0; c < repos.length; c++) {
+    var commits = (repos[c] && repos[c].incoming_commits) || []
+    for (var k = 0; k < commits.length; k++) {
+      incoming.push({
+        type: "incoming",
+        repo: String(repos[c].path || ""),
+        hash: String((commits[k] && commits[k].hash) || ""),
+        subject: String((commits[k] && commits[k].subject) || "")
+      })
+    }
+  }
+  if (incoming.length > 0) {
+    groups.push(overviewGroup("incoming", "Incoming \u2014 from GitHub", "commits", incoming))
+  }
+
+  var newConfigs = []
+  var candidates = d.candidates || []
+  for (var f = 0; f < candidates.length; f++) {
+    if (candidates[f] && candidates[f].known === true) continue
+    newConfigs.push({
+      type: "candidate",
+      path: String((candidates[f] && candidates[f].path) || ""),
+      package: String((candidates[f] && candidates[f].suggested_package) || ""),
+      group: String((candidates[f] && candidates[f].group) || "watched")
+    })
+  }
+  if (newConfigs.length > 0) {
+    groups.push(overviewGroup("newConfigs", "New config files", "files", newConfigs))
+  }
+
+  var fixing = []
+  for (var r = 0; r < repos.length; r++) {
+    var current = repos[r] || {}
+    var packages = (current.packages || []).slice().sort(function(a, b) {
+      return compareStrings(a && a.name, b && b.name)
+    })
+    for (var p = 0; p < packages.length; p++) {
+      var pkg = packages[p] || {}
+      var health = String(pkg.health || "ok")
+      if (health === "ok") continue
+      fixing.push({
+        type: "health",
+        repo: String(current.path || ""),
+        package: String(pkg.name || ""),
+        health: health,
+        stateColor: healthColor(health)
+      })
+    }
+  }
+  if (fixing.length > 0) {
+    groups.push(overviewGroup("fixing", "Needs fixing", "packages", fixing))
+  }
+
+  return groups
+}
+
+// --- changesGroups: repo -> package groups with checkbox rows --------------
+
+function changesGroups(data, options) {
+  var d = data || {}
+  var opts = options || {}
+  var hiddenMap = {}
+  var hiddenPaths = opts.hiddenPaths || []
+  for (var h = 0; h < hiddenPaths.length; h++) hiddenMap[String(hiddenPaths[h])] = true
+  var showExisting = opts.showExisting !== false
+  var selected = opts.selectedRepos || null
+  var selectedMap = {}
+  if (selected && selected.length) {
+    for (var s = 0; s < selected.length; s++) selectedMap[String(selected[s])] = true
+  }
+
+  var groups = []
+  var repos = d.repos || []
+  for (var i = 0; i < repos.length; i++) {
+    var repo = repos[i] || {}
+    var repoPath = String(repo.path || "")
+    if (selected && selected.length && !selectedMap[repoPath]) continue
+    var entries = []
+    var tracked = repo.changes || []
+    for (var t = 0; t < tracked.length; t++) entries.push({ change: tracked[t], untracked: false })
+    var untracked = repo.untracked || []
+    for (var u = 0; u < untracked.length; u++) entries.push({ change: untracked[u], untracked: true })
+    if (entries.length === 0) continue
+    entries.sort(function(a, b) {
+      var byPackage = compareStrings(a.change && a.change.package, b.change && b.change.package)
+      if (byPackage !== 0) return byPackage
+      return compareStrings(a.change && a.change.path, b.change && b.change.path)
+    })
+    var packages = []
+    var current = null
+    for (var e = 0; e < entries.length; e++) {
+      var change = entries[e].change || {}
+      var name = change.package ? String(change.package) : ""
+      if (!current || current.package !== name) {
+        current = { package: name, label: packageLabel(name), count: 0, items: [] }
+        packages.push(current)
+      }
+      var path = String(change.path || "")
+      var isHidden = hiddenMap[path] === true
+      if (entries[e].untracked && change.known === true && !showExisting) isHidden = true
+      current.items.push({
+        path: path,
+        package: name,
+        chip: changeChip(change, entries[e].untracked),
+        checked: true,
+        hidden: isHidden
+      })
+      current.count += 1
+    }
+    var count = 0
+    for (var c = 0; c < packages.length; c++) count += packages[c].count
+    groups.push({
+      key: "changes:" + repoPath,
+      repo: repoPath,
+      title: repoDisplayName(repoPath),
+      count: count,
+      unit: "files",
+      packages: packages
+    })
+  }
+  return groups
+}
+
+// Changes tab view: changesGroups with hidden rows removed unless
+// `showHidden`, plus a flat list of the visible rows for the keyboard cursor,
+// selection and publish plan. Each row carries the same "change:<repo>:<path>"
+// key the panel stores in its checked map. Pure; the panel only renders it.
+function changesView(data, options) {
+  var opts = options || {}
+  var showHidden = opts.showHidden === true
+  var groups = changesGroups(data, {
+    hiddenPaths: opts.hiddenPaths || [],
+    showExisting: opts.showExisting !== false,
+    selectedRepos: opts.selectedRepos || []
+  })
+  var out = []
+  var rows = []
+  for (var g = 0; g < groups.length; g++) {
+    var group = groups[g]
+    var packages = []
+    for (var p = 0; p < group.packages.length; p++) {
+      var pkg = group.packages[p]
+      var items = []
+      for (var i = 0; i < pkg.items.length; i++) {
+        var item = pkg.items[i]
+        if (item.hidden && !showHidden) continue
+        var row = {
+          type: "change",
+          repo: group.repo,
+          package: pkg.package,
+          label: pkg.label,
+          path: item.path,
+          chip: item.chip,
+          hidden: item.hidden === true,
+          checked: item.checked !== false,
+          key: "change:" + group.repo + ":" + item.path
+        }
+        items.push(row)
+        rows.push(row)
+      }
+      if (items.length > 0) {
+        packages.push({ package: pkg.package, label: pkg.label, count: items.length, items: items })
+      }
+    }
+    if (packages.length > 0) {
+      var count = 0
+      for (var c = 0; c < packages.length; c++) count += packages[c].count
+      out.push({
+        key: group.key,
+        repo: group.repo,
+        title: group.title,
+        count: count,
+        unit: "files",
+        packages: packages
+      })
+    }
+  }
+  return { groups: out, rows: rows }
+}
+
+// --- packageCards: one card per package per repo ---------------------------
+
+function packageChangeFiles(repo, packageName) {
+  var files = []
+  var changes = (repo && repo.changes) || []
+  for (var i = 0; i < changes.length; i++) {
+    if (String((changes[i] && changes[i].package) || "") !== packageName) continue
+    files.push({
+      path: String((changes[i] && changes[i].path) || ""),
+      state: String((changes[i] && changes[i].kind) || "modified")
+    })
+  }
+  var untracked = (repo && repo.untracked) || []
+  for (var u = 0; u < untracked.length; u++) {
+    if (String((untracked[u] && untracked[u].package) || "") !== packageName) continue
+    files.push({
+      path: String((untracked[u] && untracked[u].path) || ""),
+      state: "untracked"
+    })
+  }
+  files.sort(function(a, b) { return compareStrings(a.path, b.path) })
+  return files
+}
+
+// "~/.config/fish": from a stow-health target dir, else the common target
+// directory of the package's known repo-relative files
+// (``fish/.config/fish/conf.d/x`` and ``fish/.config/fish/y`` -> ``~/.config/fish``).
+function packageTargetLabel(pkg, files) {
+  var groups = [pkg.pending_links, pkg.conflicts, pkg.dangling]
+  for (var g = 0; g < groups.length; g++) {
+    var list = groups[g] || []
+    for (var i = 0; i < list.length; i++) {
+      var target = list[i] && list[i].target ? String(list[i].target) : ""
+      if (!target) continue
+      var slash = target.lastIndexOf("/")
+      return slash > 0 ? target.slice(0, slash) : target
+    }
+  }
+  var dirs = []
+  for (var f = 0; f < files.length; f++) {
+    var parts = String(files[f].path).split("/")
+    if (parts.length > 1) parts.shift()
+    var dir = parts.slice(0, -1).join("/")
+    if (dir) dirs.push(dir)
+  }
+  if (dirs.length === 0) return ""
+  var common = dirs[0].split("/")
+  for (var d = 1; d < dirs.length; d++) {
+    var other = dirs[d].split("/")
+    var keep = 0
+    while (keep < common.length && keep < other.length && common[keep] === other[keep]) keep++
+    common = common.slice(0, keep)
+  }
+  var label = common.join("/")
+  return label ? "~/" + label : "~/" + dirs[0]
+}
+
+function packageCards(data) {
+  var d = data || {}
+  var cards = []
+  var repos = d.repos || []
+  for (var i = 0; i < repos.length; i++) {
+    var repo = repos[i] || {}
+    var repoPath = String(repo.path || "")
+    var packages = (repo.packages || []).slice().sort(function(a, b) {
+      return compareStrings(a && a.name, b && b.name)
+    })
+    for (var p = 0; p < packages.length; p++) {
+      var pkg = packages[p] || {}
+      var name = String(pkg.name || "")
+      var health = String(pkg.health || "ok")
+      var files = packageChangeFiles(repo, name)
+      var statusText
+      if (health !== "ok") statusText = "Needs fixing"
+      else if (files.length > 0) statusText = plural(files.length, " change", " changes")
+      else statusText = "Stowed \u00b7 press to expand"
+      var target = packageTargetLabel(pkg, files)
+      cards.push({
+        repo: repoPath,
+        name: name,
+        icon: packageIcon(name),
+        title: name,
+        description: (target ? target + " \u00b7 " : "\u00b7 ") + statusText,
+        count: files.length,
+        unit: "files",
+        files: files,
+        expanded: false
+      })
+    }
+  }
+  return cards
+}
+
+// --- repoInfoRows: the per-repo info table ---------------------------------
+
+function repoInfoRows(repo, version, now) {
+  var r = repo || {}
+  var branch = String(r.branch || "")
+  var head = String(r.head || "")
+  var branchValue = branch
+  if (head) branchValue = branch ? branch + " @ " + head : "@ " + head
+  var remote = String(r.remote_url || "")
+  return [
+    { label: "Repo", value: String(r.path || "") },
+    { label: "Remote", value: remote, copy: remote !== "" },
+    { label: "Branch", value: branchValue },
+    { label: "Ahead / behind", value: num(r.ahead, 0) + " / " + num(r.behind, 0) },
+    { label: "Last commit", value: relativeTime(r.head_time, now) },
+    { label: "Last publish", value: relativeTime(r.last_publish, now) },
+    { label: "Packages", value: num(r.stowed_packages, 0) + " stowed" },
+    { label: "Plugin", value: "stow-sync " + String(version || "") }
+  ]
 }
