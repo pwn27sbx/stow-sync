@@ -29,6 +29,8 @@ Panel {
   property int newCount: 0
   property int existingCount: 0
   property bool showExisting: false
+  // Repos whose collapsed "N packages OK" row is expanded.
+  property var expandedOk: []
   property string lastRefresh: ""
   property string errorText: ""
   // First refresh runs only after the host injects `settings` (see ensureStarted).
@@ -56,6 +58,8 @@ Panel {
   readonly property var adoptTarget: Model.adoptTarget(repos)
   readonly property bool busy: runner.busy
   readonly property var focusedRow: (cursor >= 0 && cursor < rows.length) ? rows[cursor] : null
+  // Empty only when the user has not expanded known untracked candidates.
+  readonly property bool showEmpty: Model.isEmpty(root.data, { newCount: root.newCount }) && !(root.showExisting && root.existingCount > 0)
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5)
   readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
 
@@ -85,7 +89,7 @@ Panel {
   }
 
   function rebuildRows() {
-    var result = Model.panelRows(root.data, root.showExisting)
+    var result = Model.panelRows(root.data, { showExisting: root.showExisting, expandedOk: root.expandedOk })
     root.rows = result.rows
     root.newCount = result.newCount
     root.existingCount = result.existingCount
@@ -102,7 +106,6 @@ Panel {
     next[key] = value
     root.checkedPaths = next
   }
-
   function applyAction(tag, payload) {
     var outcome = Model.actionOutcome(tag, payload)
     if (outcome.kind === "diff") { root.diffBody = outcome.body; root.diffTruncated = outcome.truncated; root.overlayMode = "diff"; return }
@@ -124,18 +127,9 @@ Panel {
     root.setError(outcome.error)
   }
 
-  function openConfirm(kind, payload) {
-    root.confirmKind = kind
-    root.confirmPayload = payload || {}
-    root.confirmError = ""
-    root.overlayMode = "confirm"
-  }
+  function openConfirm(kind, payload) { root.confirmKind = kind; root.confirmPayload = payload || {}; root.confirmError = ""; root.overlayMode = "confirm" }
 
-  function acceptConfirm() {
-    if (root.busy) return
-    var mutation = Model.mutationFor(root.confirmKind, root.confirmPayload)
-    runner.runAction(mutation.tag, mutation.args, mutation.stdin)
-  }
+  function acceptConfirm() { if (root.busy) return; var mutation = Model.mutationFor(root.confirmKind, root.confirmPayload); runner.runAction(mutation.tag, mutation.args, mutation.stdin) }
 
   function overlayConfirm() {
     if (root.overlayMode === "commit") { root.confirmCommit(); return }
@@ -150,18 +144,14 @@ Panel {
     root.overlayMode = ""
   }
 
-  function repoForFocused() {
-    var row = root.focusedRow
-    if (!row) return ""
-    if (row.type === "repo") return row.name
-    return row.repo ? String(row.repo) : ""
-  }
+  function repoForFocused() { var row = root.focusedRow; if (!row) return ""; if (row.type === "repo") return row.name; return row.repo ? String(row.repo) : "" }
 
   function activateRow(row) {
     var intent = Model.activateIntent(row)
     if (intent.kind === "commit") root.openCommit(intent.repo)
     else if (intent.kind === "diff") root.openDiff(intent.repo, intent.path)
     else if (intent.kind === "restow") root.restowPackage(intent.repo, intent.package)
+    else if (intent.kind === "toggle-ok") root.toggleOk(row.repo)
     else if (intent.kind === "adopt") root.adoptCandidate(row)
   }
 
@@ -200,22 +190,15 @@ Panel {
   }
 
   function openDiff(repo, path) {
-    root.diffTitle = "Diff — " + path
-    root.diffBody = ""
-    root.diffTruncated = false
+    root.diffTitle = "Diff — " + path; root.diffBody = ""; root.diffTruncated = false
     runner.runAction("diff", ["diff", "--repo", repo, "--path", path])
   }
 
   function openCommit(repo) {
     var paths = Model.selectedPaths(root.rows, root.checkedPaths, repo)
     if (paths.length === 0) { root.setError("Select at least one change before committing."); return }
-    root.commitRepo = repo
-    root.commitPaths = paths
-    root.commitMessage = ""
-    root.commitSecrets = []
-    root.commitAllowSecrets = false
-    root.commitError = ""
-    root.overlayMode = "commit"
+    root.commitRepo = repo; root.commitPaths = paths; root.commitMessage = ""
+    root.commitSecrets = []; root.commitAllowSecrets = false; root.commitError = ""; root.overlayMode = "commit"
     runner.runAction("suggest", ["suggest-message", "--repo", repo], JSON.stringify(paths))
   }
 
@@ -228,42 +211,30 @@ Panel {
   }
 
   function openPicker(row) {
-    root.pickerKey = row.key
-    root.pickerPath = row.path
-    root.pickerValue = Model.packageFor(row, root.packageOverrides)
-    root.pickerOptions = Model.pickerOptions(root.adoptTarget.packages, row.suggestedPackage, root.pickerValue)
-    root.overlayMode = "picker"
+    root.pickerKey = row.key; root.pickerPath = row.path; root.pickerValue = Model.packageFor(row, root.packageOverrides)
+    root.pickerOptions = Model.pickerOptions(root.adoptTarget.packages, row.suggestedPackage, root.pickerValue); root.overlayMode = "picker"
   }
 
   function applyPackagePick() {
     var next = {}
     for (var k in root.packageOverrides) next[k] = root.packageOverrides[k]
-    next[root.pickerKey] = root.pickerValue
-    root.packageOverrides = next
-    root.overlayMode = ""
+    next[root.pickerKey] = root.pickerValue; root.packageOverrides = next; root.overlayMode = ""
   }
 
   function toggleExisting() { root.showExisting = !root.showExisting; root.rebuildRows() }
 
+  function toggleOk(repo) {
+    var name = String(repo || ""); var next = root.expandedOk.slice(); var at = next.indexOf(name)
+    if (at >= 0) next.splice(at, 1); else next.push(name)
+    root.expandedOk = next; root.rebuildRows()
+  }
+
   onOpenedChanged: if (root.opened) { root.ensureStarted(); root.refresh(); Qt.callLater(function() { keyCatcher.forceActiveFocus() }) }
-  onCursorChanged: {
-    list.currentIndex = root.cursor
-    list.positionViewAtIndex(root.cursor, ListView.Contain)
-  }
+  onCursorChanged: { list.currentIndex = root.cursor; list.positionViewAtIndex(root.cursor, ListView.Contain) }
 
-  Timer {
-    interval: root.refreshMinutes * 60000
-    running: true
-    repeat: true
-    onTriggered: if (!root.busy && root.overlayMode === "") root.refresh()
-  }
+  Timer { interval: root.refreshMinutes * 60000; running: true; repeat: true; onTriggered: if (!root.busy && root.overlayMode === "") root.refresh() }
 
-  Timer {
-    interval: root.fetchMinutes * 60000
-    running: true
-    repeat: true
-    onTriggered: if (!root.busy && root.overlayMode === "") root.refreshWithFetch()
-  }
+  Timer { interval: root.fetchMinutes * 60000; running: true; repeat: true; onTriggered: if (!root.busy && root.overlayMode === "") root.refreshWithFetch() }
 
   KeyboardPanel {
     id: panel
@@ -296,17 +267,34 @@ Panel {
 
           Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Stow Sync"; color: Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.title; font.bold: true }
           Text { Layout.alignment: Qt.AlignVCenter; visible: root.lastRefresh !== ""; text: root.lastRefresh; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.caption }
-          Button { Layout.alignment: Qt.AlignVCenter; visible: root.existingCount > 0; text: (root.showExisting ? "Hide" : "Show") + " untracked (" + root.existingCount + ")"; onClicked: root.toggleExisting() }
+          Button { Layout.alignment: Qt.AlignVCenter; visible: root.existingCount > 0 && !root.showEmpty; text: (root.showExisting ? "Hide" : "Show") + " untracked (" + root.existingCount + ")"; onClicked: root.toggleExisting() }
           Button { Layout.alignment: Qt.AlignVCenter; visible: root.newCount > 0; text: "Mark all known"; onClicked: root.markAllKnown() }
           Button { Layout.alignment: Qt.AlignVCenter; text: "Refresh"; enabled: !root.busy; onClicked: root.refreshWithFetch() }
         }
 
         Text { Layout.fillWidth: true; visible: root.errorText !== ""; textFormat: Text.PlainText; text: root.errorText; color: Color.urgent; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap }
 
+        // Empty state replaces the list; the collapsed "Show untracked" toggle stays below the message.
+        ColumnLayout {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          visible: root.showEmpty
+          spacing: Style.spacing.sm
+          Item { Layout.fillHeight: true }
+          // U+F00C (Nerd Font "check"): verified present in JetBrainsMono Nerd Font.
+          Text { Layout.alignment: Qt.AlignHCenter; textFormat: Text.PlainText; text: "\uf00c"; color: Color.accent; font.family: Style.font.family; font.pixelSize: Style.font.display }
+          Text { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; textFormat: Text.PlainText; text: "Everything committed, pushed and stowed"; color: Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body; wrapMode: Text.WordWrap }
+          Button { Layout.alignment: Qt.AlignHCenter; visible: root.existingCount > 0; text: "Show untracked (" + root.existingCount + ")"; onClicked: root.toggleExisting() }
+          Item { Layout.fillHeight: true }
+        }
+
+        // The ListView is the scroll region: it fills the space left by the capped panel
+        // after the header, clips and scrolls its Flickable content so nothing is cut off.
         ListView {
           id: list
           Layout.fillWidth: true
           Layout.fillHeight: true
+          visible: !root.showEmpty
           clip: true
           model: root.rows
           boundsBehavior: Flickable.StopAtBounds
@@ -334,7 +322,9 @@ Panel {
             ItemRow {
               id: itemRow
               width: parent.width
-              visible: delegateRoot.modelData.type === "change" || delegateRoot.modelData.type === "health"
+              visible: delegateRoot.modelData.type === "change"
+                || delegateRoot.modelData.type === "health"
+                || delegateRoot.modelData.type === "packages-ok"
               row: delegateRoot.modelData
               focused: root.cursor === delegateRoot.index
               checked: root.checkedPaths[delegateRoot.modelData.key] !== false

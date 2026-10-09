@@ -142,9 +142,9 @@ test("groupChanges sorts packages then paths and labels root", () => {
 
 // --- buildRows -----------------------------------------------------------
 
-test("buildRows on a clean repo yields one repo row and one health row", () => {
+test("buildRows collapses a clean repo's healthy packages into one packages-ok row", () => {
   const rows = Model.buildRows(fixture("status-clean.json"))
-  same(rows.map((r) => r.type), ["repo", "health"])
+  same(rows.map((r) => r.type), ["repo", "packages-ok"])
   const repo = rows[0]
   assert.equal(repo.key, "repo:~/.dotfiles")
   assert.equal(repo.name, "~/.dotfiles")
@@ -154,16 +154,18 @@ test("buildRows on a clean repo yields one repo row and one health row", () => {
   assert.equal(repo.canCommit, false)
   assert.equal(repo.canPush, false)
   assert.equal(repo.canPull, false)
-  assert.equal(rows[1].package, "fish")
-  assert.equal(rows[1].attention, false)
+  assert.equal(rows[1].repo, "~/.dotfiles")
+  assert.equal(rows[1].count, 1)
+  assert.equal(rows[1].expanded, false)
 })
 
-test("buildRows groups changes by package and sorts health rows", () => {
+test("buildRows emits only unhealthy package rows and a packages-ok summary", () => {
   const rows = Model.buildRows(fixture("status-mixed.json"))
   same(rows.map((r) => r.type), [
     "repo",
     "change", "change", "change", "change",
-    "health", "health", "health",
+    "health", "health",
+    "packages-ok",
     "repo",
     "repo"
   ])
@@ -176,11 +178,14 @@ test("buildRows groups changes by package and sorts health rows", () => {
   ])
   same(rows.slice(1, 5).map((r) => r.packageLabel), ["fish", "fish", "hypr", "omarchy"])
   assert.equal(rows[4].untracked, true)
-  // Health rows alphabetised: fish, hypr, omarchy.
-  same(rows.slice(5, 8).map((r) => r.package), ["fish", "hypr", "omarchy"])
+  // Only unhealthy packages get health rows, alphabetised: fish, hypr.
+  same(rows.slice(5, 7).map((r) => r.package), ["fish", "hypr"])
   assert.equal(rows[5].stateColor, "accent")   // pending
   assert.equal(rows[6].stateColor, "urgent")   // conflicts
-  assert.equal(rows[7].stateColor, "muted")    // ok
+  // The healthy omarchy package collapses into one summary row.
+  assert.equal(rows[7].type, "packages-ok")
+  assert.equal(rows[7].count, 1)
+  assert.equal(rows[7].expanded, false)
   // Repo A header fields.
   const repoA = rows[0]
   assert.equal(repoA.state, "dirty")
@@ -200,6 +205,19 @@ test("buildRows groups changes by package and sorts health rows", () => {
   assert.equal(repoC.state, "missing")
   assert.equal(repoC.exists, false)
   assert.equal(repoC.canCommit, false)
+})
+
+test("buildRows expands healthy packages beneath the packages-ok row", () => {
+  const collapsed = Model.buildRows(fixture("status-mixed.json"))
+  assert.equal(collapsed.filter((r) => r.type === "health" && r.health === "ok").length, 0)
+
+  const rows = Model.buildRows(fixture("status-mixed.json"), { expandedOk: ["~/.dotfiles"] })
+  const summary = rows.find((r) => r.type === "packages-ok")
+  assert.equal(summary.expanded, true)
+  const at = rows.indexOf(summary)
+  assert.equal(rows[at + 1].type, "health")
+  assert.equal(rows[at + 1].package, "omarchy")
+  assert.equal(rows[at + 1].health, "ok")
 })
 
 test("buildRows orders candidates known:false first, watched before other", () => {
@@ -251,7 +269,7 @@ test("formatSize picks a readable unit", () => {
 // --- panelRows and friends (view-model helpers) --------------------------
 
 test("panelRows hides known candidates and marks group headers", () => {
-  const collapsed = Model.panelRows(fixture("status-candidates.json"), false)
+  const collapsed = Model.panelRows(fixture("status-candidates.json"), { showExisting: false })
   same(collapsed.rows.filter((r) => r.type === "candidate").map((r) => r.path), [
     "~/.config/systemd/user/a.timer",
     "~/.config/zzz"
@@ -261,7 +279,7 @@ test("panelRows hides known candidates and marks group headers", () => {
   same(collapsed.existingPaths, [])
   assert.equal(collapsed.rows.find((r) => r.type === "candidate").header, "New configs (2)")
 
-  const expanded = Model.panelRows(fixture("status-candidates.json"), true)
+  const expanded = Model.panelRows(fixture("status-candidates.json"), { showExisting: true })
   assert.equal(expanded.rows.filter((r) => r.type === "candidate").length, 4)
   same(expanded.existingPaths, ["~/.local/bin/foo", "~/.config/aaa"])
   const existingHeader = expanded.rows.find((r) => r.type === "candidate" && r.known)
@@ -271,12 +289,47 @@ test("panelRows hides known candidates and marks group headers", () => {
   assert.equal(expanded.rows[0].header, undefined)
 })
 
+test("panelRows forwards expandedOk to buildRows", () => {
+  const result = Model.panelRows(fixture("status-clean.json"), { showExisting: false, expandedOk: ["~/.dotfiles"] })
+  const summary = result.rows.find((r) => r.type === "packages-ok")
+  assert.equal(summary.expanded, true)
+  assert.equal(result.rows[result.rows.indexOf(summary) + 1].type, "health")
+})
+
 test("panelRows tolerates missing data", () => {
-  const result = Model.panelRows(null, true)
+  const result = Model.panelRows(null, { showExisting: true })
   same(result.rows, [])
   assert.equal(result.newCount, 0)
   assert.equal(result.existingCount, 0)
   same(result.existingPaths, [])
+})
+
+test("isEmpty reports a fully settled config", () => {
+  assert.equal(Model.isEmpty(fixture("status-clean.json"), { newCount: 0 }), true)
+  // Known candidates alone do not block the empty state.
+  assert.equal(Model.isEmpty(fixture("status-candidates.json"), { newCount: 0 }), true)
+  // Unknown candidates do.
+  assert.equal(Model.isEmpty(fixture("status-candidates.json"), { newCount: 2 }), false)
+  // Changes, ahead/behind or unhealthy packages do.
+  assert.equal(Model.isEmpty(fixture("status-mixed.json"), { newCount: 0 }), false)
+  assert.equal(Model.isEmpty({
+    repos: [{ path: "~/a", exists: true, ahead: 0, behind: 0, changes: [], untracked: [], packages: [{ name: "p", health: "pending" }] }],
+    candidates: []
+  }, { newCount: 0 }), false)
+  assert.equal(Model.isEmpty({
+    repos: [{ path: "~/a", exists: true, ahead: 1, behind: 0, changes: [], untracked: [], packages: [] }],
+    candidates: []
+  }, { newCount: 0 }), false)
+  // A missing repo is never "settled".
+  assert.equal(Model.isEmpty({
+    repos: [{ path: "~/gone", exists: false, ahead: 0, behind: 0, changes: [], untracked: [], packages: [] }],
+    candidates: []
+  }, { newCount: 0 }), false)
+  // Without aux.newCount the unknown candidates are counted from the data.
+  assert.equal(Model.isEmpty(fixture("status-candidates.json")), false)
+  assert.equal(Model.isEmpty(fixture("status-clean.json")), true)
+  // Before any data is loaded the panel must not claim emptiness.
+  assert.equal(Model.isEmpty(null, { newCount: 0 }), false)
 })
 
 test("selectedPaths honours the checked map and repo", () => {
@@ -410,6 +463,7 @@ test("activateIntent maps a row to its primary action", () => {
   assert.equal(Model.activateIntent({ type: "repo", name: "~/a" }).kind, "commit")
   assert.equal(Model.activateIntent({ type: "change", repo: "~/a", path: "p" }).kind, "diff")
   assert.equal(Model.activateIntent({ type: "health", repo: "~/a", package: "p" }).kind, "restow")
+  assert.equal(Model.activateIntent({ type: "packages-ok", repo: "~/a", count: 2 }).kind, "toggle-ok")
   assert.equal(Model.activateIntent({ type: "candidate" }).kind, "adopt")
   assert.equal(Model.activateIntent(null).kind, "none")
 })

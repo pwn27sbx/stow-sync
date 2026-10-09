@@ -23,8 +23,12 @@ BorderSurface {
   signal actionClicked()
 
   readonly property bool isHealth: root.row !== null && root.row.type === "health"
-  readonly property string primary: root.row === null ? "" : (root.isHealth ? String(root.row.packageLabel) : String(root.row.path))
-  readonly property string secondary: root.isHealth ? root.healthDetail() : root.changeDetail()
+  readonly property bool isPackagesOk: root.row !== null && root.row.type === "packages-ok"
+  readonly property string primary: root.row === null ? ""
+    : (root.isHealth ? String(root.row.packageLabel)
+      : (root.isPackagesOk ? String(root.row.label) : String(root.row.path)))
+  readonly property string secondary: root.isHealth ? root.healthDetail()
+    : (root.isPackagesOk ? (root.row.expanded ? "expanded" : "click to expand") : root.changeDetail())
 
   function tokenColor(token) {
     if (token === "urgent") return Color.urgent
@@ -92,6 +96,15 @@ BorderSurface {
       Layout.preferredHeight: Style.space(8)
       radius: Style.space(4)
       color: root.tokenColor(root.row === null ? "muted" : root.row.stateColor)
+    }
+
+    Text {
+      Layout.alignment: Qt.AlignVCenter
+      visible: root.isPackagesOk
+      text: root.isPackagesOk && root.row.expanded ? "▾" : "▸"
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
     }
 
     ColumnLayout {

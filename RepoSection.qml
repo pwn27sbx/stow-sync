@@ -4,8 +4,10 @@ import qs.Commons
 import qs.Ui
 
 // Header row for one repo: name, branch/ahead/behind, state chip and the
-// commit/push/pull actions. Actions are enabled only when the backend would
-// accept them (Model.repoRow precomputes canCommit/canPush/canPull).
+// commit/push/pull actions. This component is instantiated for every list
+// delegate, so every binding first checks `isRepo`; otherwise a change/candidate
+// row would feed undefined into the bool `enabled`/`visible` properties and
+// flood the journal with "Unable to assign [undefined] to bool".
 BorderSurface {
   id: root
 
@@ -17,6 +19,12 @@ BorderSurface {
   signal commitRequested()
   signal pushRequested()
   signal pullRequested()
+
+  readonly property bool isRepo: root.row !== null && root.row.type === "repo"
+  // Commit is offered when there is anything to commit (tracked or untracked).
+  readonly property bool canCommit: root.isRepo && (root.row.changesCount > 0 || root.row.untrackedCount > 0)
+  readonly property bool canPush: root.isRepo && root.row.ahead > 0
+  readonly property bool canPull: root.isRepo && root.row.behind > 0
 
   function tokenColor(token) {
     if (token === "urgent") return Color.urgent
@@ -53,7 +61,7 @@ BorderSurface {
       Text {
         Layout.fillWidth: true
         textFormat: Text.PlainText
-        text: root.row === null ? "" : String(root.row.name)
+        text: root.isRepo ? String(root.row.name) : ""
         color: Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.body
@@ -64,7 +72,7 @@ BorderSurface {
       Text {
         Layout.fillWidth: true
         textFormat: Text.PlainText
-        text: root.row === null ? "" : String(root.row.subtitle)
+        text: root.isRepo ? String(root.row.subtitle) : ""
         color: Color.muted
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -77,15 +85,15 @@ BorderSurface {
       implicitWidth: chipText.implicitWidth + Style.space(10)
       implicitHeight: chipText.implicitHeight + Style.space(4)
       radius: height / 2
-      color: Util.alpha(root.tokenColor(root.row === null ? "muted" : root.row.stateColor), 0.2)
-      borderSpec: Border.flat(root.tokenColor(root.row === null ? "muted" : root.row.stateColor), 1)
+      color: Util.alpha(root.tokenColor(root.isRepo ? root.row.stateColor : "muted"), 0.2)
+      borderSpec: Border.flat(root.tokenColor(root.isRepo ? root.row.stateColor : "muted"), 1)
 
       Text {
         id: chipText
         anchors.centerIn: parent
         textFormat: Text.PlainText
-        text: root.row === null ? "" : String(root.row.title)
-        color: root.tokenColor(root.row === null ? "muted" : root.row.stateColor)
+        text: root.isRepo ? String(root.row.title) : ""
+        color: root.tokenColor(root.isRepo ? root.row.stateColor : "muted")
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
       }
@@ -93,8 +101,8 @@ BorderSurface {
 
     Text {
       Layout.alignment: Qt.AlignVCenter
-      visible: root.row !== null && root.row.ahead > 0
-      text: root.row === null ? "" : "↑" + root.row.ahead
+      visible: root.canPush
+      text: root.isRepo ? "↑" + root.row.ahead : ""
       color: Color.accent
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
@@ -102,8 +110,8 @@ BorderSurface {
 
     Text {
       Layout.alignment: Qt.AlignVCenter
-      visible: root.row !== null && root.row.behind > 0
-      text: root.row === null ? "" : "↓" + root.row.behind
+      visible: root.canPull
+      text: root.isRepo ? "↓" + root.row.behind : ""
       color: Color.accent
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
@@ -112,21 +120,27 @@ BorderSurface {
     Button {
       Layout.alignment: Qt.AlignVCenter
       text: "Commit…"
-      enabled: root.row !== null && root.row.canCommit
+      enabled: root.canCommit
+      focusable: root.canCommit
+      opacity: root.canCommit ? 1.0 : 0.4
       onClicked: root.commitRequested()
     }
 
     Button {
       Layout.alignment: Qt.AlignVCenter
-      text: "Push"
-      enabled: root.row !== null && root.row.canPush
+      text: root.isRepo ? "Push (" + root.row.ahead + ")" : "Push"
+      enabled: root.canPush
+      focusable: root.canPush
+      opacity: root.canPush ? 1.0 : 0.4
       onClicked: root.pushRequested()
     }
 
     Button {
       Layout.alignment: Qt.AlignVCenter
-      text: "Pull"
-      enabled: root.row !== null && root.row.canPull
+      text: root.isRepo ? "Pull (" + root.row.behind + ")" : "Pull"
+      enabled: root.canPull
+      focusable: root.canPull
+      opacity: root.canPull ? 1.0 : 0.4
       onClicked: root.pullRequested()
     }
   }

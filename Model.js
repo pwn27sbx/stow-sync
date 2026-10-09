@@ -268,6 +268,21 @@ function healthRow(repoPath, pkg, index) {
   }
 }
 
+// One collapsed summary for a repo's healthy packages. The panel toggles
+// `expanded`; when true, buildRows emits the healthy packages' health rows
+// directly beneath this one so they can still be inspected.
+function packagesOkRow(repoPath, count, expanded) {
+  return {
+    type: "packages-ok",
+    key: "packages-ok:" + repoPath,
+    repo: repoPath,
+    count: count,
+    expanded: !!expanded,
+    label: count + " packages OK",
+    stateColor: "muted"
+  }
+}
+
 function candidateRow(candidate, index) {
   var c = candidate || {}
   var path = String(c.path || "")
@@ -288,9 +303,13 @@ function candidateRow(candidate, index) {
 }
 
 // Full deterministic display list: repos in config order, then per-repo
-// changes grouped by package, then stow-health rows, then candidates with
+// changes grouped by package, then stow-health rows (unhealthy packages only)
+// with one collapsed `packages-ok` summary per repo, then candidates with
 // known:false first. The panel filters this for its collapsed group view.
-function buildRows(data) {
+// `options.expandedOk` names the repos whose healthy packages are expanded.
+function buildRows(data, options) {
+  var opts = options || {}
+  var expandedOk = opts.expandedOk || []
   var rows = []
   if (!data) return rows
   var repos = data.repos || []
@@ -315,7 +334,16 @@ function buildRows(data) {
     var packages = (repo.packages || []).slice().sort(function(a, b) {
       return compareStrings(a && a.name, b && b.name)
     })
-    for (var p = 0; p < packages.length; p++) rows.push(healthRow(repoPath, packages[p], p))
+    var healthy = []
+    for (var p = 0; p < packages.length; p++) {
+      if (String((packages[p] && packages[p].health) || "ok") === "ok") healthy.push(packages[p])
+      else rows.push(healthRow(repoPath, packages[p], p))
+    }
+    if (healthy.length > 0) {
+      var isExpanded = expandedOk.indexOf(repoPath) >= 0
+      rows.push(packagesOkRow(repoPath, healthy.length, isExpanded))
+      if (isExpanded) for (var h = 0; h < healthy.length; h++) rows.push(healthRow(repoPath, healthy[h], h))
+    }
   }
   var candidates = (data.candidates || []).slice().sort(function(a, b) {
     var ra = (a.known ? 10 : 0) + (a.group === "watched" ? 0 : 1)
@@ -333,8 +361,12 @@ function buildRows(data) {
 
 // Full row list filtered for the collapsed "Existing untracked" group, with
 // the group header stamped on the first candidate of each category.
-function panelRows(data, showExisting) {
-  var all = buildRows(data)
+// `options.showExisting` reveals known candidates; `options.expandedOk` names
+// the repos whose healthy packages are expanded.
+function panelRows(data, options) {
+  var opts = options || {}
+  var showExisting = opts.showExisting === true
+  var all = buildRows(data, { expandedOk: opts.expandedOk || [] })
   var fresh = 0
   var known = 0
   for (var i = 0; i < all.length; i++) {
@@ -362,6 +394,37 @@ function panelRows(data, showExisting) {
     rows.push(row)
   }
   return { rows: rows, newCount: fresh, existingCount: known, existingPaths: existing }
+}
+
+// True when nothing in the config needs the user: every existing repo has no
+// changes or untracked files, is neither ahead nor behind, and has only
+// healthy packages, and no unknown candidate is waiting. `aux.newCount` is the
+// panel's already-computed unknown-candidate count; when omitted it is derived
+// from `data.candidates`. Known candidates do NOT block the empty state — the
+// panel keeps its collapsed "Show untracked" toggle.
+function isEmpty(data, aux) {
+  if (!data) return false
+  var repos = data.repos || []
+  for (var i = 0; i < repos.length; i++) {
+    var repo = repos[i] || {}
+    if (repo.exists === false) return false
+    if ((repo.changes || []).length > 0) return false
+    if ((repo.untracked || []).length > 0) return false
+    if (num(repo.ahead, 0) !== 0) return false
+    if (num(repo.behind, 0) !== 0) return false
+    var packages = repo.packages || []
+    for (var j = 0; j < packages.length; j++) {
+      if (String((packages[j] && packages[j].health) || "ok") !== "ok") return false
+    }
+  }
+  var fresh
+  if (aux && aux.newCount !== undefined && aux.newCount !== null) fresh = num(aux.newCount, 0)
+  else {
+    fresh = 0
+    var candidates = data.candidates || []
+    for (var k = 0; k < candidates.length; k++) if (!candidates[k].known) fresh++
+  }
+  return fresh === 0
 }
 
 function selectedPaths(rows, checked, repo) {
@@ -542,5 +605,6 @@ function activateIntent(row) {
   if (row.type === "repo") return { kind: "commit", repo: String(row.name || "") }
   if (row.type === "change") return { kind: "diff", repo: String(row.repo || ""), path: String(row.path || "") }
   if (row.type === "health") return { kind: "restow", repo: String(row.repo || ""), package: String(row.package || "") }
+  if (row.type === "packages-ok") return { kind: "toggle-ok" }
   return { kind: "adopt" }
 }
