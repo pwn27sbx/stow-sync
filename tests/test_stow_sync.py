@@ -14,8 +14,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -74,6 +75,11 @@ def commit_all(repo: Path, message: str) -> None:
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def write_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
 
 
 def porcelain_bytes(repo: Path) -> bytes:
@@ -801,16 +807,13 @@ class CandidateTests(unittest.TestCase):
         )
         self.assertEqual(candidates, [])
 
-    def test_badge_counts_watched_and_recent_other(self) -> None:
-        now = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
-        recent = (now - timedelta(days=1)).isoformat(timespec="seconds")
-        old = (now - timedelta(days=10)).isoformat(timespec="seconds")
+    def test_badge_counts_unknown_candidates(self) -> None:
         candidates = [
-            {"group": "watched", "mtime": old},
-            {"group": "other", "mtime": recent},
-            {"group": "other", "mtime": old},
+            {"group": "watched", "known": False},
+            {"group": "other", "known": True},
+            {"group": "other", "known": False},
         ]
-        self.assertEqual(ss.compute_badge(candidates, now), 2)
+        self.assertEqual(ss.compute_badge(candidates), 2)
 
     def test_sibling_package_suggestion_wins(self) -> None:
         write(self.repo / "ai-tools" / ".config" / "systemd" / "user" / "ai-tools-check.timer", "t\n")
@@ -843,8 +846,9 @@ class CandidateTests(unittest.TestCase):
         candidate = candidates[0]
         self.assertEqual(
             set(candidate),
-            {"path", "type", "size", "mtime", "group", "suggested_package"},
+            {"path", "type", "size", "mtime", "group", "suggested_package", "known"},
         )
+        self.assertFalse(candidate["known"])
         self.assertEqual(candidate["size"], len(content.encode("utf-8")))
         self.assertEqual(datetime.fromisoformat(candidate["mtime"]).tzinfo is not None, True)
 
@@ -865,6 +869,54 @@ class CandidateTests(unittest.TestCase):
         write(bindir / "tool", "x\n")
         candidates = self._candidates(["~/.local/bin"])
         self.assertEqual([c["path"] for c in candidates], ["~/.local/bin/tool"])
+
+
+# --------------------------------------------------------------------------
+# Compiled binaries (README section 5.3b item 1)
+# --------------------------------------------------------------------------
+
+MACHO_MAGICS = (
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+)
+
+
+class CompiledBinaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+
+    def _candidates(self, watch):
+        return ss.compute_candidates({"repos": [], "watch": watch, "ignore": []})
+
+    def test_is_compiled_binary_detects_elf_and_macho_magics(self) -> None:
+        elf = self.home / "elf"
+        write_bytes(elf, b"\x7fELF\x02\x01\x01\x00")
+        self.assertTrue(ss.is_compiled_binary(str(elf)))
+        for index, magic in enumerate(MACHO_MAGICS):
+            path = self.home / f"macho-{index}"
+            write_bytes(path, magic + b"\x00\x00\x00\x00")
+            self.assertTrue(ss.is_compiled_binary(str(path)), magic)
+
+    def test_is_compiled_binary_is_false_for_text_scripts_and_missing(self) -> None:
+        script = self.home / "script"
+        write(script, "#!/bin/sh\necho hi\n")
+        self.assertFalse(ss.is_compiled_binary(str(script)))
+        self.assertFalse(ss.is_compiled_binary(str(self.home / "missing")))
+
+    def test_elf_and_macho_candidates_are_skipped_text_kept(self) -> None:
+        write_bytes(self.home / ".local" / "bin" / "elf", b"\x7fELF\x02\x01\x01\x00")
+        write_bytes(self.home / ".local" / "bin" / "macho", b"\xcf\xfa\xed\xfe\x00\x00\x00\x00")
+        write(self.home / ".local" / "bin" / "script", "#!/bin/sh\necho hi\n")
+        candidates = self._candidates(["~/.local/bin"])
+        self.assertEqual([c["path"] for c in candidates], ["~/.local/bin/script"])
 
 
 # --------------------------------------------------------------------------
@@ -945,7 +997,7 @@ class StatusIntegrationTests(unittest.TestCase):
         self.assertEqual(result["summary"]["state"], "conflict")
         self.assertEqual(result["summary"]["count"], 1)
 
-    def test_summary_count_includes_watched_candidate_badge(self) -> None:
+    def test_first_run_baseline_marks_candidates_known(self) -> None:
         repo = self._clean_repo({"mypkg/.config/app/conf": "hello\n"})
         write(self.home / ".local" / "bin" / "tool", "x\n")
         write_config(
@@ -956,8 +1008,10 @@ class StatusIntegrationTests(unittest.TestCase):
         result = self.status()
         self.assertEqual([c["path"] for c in result["candidates"]], ["~/.local/bin/tool"])
         self.assertEqual(result["candidates"][0]["group"], "watched")
+        self.assertTrue(result["candidates"][0]["known"])
         self.assertEqual(result["summary"]["state"], "pending")
-        self.assertEqual(result["summary"]["count"], 2)  # 1 pending link + 1 watched candidate
+        # 1 pending link; the candidate is now known, so it no longer counts.
+        self.assertEqual(result["summary"]["count"], 1)
 
     def test_summary_count_includes_dangling(self) -> None:
         repo = self._clean_repo(
@@ -1015,6 +1069,128 @@ def write_config(
         encoding="utf-8",
     )
     return path
+
+
+# --------------------------------------------------------------------------
+# First-run baseline (README section 5.3b items 2-6)
+# --------------------------------------------------------------------------
+
+
+class BaselineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        os.environ.pop("STOW_SYNC_STATE_DIR", None)
+        self.addCleanup(lambda: os.environ.pop("STOW_SYNC_STATE_DIR", None))
+        self.home = self.env.home
+        self.config = self.env.root / "config.json"
+        self.state_dir = self.env.root / "state"
+        write_config(self.config, [], watch=["~/.local/bin"])
+        self.baseline_file = self.state_dir / "baseline.json"
+
+    def status(self, *extra: str) -> dict:
+        return ss.dispatch(["status", *extra], str(self.config), str(self.state_dir))
+
+    def baseline(self, *extra: str) -> dict:
+        return ss.dispatch(["baseline", *extra], str(self.config), str(self.state_dir))
+
+    def test_resolve_state_dir_precedence(self) -> None:
+        explicit = self.env.root / "explicit"
+        self.assertEqual(ss.resolve_state_dir(str(explicit)), str(explicit))
+        with patch.dict(os.environ, {"STOW_SYNC_STATE_DIR": "~/envstate"}):
+            self.assertEqual(ss.resolve_state_dir(None), str(self.home / "envstate"))
+        os.environ.pop("STOW_SYNC_STATE_DIR", None)
+        self.assertEqual(
+            ss.resolve_state_dir(None),
+            str(self.home / ".local" / "state" / "stow-sync"),
+        )
+
+    def test_first_status_creates_baseline_with_current_candidates(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        write(self.home / ".local" / "bin" / "other", "y\n")
+        self.assertFalse(self.baseline_file.exists())
+        result = self.status()
+        self.assertTrue(result["ok"])
+        paths = {c["path"] for c in result["candidates"]}
+        self.assertEqual(paths, {"~/.local/bin/tool", "~/.local/bin/other"})
+        self.assertIsNone(result["baseline_error"])
+        data = json.loads(self.baseline_file.read_text(encoding="utf-8"))
+        self.assertEqual(data["version"], 1)
+        self.assertEqual(set(data["paths"]), paths)
+        self.assertIsNotNone(data["created"])
+        self.assertEqual(os.stat(self.baseline_file).st_mode & 0o777, 0o600)
+        self.assertTrue(all(c["known"] for c in result["candidates"]))
+        self.assertEqual(result["summary"]["count"], 0)
+
+    def test_second_run_reads_baseline_and_marks_known(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        self.status()
+        result = self.status()
+        self.assertEqual([c["path"] for c in result["candidates"]], ["~/.local/bin/tool"])
+        self.assertTrue(result["candidates"][0]["known"])
+        self.assertIsNone(result["baseline_error"])
+        self.assertEqual(result["summary"]["count"], 0)
+
+    def test_file_created_after_baseline_is_unknown_and_counted(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        self.status()
+        write(self.home / ".local" / "bin" / "newtool", "n\n")
+        result = self.status()
+        by_path = {c["path"]: c for c in result["candidates"]}
+        self.assertTrue(by_path["~/.local/bin/tool"]["known"])
+        self.assertFalse(by_path["~/.local/bin/newtool"]["known"])
+        self.assertEqual(ss.compute_badge(result["candidates"]), 1)
+        self.assertEqual(result["summary"]["count"], 1)
+
+    def test_known_file_modified_later_stays_known(self) -> None:
+        target = self.home / ".local" / "bin" / "tool"
+        write(target, "x\n")
+        self.status()
+        write(target, "changed\n")
+        stamp = time.time() + 100
+        os.utime(target, (stamp, stamp))
+        result = self.status()
+        self.assertTrue(result["candidates"][0]["known"])
+        self.assertEqual(result["summary"]["count"], 0)
+
+    def test_baseline_reset_picks_up_new_file(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        self.status()
+        write(self.home / ".local" / "bin" / "newtool", "n\n")
+        self.assertEqual(self.status()["summary"]["count"], 1)
+        reset = self.baseline("--reset")
+        self.assertTrue(reset["ok"])
+        self.assertFalse(reset["dry_run"])
+        self.assertEqual(reset["paths"], 2)
+        self.assertIsNotNone(reset["created"])
+        after = self.status()
+        self.assertTrue(all(c["known"] for c in after["candidates"]))
+        self.assertEqual(after["summary"]["count"], 0)
+
+    def test_baseline_dry_run_writes_nothing(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        result = self.baseline("--dry-run")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["paths"], 1)
+        self.assertIsNone(result["created"])
+        self.assertFalse(self.baseline_file.exists())
+
+    def test_readonly_state_dir_without_baseline_reports_error_not_crash(self) -> None:
+        write(self.home / ".local" / "bin" / "tool", "x\n")
+        os.makedirs(self.state_dir, 0o555, exist_ok=True)
+        try:
+            result = self.status()
+        finally:
+            os.chmod(self.state_dir, 0o755)
+        self.assertTrue(result["ok"])
+        self.assertIsNotNone(result["baseline_error"])
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertFalse(result["candidates"][0]["known"])
+        self.assertFalse(self.baseline_file.exists())
 
 
 class StatusCommandTests(unittest.TestCase):
@@ -1273,6 +1449,31 @@ class CliTests(unittest.TestCase):
         parsed = json.loads(out)
         self.assertTrue(parsed["ok"])
         self.assertEqual(parsed["repos"][0]["state"], "clean")
+
+    def test_status_with_state_dir_flag(self) -> None:
+        write(self.env.home / ".local" / "bin" / "tool", "x\n")
+        config = write_config(
+            self.env.root / "custom.json",
+            [],
+            watch=["~/.local/bin"],
+        )
+        state = self.env.root / "state"
+        code, out = self.run_main(["--config", str(config), "--state-dir", str(state), "status"])
+        self.assertEqual(code, 0)
+        parsed = json.loads(out)
+        self.assertTrue(parsed["ok"])
+        self.assertEqual([c["path"] for c in parsed["candidates"]], ["~/.local/bin/tool"])
+        self.assertTrue(parsed["candidates"][0]["known"])
+        self.assertIsNone(parsed["baseline_error"])
+        self.assertTrue((state / "baseline.json").exists())
+
+    def test_state_dir_equals_form_is_accepted(self) -> None:
+        write(self.env.home / ".local" / "bin" / "tool", "x\n")
+        config = write_config(self.env.root / "custom.json", [], watch=["~/.local/bin"])
+        state = self.env.root / "state-eq"
+        code, out = self.run_main([f"--config={config}", f"--state-dir={state}", "status"])
+        self.assertEqual(code, 0)
+        self.assertTrue((state / "baseline.json").exists())
 
     def test_response_is_capped_at_two_megabytes(self) -> None:
         huge = {"ok": True, "blob": "x" * (3 * 1024 * 1024)}

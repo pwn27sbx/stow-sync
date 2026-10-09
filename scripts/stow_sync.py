@@ -20,11 +20,13 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Any
 
 VERSION = "0.1.0"
@@ -114,6 +116,106 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
             json.dump(data, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
     return expand_config_paths(data)
+
+
+# --------------------------------------------------------------------------
+# State dir and first-run baseline (README section 5.3b items 2-6)
+# --------------------------------------------------------------------------
+
+BASELINE_VERSION = 1
+BASELINE_FILENAME = "baseline.json"
+
+
+def resolve_state_dir(explicit: str | None = None) -> str:
+    """Resolve the plugin state dir (README section 4 / 5.3b).
+
+    Precedence: an explicit ``--state-dir`` value, then the
+    ``STOW_SYNC_STATE_DIR`` environment variable, then
+    ``~/.local/state/stow-sync`` (honoring ``HOME``).
+    """
+    if explicit:
+        return expand_path(explicit)
+    env_value = os.environ.get("STOW_SYNC_STATE_DIR")
+    if env_value:
+        return expand_path(env_value)
+    return os.path.expanduser(os.path.join("~", ".local", "state", "stow-sync"))
+
+
+def baseline_path(state_dir: str) -> str:
+    """Path of the baseline file inside ``state_dir``."""
+    return os.path.join(state_dir, BASELINE_FILENAME)
+
+
+def _baseline_error(prefix: str, exc: BaseException) -> str:
+    detail = str(exc) or exc.__class__.__name__
+    return (prefix + ": " + detail)[:200]
+
+
+def _write_json_atomic(path: str, data: dict[str, Any], mode: int = 0o600) -> None:
+    """Write JSON to ``path`` atomically with a fixed permission mode."""
+    directory = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".baseline-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False)
+            handle.write("\n")
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def write_baseline(state_dir: str, paths: list[str]) -> str:
+    """Write a fresh baseline of ``paths`` and return its ``created`` stamp."""
+    created = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    data = {
+        "version": BASELINE_VERSION,
+        "created": created,
+        "paths": sorted(str(path) for path in paths),
+    }
+    os.makedirs(state_dir, 0o700, exist_ok=True)
+    _write_json_atomic(baseline_path(state_dir), data, 0o600)
+    return created
+
+
+def load_baseline(
+    state_dir: str,
+    candidate_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    """Load the baseline, creating it once with the current candidates.
+
+    Returns ``{"paths": set[str], "created": str | None, "error": str | None}``.
+    A missing file is created atomically (dir 0700, file 0600) containing the
+    supplied candidate paths. Any read/write failure sets ``error`` and yields
+    an empty path set; it never raises (status must stay ``ok: true``).
+    """
+    result: dict[str, Any] = {"paths": set(), "created": None, "error": None}
+    path = baseline_path(state_dir)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            raw_paths = data.get("paths", []) if isinstance(data, dict) else []
+            result["paths"] = {str(p) for p in raw_paths if isinstance(p, str)}
+            result["created"] = data.get("created") if isinstance(data, dict) else None
+        except (OSError, ValueError, TypeError) as exc:
+            result["error"] = _baseline_error("baseline read failed", exc)
+            result["paths"] = set()
+        return result
+
+    try:
+        created = write_baseline(state_dir, list(candidate_paths or []))
+    except OSError as exc:
+        result["error"] = _baseline_error("baseline write failed", exc)
+        return result
+    result["paths"] = {str(path) for path in (candidate_paths or [])}
+    result["created"] = created
+    return result
+
 
 
 def _package_ignores_everything(package_path: str) -> bool:
@@ -577,8 +679,19 @@ def _fetch_origin(repo_path: str) -> tuple[str | None, str | None]:
 
 # A candidate whose recursive size exceeds this is skipped.
 MAX_CANDIDATE_SIZE = 50 * 1024 * 1024
-# ``other`` candidates only count toward the badge when modified recently.
-BADGE_RECENT = timedelta(days=7)
+
+# Compiled-executable magic numbers; a regular file starting with one of these
+# is never a candidate (README section 5.3b item 1).
+ELF_MAGIC = b"\x7fELF"
+MACHO_MAGICS = frozenset(
+    (
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"\xce\xfa\xed\xfe",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+    )
+)
 
 _CONFLICT_LINE = re.compile(
     r"cannot stow (?P<source>.+?) over existing target (?P<target>.+?) since"
@@ -850,6 +963,32 @@ def suggest_package(path: str, repo_reals: list[str]) -> str:
     return base
 
 
+def is_compiled_binary(path: str) -> bool:
+    """True when ``path`` is a regular file starting with ELF/Mach-O magic.
+
+    Reads at most 4 bytes through ``O_NOFOLLOW`` (symlinks, sockets, FIFOs and
+    unreadable files return False) and never raises.
+    """
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return False
+    except OSError:
+        return False
+    fd: int | None = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        head = os.read(fd, 4)
+    except OSError:
+        return False
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    return head == ELF_MAGIC or head in MACHO_MAGICS
+
+
 def _build_candidate(
     path: str,
     group: str,
@@ -866,6 +1005,8 @@ def _build_candidate(
         return None
     if not (os.path.islink(path) or os.path.isfile(path) or os.path.isdir(path)):
         return None  # socket / FIFO / device
+    if is_compiled_binary(path):
+        return None  # compiled executable, never an owner-made config
     if _is_ignored(path, ignore_patterns):
         return None
     size = _candidate_size(path)
@@ -885,12 +1026,17 @@ def _build_candidate(
     }
 
 
-def compute_candidates(config: dict[str, Any]) -> list[dict[str, Any]]:
+def compute_candidates(
+    config: dict[str, Any],
+    baseline_paths: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Top-level candidate list from the config's ``watch`` entries.
 
     A plain directory contributes its direct children as ``watched``; a glob
-    entry contributes each match as ``other``. Depth is always 1.
+    entry contributes each match as ``other``. Depth is always 1. Every
+    candidate carries ``known`` (its path is in ``baseline_paths``).
     """
+    baseline = baseline_paths or set()
     repo_reals = [
         os.path.realpath(expand_path(repo.get("path", "")))
         for repo in config.get("repos", [])
@@ -921,28 +1067,19 @@ def compute_candidates(config: dict[str, Any]) -> list[dict[str, Any]]:
             seen.add(norm)
             candidate = _build_candidate(norm, group, repo_reals, ignore_patterns)
             if candidate is not None:
+                candidate["known"] = candidate["path"] in baseline
                 candidates.append(candidate)
     return candidates
 
 
-def compute_badge(candidates: list[dict[str, Any]], now: datetime | None = None) -> int:
-    """Badge count: all ``watched`` plus recent ``other`` candidates."""
-    reference = now or datetime.now().astimezone()
-    cutoff = reference - BADGE_RECENT
-    count = 0
-    for candidate in candidates:
-        if candidate.get("group") == "watched":
-            count += 1
-            continue
-        try:
-            mtime = datetime.fromisoformat(candidate.get("mtime", ""))
-        except ValueError:
-            continue
-        if mtime.tzinfo is None:
-            mtime = mtime.astimezone()
-        if mtime >= cutoff:
-            count += 1
-    return count
+def compute_badge(candidates: list[dict[str, Any]]) -> int:
+    """Badge count: number of candidates that are not in the baseline.
+
+    README section 5.3b item 4: the badge counts only ``known: false``
+    candidates, regardless of group.
+    """
+    return sum(1 for candidate in candidates if not candidate.get("known"))
+
 
 
 def _repo_status(repo_cfg: dict[str, Any], do_fetch: bool = False) -> dict[str, Any]:
@@ -1040,22 +1177,61 @@ def compute_summary(repos: list[dict[str, Any]], badge_count: int = 0) -> dict[s
     return {"state": worst, "count": count}
 
 
-def cmd_status(args: list[str], config_path: str | None = None) -> dict[str, Any]:
-    """Read-only status for every configured repo (``--fetch`` optional)."""
+def cmd_status(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Read-only status for every configured repo (``--fetch`` optional).
+
+    The only write ``status`` may do is the first-run baseline, and only to the
+    plugin's own state dir (README section 5.3b item 2).
+    """
     do_fetch = "--fetch" in args
     config = load_config(config_path)
     repos = [_repo_status(repo_cfg, do_fetch) for repo_cfg in config.get("repos", [])]
     candidates = compute_candidates(config)
+    baseline = load_baseline(
+        resolve_state_dir(state_dir),
+        [candidate["path"] for candidate in candidates],
+    )
+    known = baseline["paths"]
+    for candidate in candidates:
+        candidate["known"] = candidate["path"] in known
     badge_count = compute_badge(candidates)
     return {
         "ok": True,
         "repos": repos,
         "summary": compute_summary(repos, badge_count),
         "candidates": candidates,
+        "baseline_error": baseline["error"],
     }
 
 
-def cmd_version(_args: list[str], _config_path: str | None = None) -> dict[str, Any]:
+def cmd_baseline(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Re-snapshot every current candidate as known (``--dry-run`` support)."""
+    dry_run = "--dry-run" in args
+    config = load_config(config_path)
+    candidates = compute_candidates(config)
+    paths = sorted(candidate["path"] for candidate in candidates)
+    if dry_run:
+        return {"ok": True, "dry_run": True, "paths": len(paths), "created": None}
+    try:
+        created = write_baseline(resolve_state_dir(state_dir), paths)
+    except OSError as exc:
+        return {"ok": False, "error": _baseline_error("baseline write failed", exc)}
+    return {"ok": True, "dry_run": False, "paths": len(paths), "created": created}
+
+
+def cmd_version(
+    _args: list[str],
+    _config_path: str | None = None,
+    _state_dir: str | None = None,
+) -> dict[str, Any]:
     """Report the backend version."""
     return {"ok": True, "version": VERSION}
 
@@ -1063,16 +1239,18 @@ def cmd_version(_args: list[str], _config_path: str | None = None) -> dict[str, 
 COMMANDS = {
     "version": cmd_version,
     "status": cmd_status,
+    "baseline": cmd_baseline,
 }
 
 
-def extract_global_config(argv: list[str]) -> tuple[str | None, list[str]]:
-    """Pull the global ``--config <path>`` flag out of an argument vector.
+def extract_global_args(argv: list[str]) -> tuple[str | None, str | None, list[str]]:
+    """Pull the global ``--config`` and ``--state-dir`` flags out of an argv.
 
-    Returns ``(config_path_or_None, remaining_args)``. Both ``--config PATH``
-    and ``--config=PATH`` are accepted.
+    Returns ``(config_path_or_None, state_dir_or_None, remaining_args)``. Both
+    ``--flag PATH`` and ``--flag=PATH`` are accepted.
     """
     config_path: str | None = None
+    state_dir: str | None = None
     rest: list[str] = []
     index = 0
     while index < len(argv):
@@ -1088,25 +1266,40 @@ def extract_global_config(argv: list[str]) -> tuple[str | None, list[str]]:
             config_path = token[len("--config="):]
             index += 1
             continue
+        if token == "--state-dir":
+            if index + 1 < len(argv):
+                state_dir = argv[index + 1]
+                index += 2
+                continue
+            index += 1
+            continue
+        if token.startswith("--state-dir="):
+            state_dir = token[len("--state-dir="):]
+            index += 1
+            continue
         rest.append(token)
         index += 1
-    return config_path, rest
+    return config_path, state_dir, rest
 
 
-def dispatch(argv: list[str], config_path: str | None = None) -> dict[str, Any]:
+def dispatch(
+    argv: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
     """Route one already-parsed argument vector to its command handler."""
     name = argv[0] if argv else ""
     handler = COMMANDS.get(name)
     if handler is None:
         return {"ok": False, "error": "unknown command: " + (name or "<none>")}
-    return handler(argv[1:], config_path)
+    return handler(argv[1:], config_path, state_dir)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     try:
-        config_path, rest = extract_global_config(args)
-        result = dispatch(rest, config_path)
+        config_path, state_dir, rest = extract_global_args(args)
+        result = dispatch(rest, config_path, state_dir)
     except Exception as exc:  # noqa: BLE001 - CLI must never print a traceback to QML
         result = {"ok": False, "error": (str(exc) or exc.__class__.__name__)}
     text = json.dumps(result, ensure_ascii=False)
