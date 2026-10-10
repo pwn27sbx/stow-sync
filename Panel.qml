@@ -258,7 +258,8 @@ Panel {
       anchors.fill: parent
       blocked: overlay.contentActiveFocus || overlay.contentPopupOpen || setupWizard.contentActiveFocus
       onMoveRequested: function(dx, dy) {
-        if (root.overlayMode !== "" || root.setupOpen) return
+        if (root.setupOpen) { if (dy !== 0) setupWizard.scrollBy(dy * Style.space(28)); return }
+        if (root.overlayMode !== "") return
         if (dx !== 0) root.switchTab(dx > 0 ? 1 : -1)
         else if (root.activeTab === 1) root.moveCursor(dy)
         else flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, flick.contentY + dy * Style.space(28)))

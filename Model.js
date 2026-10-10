@@ -1707,8 +1707,9 @@ function repoAttention(repo) {
 
 // The hero diagram's shape: two node labels, the up/down flows, which chips
 // are present, the line tone and the "This PC" change-count badge.
-function bridgeState(data) {
+function bridgeState(data, opts) {
   var d = data || {}
+  var o = opts || {}
   var up = flowTotals(d, "ahead").count
   var down = flowTotals(d, "behind").count
   var changes = changeTotals(d).count
@@ -1721,7 +1722,8 @@ function bridgeState(data) {
     hasDown: down > 0,
     upText: up > 0 ? "\u2191" + up : "",
     downText: down > 0 ? "\u2193" + down : "",
-    lineTone: attentionFor(d) ? "urgent" : "accent",
+    // A fresh machine (opt-in on, every repo missing) is neutral, not urgent.
+    lineTone: o.notSetUp === true ? "neutral" : (attentionFor(d) ? "urgent" : "accent"),
     badge: changes,
     badgeText: changes > 99 ? "99+" : (changes > 0 ? String(changes) : ""),
     hasChanges: changes > 0

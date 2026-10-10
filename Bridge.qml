@@ -25,7 +25,9 @@ Item {
   property real badgeT: 1
   readonly property int displayBadge: Model.tweenValue(root.badgeFrom, root.badgeTo, root.badgeT)
   readonly property string badgeText: root.displayBadge > 99 ? "99+" : (root.displayBadge > 0 ? String(root.displayBadge) : "")
-  readonly property color lineColor: root.bridge.lineTone === "urgent" ? Color.urgent : Color.accent
+  readonly property color lineColor: root.bridge.lineTone === "urgent"
+    ? Color.urgent
+    : (root.bridge.lineTone === "neutral" ? Util.alpha(root.foreground, 0.3) : Color.accent)
 
   onBridgeChanged: {
     var target = Number(root.bridge && root.bridge.badge) || 0

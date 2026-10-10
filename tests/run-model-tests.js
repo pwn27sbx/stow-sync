@@ -1207,6 +1207,13 @@ test("bridgeState: attention turns the line urgent", () => {
   assert.equal(Model.bridgeState(HERO.diverged).lineTone, "urgent")
 })
 
+test("bridgeState: a fresh machine draws a neutral line, not urgent", () => {
+  const fresh = { repos: [{ path: "~/.dotfiles", exists: false, state: "missing" }, { path: "~/wallpapers", exists: false, state: "missing" }] }
+  // Without the opt-in flag a missing repo is attention (urgent).
+  assert.equal(Model.bridgeState(fresh).lineTone, "urgent")
+  assert.equal(Model.bridgeState(fresh, { notSetUp: true }).lineTone, "neutral")
+})
+
 test("bridgeState: badge caps at 99+ and tolerates missing data", () => {
   const big = Model.bridgeState({
     repos: [{ path: "~/a", changes: new Array(150).fill({ path: "x" }), untracked: [], packages: [] }],
@@ -1532,6 +1539,32 @@ test("setupPlanGroups: full plan produces every ordered group", () => {
   assert.equal(byKey.notes.items[0].label, "Restore ~/.config/hypr with config-sync.")
   same(Model.setupPlanGroups(setupPlan({})), [])
   same(Model.setupPlanGroups(null), [])
+})
+
+test("setupPlanGroups: units are singular at count 1", () => {
+  const plan = setupPlan({
+    clone: [{ path: "~/wallpapers", private: true }],
+    link: [
+      { repo: "~/.dotfiles", package: "fish", status: "new", links: [{ target: "x" }], files_to_backup: 1, conflicts: [{ target: "~/.config/fish/config.fish", kind: "different" }] },
+      { repo: "~/.dotfiles", package: "app", status: "blocked", links: [], conflicts: [{ kind: "blocked", reason: "x" }], files_to_backup: 0 }
+    ],
+    requires: [{ name: "gowall", found: false }],
+    post: [{ id: "p", label: "P", default: true, available: true, missing: [], timeout_s: 1 }],
+    notes: []
+  })
+  const byKey = {}
+  Model.setupPlanGroups(plan).forEach(function(g) { byKey[g.key] = g })
+  assert.equal(byKey.download.unit, "repository")
+  assert.equal(byKey.link.unit, "package")
+  assert.equal(byKey.backup.unit, "file")
+  assert.equal(byKey.skipped.unit, "package")
+  assert.equal(byKey.missing.unit, "tool")
+  assert.equal(byKey.after.unit, "step")
+})
+
+test("setupBackupsRows: singular counts read cleanly", () => {
+  const rows = Model.setupBackupsRows([{ id: "x", created: "d", undone: false, counts: { packages: 1, moved: 1, services: 1 } }])
+  assert.equal(rows[0].detail, "1 package \u00b7 1 file \u00b7 1 service")
 })
 
 test("setupPrimaryLabel: names exactly what will happen", () => {

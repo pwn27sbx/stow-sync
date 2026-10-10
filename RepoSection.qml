@@ -58,7 +58,7 @@ Column {
     spacing: Style.spacing.xxl
     Bridge {
       width: parent.width
-      bridge: Model.bridgeState(root.statusData)
+      bridge: Model.bridgeState(root.statusData, { notSetUp: root.notSetUp })
       sentence: Model.explain(root.statusData, { machineSetup: root.notSetUp })
       busy: root.busy
       motion: root.motion

@@ -31,6 +31,7 @@ Item {
   function openBackups() { flow.openBackups() }
   function primary() { flow.primary() }
   function back() { flow.back() }
+  function scrollBy(dy) { bodyArea.contentY = Math.max(0, Math.min(Math.max(0, bodyArea.contentHeight - bodyArea.height), bodyArea.contentY + dy)) }
 
   visible: opened
   onOpenedChanged: if (opened) flow.start()
@@ -143,6 +144,7 @@ Item {
 
           Button {
             text: flow.backLabel()
+            visible: flow.backLabel() !== "Close"
             enabled: !flow.running
             onClicked: flow.back()
           }
