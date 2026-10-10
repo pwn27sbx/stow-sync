@@ -117,16 +117,144 @@ the setting to this plugin's `shell.json` layout entry:
 { "id": "pwnsxb.stow-sync", "machineSetup": true }
 ```
 
-then `omarchy restart shell`. The wizard has four steps (Connect, Review,
-Apply, Report). Connect clones the dotfiles repo, reads its recipe and clones
-every other repo the recipe lists; a private repo without credentials is
-reported with the exact `gh auth login` / `gh auth setup-git` commands to run.
-Review always shows what will be downloaded, linked and moved to backup before
-anything changes, and every apply can be undone from the Report step.
+then `omarchy restart shell`. The complete walkthrough — the tools to install,
+GitHub authentication, the recipe schema, the safety rules and how Undo works —
+is in [New machine](#new-machine).
 
-The recipe lives in the dotfiles repo at `.stow-sync/setup.json` — its schema
-is documented in `docs/setup-recipe.example.json`. Backups are kept in
-`~/.local/state/stow-sync/setup-backups/<id>/` with a manifest.
+## New machine
+
+Restore your whole Stow setup on a **fresh Omarchy install** by running these
+steps in order.
+
+```bash
+# 1. Update Omarchy first (needed before installing packages).
+omarchy update
+
+# 2. Install the tools Stow Sync and the recipe need. `stow` and `github-cli`
+#    are NOT preinstalled on a fresh Omarchy.
+omarchy pkg add stow github-cli
+
+# 3. Authenticate GitHub — only needed when any recipe repo is private.
+gh auth login
+gh auth setup-git
+
+# 4. Install the plugin (published), or from a local checkout for development.
+omarchy plugin add https://github.com/pwn27sbx/omarchy-stow-sync --enable --yes
+# omarchy plugin add /path/to/omarchy-stow-sync --enable --yes
+
+# 5. Enable it. For a manual copy the shell must rescan plugins first.
+omarchy-shell shell rescanPlugins        # manual installs only
+omarchy plugin enable pwnsxb.stow-sync --section right
+```
+
+6. Turn the wizard on: add `"machineSetup": true` to this plugin's `shell.json`
+   layout entry (see [the snippet above](#set-up-this-machine-opt-in)) and run
+   `omarchy restart shell`.
+7. Open the panel and press **Set up this machine** — the wand icon in the
+   header, or the button on the Overview banner. The wizard walks through five
+   steps: **Check → Connect → Review → Apply → Report**.
+
+The **Check** step verifies `stow`, `git`, the pacman sync database and — only
+when a repo is private — `gh` and `gh auth status`, showing the exact fix
+command for anything missing. **Connect** clones your dotfiles repo, reads its
+recipe and clones each other repo one at a time. **Review** shows exactly what
+will be linked and moved to backup; nothing is forced, and blocked packages are
+reported in red. **Apply** links the packages, enables the services and runs the
+selected post-steps. **Report** lists what happened, where the backup folder is,
+and offers a one-click Undo.
+
+### The recipe
+
+The recipe lives in the dotfiles repo at `.stow-sync/setup.json` (a directory
+that starts with `.`, so `packages: "auto"` never treats it as a package). A
+full example ships in [`docs/setup-recipe.example.json`](docs/setup-recipe.example.json).
+Every key is validated strictly; unknown keys and wrong types are rejected with a
+precise error.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `version` | number | Schema version. Currently `1`. |
+| `repos` | array | The repos to clone and link, in `order`. |
+| `repos[].path` | string | Where to clone (e.g. `~/.dotfiles`). `~` expands against `HOME`. |
+| `repos[].url` | string | The git URL to clone from. |
+| `repos[].packages` | `"auto"` or array | `"auto"` detects every top-level package; an array lists them explicitly. |
+| `repos[].order` | number | Clone/link order (must be unique). |
+| `repos[].private` | boolean | Marks a private repo so the wizard checks GitHub auth up front. |
+| `skip_packages` | array | Package names never linked (e.g. `odd`, `zen`). |
+| `services` | array | systemd user units to `enable --now` after linking. |
+| `requires` | array | Commands reported as missing tools (never installed). |
+| `post` | array | Optional commands to run after linking. |
+| `post[].id` | string | Unique id, also used by the `--post` selection. |
+| `post[].label` | string | Human label shown in Review and Report. |
+| `post[].argv` | array | The command as an argument vector — never a shell string. |
+| `post[].default` | boolean | Whether the step is selected by default. |
+| `post[].timeout_s` | number | Per-step timeout in seconds. |
+| `post[].needs` | array | Command names the step needs. If one is missing, the step is shown disabled (`needs gowall`) and is never run. |
+| `notes` | array | Free-form reminders shown verbatim in Review and Report. |
+
+The recipe also drives post-steps a fresh machine would otherwise do by hand. A
+concrete `post` section (see the owner's own recipe) installs every tool pinned
+in your mise config, and recolors wallpapers only when `gowall` is present:
+
+```json
+"post": [
+  { "id": "wallpaper-tint", "label": "Recolor wallpapers for every theme",
+    "argv": ["~/.local/bin/wallpaper-tint", "--all"], "default": true,
+    "timeout_s": 900, "needs": ["gowall"] },
+  { "id": "mise-install", "label": "Install the tools from your mise config",
+    "argv": ["~/.dotfiles/.stow-sync/post/mise-install"], "default": true,
+    "timeout_s": 1800 }
+]
+```
+
+`mise` ships with Omarchy, so the `mise-install` step installs every tool pinned
+in your mise config (Node and future tools) without making Node a Stow Sync
+requirement.
+
+### Safety and Undo
+
+- **No shell.** Every `post[].argv[0]` must expand (after `~`) to an absolute
+  path **inside `$HOME`**, and commands run as an argument vector with `cwd`
+  set to `$HOME` — never through a shell.
+- **Nothing is deleted.** Any file in the way is **moved** into
+  `~/.local/state/stow-sync/setup-backups/<id>/files/`, preserving its type and
+  mode, and recorded in that folder's `manifest.json`.
+- **Reviewed plan.** Connect and Review build a plan and a 10-minute token;
+  Apply refuses to run if the plan changed since you reviewed it.
+- **Undo.** Each apply writes its manifest before every move, so a crash is still
+  undoable. Undo disables the services the apply enabled, unstows the packages it
+  stowed (only those), moves every backup back and refuses any destination that
+  is no longer the apply's own symlink. Run it from the Report step, or any time
+  later from the header's **Setup backups** view (each backup shows its date and
+  counts, or an "undone" marker).
+
+Stow links **files** into an existing folder; it does not replace the folder. For
+a package like `nvim`, Stow adds symlinks for the files the repo contains but
+leaves Omarchy's own extra files (for example `~/.config/nvim/lua/plugins/*.lua`)
+in place, so the two are mixed. Check what a package's folder overlay will keep
+before you rely on it.
+
+### Testing in a VM
+
+The "Set up this machine" wizard is safe to rehearse in a throwaway Omarchy VM
+(take a snapshot first). A few host/guest quirks are worth knowing:
+
+- **Host firewall.** libvirt guests are blocked by `ufw`'s default deny policy.
+  Allow the bridge on the host:
+
+  ```bash
+  sudo ufw allow in on virbr0
+  sudo ufw route allow in on virbr0
+  sudo ufw route allow out on virbr0
+  ```
+
+- **Guest DNS.** DNS through libvirt's dnsmasq can fail; set the DNS provider to
+  Cloudflare in the guest's Omarchy network panel.
+- **Clipboard.** Host-to-guest clipboard sharing is unreliable under Wayland (no
+  `spice-vdagent`); serve a script over the network instead of pasting.
+- **Manual installs.** After copying the plugin folder into a VM, run
+  `omarchy-shell shell rescanPlugins` before `omarchy plugin enable`, otherwise
+  the freshly enabled plugin is "not known" to the shell.
 
 ## Safety model
 
@@ -205,13 +333,20 @@ yourself if you want the segment.
 | `i` | Hide the focused change row |
 | `Esc` | Close the panel / go back |
 
+In the "Set up this machine" wizard: `Enter` confirms the current step or moves
+on, `Esc` goes back (or shows "Setup is running" while a step is in flight), and
+the arrow keys scroll the Review and Report content.
+
 ## Requirements
 
-Shipped with Omarchy: `python3`, `git`, `stow`. `notify-send` is optional and
-only needed when `notify_after_hours` is greater than zero. The helper never
-prompts for credentials; git runs with terminal prompts and SSH batch mode
-disabled, so authentication failures surface as a message instead of freezing
-the bar.
+Shipped with Omarchy: `python3` and `git`. GNU Stow (`stow`) is required to read
+and change Stow state and is **not** preinstalled on a fresh Omarchy — the
+[New machine](#new-machine) guide installs it (`omarchy pkg add stow
+github-cli`). `github-cli` (`gh`) is only needed when the opt-in "Set up this
+machine" wizard has to clone a private repo. `notify-send` is optional and only
+needed when `notify_after_hours` is greater than zero. The helper never prompts
+for credentials; git runs with terminal prompts and SSH batch mode disabled, so
+authentication failures surface as a message instead of freezing the bar.
 
 ## Removal
 
