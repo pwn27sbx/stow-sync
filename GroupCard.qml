@@ -33,10 +33,19 @@ Item {
     id: card
     width: parent.width
     implicitHeight: inner.implicitHeight + Style.spacing.sm * 2
-    color: root.focused ? Util.alpha(Color.accent, 0.12) : Util.alpha(Color.foreground, 0.04)
-    borderSpec: Border.controlSpec(root.focused ? "hover-cursor" : "normal", root.foreground, Color.accent)
+    color: Util.alpha(Color.foreground, 0.04)
+    borderSpec: Border.none()
     radius: Style.space(10)
     padding: Style.spacing.sm
+
+    Rectangle {
+      id: stripe
+      width: Style.space(3)
+      height: parent.height
+      anchors.left: parent.left
+      radius: width / 2
+      color: Color.accent
+    }
 
     MouseArea {
       anchors.fill: parent
@@ -47,7 +56,8 @@ Item {
 
     Column {
       id: inner
-      width: parent.width
+      x: Style.space(3)
+      width: parent.width - Style.space(3)
       spacing: Style.spacing.sm
 
       RowLayout {
@@ -103,6 +113,7 @@ Item {
         Text {
           Layout.alignment: Qt.AlignVCenter
           Layout.maximumWidth: Style.space(140)
+          Layout.rightMargin: Style.space(8)
           textFormat: Text.PlainText
           text: root.count !== "" ? (root.count + (root.unit !== "" ? " " + root.unit : "")) : ""
           color: Util.alpha(root.foreground, 0.72)
@@ -114,6 +125,7 @@ Item {
 
         Button {
           Layout.alignment: Qt.AlignVCenter
+          Layout.rightMargin: Style.space(8)
           visible: root.hasAction
           text: root.actionText
           fontSize: Style.font.caption
