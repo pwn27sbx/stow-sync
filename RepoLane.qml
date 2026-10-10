@@ -45,7 +45,7 @@ Item {
       required property var modelData
       Layout.fillWidth: true
       implicitHeight: chipRow.implicitHeight + Style.spacing.sm * 2
-      radius: Style.space(6)
+      radius: Style.cornerRadius
       color: Util.alpha(Color.foreground, 0.04)
       borderSpec: Border.none()
 
@@ -96,7 +96,7 @@ Item {
     id: card
     width: parent.width
     implicitHeight: inner.implicitHeight + Style.spacing.xxl * 2
-    radius: Style.space(10)
+    radius: Style.cornerRadius
     color: Util.alpha(Color.foreground, 0.04)
     borderSpec: Border.none()
 
@@ -105,7 +105,7 @@ Item {
       width: Style.space(3)
       height: parent.height
       anchors.left: parent.left
-      radius: width / 2
+      radius: Style.cornerRadius
       color: root.stripeColor
     }
 
@@ -150,7 +150,7 @@ Item {
           visible: String(root.lane.branchChip || "") !== ""
           implicitWidth: branchText.implicitWidth + Style.spacing.md * 2
           implicitHeight: branchText.implicitHeight + Style.spacing.xxs * 2
-          radius: 999
+          radius: Style.cornerRadius
           color: Util.alpha(Color.foreground, 0.06)
           borderSpec: Border.none()
 
@@ -184,25 +184,35 @@ Item {
 
         Item { Layout.fillWidth: true }
 
-        Text {
+        RowLayout {
           Layout.alignment: Qt.AlignVCenter
-          Layout.maximumWidth: Style.space(96)
-          textFormat: Text.PlainText
-          text: String(root.lane.countText || "")
-          color: Util.alpha(root.foreground, 0.72)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
-          horizontalAlignment: Text.AlignRight
-        }
+          spacing: Style.spacing.sm
 
-        Text {
-          Layout.alignment: Qt.AlignVCenter
-          textFormat: Text.PlainText
-          text: root.expanded ? "\u25be" : "\u25b8"
-          color: Util.alpha(root.foreground, 0.72)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body
+          Text {
+            Layout.alignment: Qt.AlignVCenter
+            Layout.maximumWidth: Style.space(96)
+            textFormat: Text.PlainText
+            text: String(root.lane.countText || "")
+            color: Util.alpha(root.foreground, 0.72)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+            horizontalAlignment: Text.AlignRight
+          }
+
+          // Fixed-width chevron slot: every row reserves the same slot so all
+          // right-side labels share one right edge (the slot is empty on rows
+          // without a chevron).
+          Text {
+            Layout.alignment: Qt.AlignVCenter
+            Layout.preferredWidth: Style.space(14)
+            textFormat: Text.PlainText
+            text: root.expanded ? "\u25be" : "\u25b8"
+            color: Util.alpha(root.foreground, 0.72)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            horizontalAlignment: Text.AlignRight
+          }
         }
       }
 

@@ -50,7 +50,7 @@ Item {
         Layout.alignment: Qt.AlignVCenter
         implicitWidth: Style.space(28)
         implicitHeight: Style.space(28)
-        radius: width / 2
+        radius: Style.cornerRadius
         color: Util.alpha(root.toneColor(), 0.18)
 
         Text {
@@ -157,7 +157,7 @@ Item {
       implicitHeight: messageRow.implicitHeight + Style.spacing.lg
       color: Util.alpha(root.isError ? Color.urgent : Color.accent, 0.10)
       borderSpec: Border.controlSpec(root.isError ? "selected" : "normal", root.isError ? Color.urgent : Color.accent, Color.accent)
-      radius: Style.space(10)
+      radius: Style.cornerRadius
       padding: Style.spacing.lg
 
       RowLayout {

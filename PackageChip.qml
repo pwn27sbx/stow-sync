@@ -23,7 +23,7 @@ BorderSurface {
 
   implicitWidth: row.implicitWidth + Style.spacing.xxl * 2
   implicitHeight: row.implicitHeight + Style.spacing.lg * 2
-  radius: Style.space(6)
+  radius: Style.cornerRadius
   color: Util.alpha(root.foreground, root.state.fillAlpha === undefined ? 0.06 : root.state.fillAlpha)
   borderSpec: root.state.outline === true ? Border.flat(root.outlineColor, Style.normalBorderWidth) : Border.none()
 

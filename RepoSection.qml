@@ -73,7 +73,7 @@ Column {
       implicitHeight: bannerRow.implicitHeight + Style.spacing.lg * 2
       color: Util.alpha(Color.accent, 0.10)
       borderSpec: Border.none()
-      radius: Style.space(10)
+      radius: Style.cornerRadius
       RowLayout {
         id: bannerRow
         anchors.left: parent.left
@@ -207,7 +207,7 @@ Column {
       implicitHeight: toggleRow.implicitHeight + Style.spacing.lg * 2
       color: Util.alpha(Color.foreground, 0.04)
       borderSpec: Border.none()
-      radius: Style.space(10)
+      radius: Style.cornerRadius
       padding: Style.spacing.lg
       RowLayout {
         id: toggleRow

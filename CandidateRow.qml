@@ -29,7 +29,7 @@ Item {
     implicitHeight: Math.max(Style.spacing.controlHeight, content.implicitHeight + Style.spacing.sm)
     color: root.focused ? Util.alpha(Color.accent, 0.16) : "transparent"
     borderSpec: Border.none()
-    radius: Style.space(6)
+    radius: Style.cornerRadius
 
     MouseArea {
       anchors.fill: parent

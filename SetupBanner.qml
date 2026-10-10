@@ -19,7 +19,7 @@ Item {
     implicitHeight: row.implicitHeight + Style.spacing.lg * 2
     color: Util.alpha(Color.accent, 0.10)
     borderSpec: Border.none()
-    radius: Style.space(10)
+    radius: Style.cornerRadius
 
     RowLayout {
       id: row

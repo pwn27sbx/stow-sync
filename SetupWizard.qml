@@ -184,7 +184,7 @@ Item {
       color: Color.popups.background
       borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
       padding: Style.space(16)
-      radius: Style.space(4)
+      radius: Style.cornerRadius
 
       MouseArea { anchors.fill: parent; onClicked: {} }
 

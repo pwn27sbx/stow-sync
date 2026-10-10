@@ -93,7 +93,7 @@ Item {
           anchors.verticalCenter: parent.verticalCenter
           width: parent.width
           height: Style.space(2)
-          radius: Style.space(1)
+          radius: Style.cornerRadius
           color: root.lineColor
         }
 
@@ -105,7 +105,7 @@ Item {
             visible: root.bridge.hasUp === true
             implicitWidth: upLabel.implicitWidth + Style.spacing.lg * 2
             implicitHeight: upLabel.implicitHeight + Style.spacing.xs * 2
-            radius: 999
+            radius: Style.cornerRadius
             color: Util.alpha(Color.background, 0.92)
             borderSpec: Border.flat(root.lineColor, Style.normalBorderWidth)
 
@@ -125,7 +125,7 @@ Item {
             visible: root.bridge.hasDown === true
             implicitWidth: downLabel.implicitWidth + Style.spacing.lg * 2
             implicitHeight: downLabel.implicitHeight + Style.spacing.xs * 2
-            radius: 999
+            radius: Style.cornerRadius
             color: Util.alpha(Color.background, 0.92)
             borderSpec: Border.flat(root.lineColor, Style.normalBorderWidth)
 

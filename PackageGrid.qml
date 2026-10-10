@@ -88,7 +88,7 @@ Item {
         width: parent.width
         visible: root.expandedCard !== null
         implicitHeight: detailInner.implicitHeight + Style.spacing.xxl * 2
-        radius: Style.space(10)
+        radius: Style.cornerRadius
         color: Util.alpha(Color.foreground, 0.04)
         borderSpec: Border.none()
 
@@ -154,7 +154,7 @@ Item {
                 Layout.alignment: Qt.AlignVCenter
                 Layout.preferredWidth: Style.space(16)
                 Layout.preferredHeight: Style.space(16)
-                radius: Style.space(6)
+                radius: Style.cornerRadius
                 color: Util.alpha(root.chipToneColor(root.chipFor(modelData.state)), 0.16)
                 Text {
                   anchors.centerIn: parent

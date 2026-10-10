@@ -68,7 +68,7 @@ Item {
       implicitHeight: Math.max(Style.spacing.controlHeight, content.implicitHeight + Style.spacing.sm)
       color: root.focused ? Util.alpha(Color.accent, 0.16) : "transparent"
       borderSpec: Border.none()
-      radius: Style.space(6)
+      radius: Style.cornerRadius
       opacity: root.dimmed ? 0.55 : 1.0
 
       MouseArea {
@@ -93,7 +93,7 @@ Item {
           visible: root.showCheckbox
           Layout.preferredWidth: Style.space(14)
           Layout.preferredHeight: Style.space(14)
-          radius: Style.space(6)
+          radius: Style.cornerRadius
           color: root.checked ? Color.accent : "transparent"
           border.width: 1
           border.color: root.checked ? Color.accent : Util.alpha(root.foreground, 0.5)
@@ -109,7 +109,7 @@ Item {
           visible: root.chip !== ""
           Layout.preferredWidth: Style.space(16)
           Layout.preferredHeight: Style.space(16)
-          radius: Style.space(6)
+          radius: Style.cornerRadius
           color: Util.alpha(root.chipColor(), 0.16)
           border.width: 1
           border.color: Util.alpha(root.chipColor(), 0.6)

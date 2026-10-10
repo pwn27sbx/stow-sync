@@ -28,7 +28,7 @@ Item {
     anchors.left: parent.left
     anchors.right: parent.right
     height: Style.space(30)
-    radius: 999
+    radius: Style.cornerRadius
     color: Util.alpha(Color.foreground, 0.06)
   }
 
@@ -38,7 +38,7 @@ Item {
     height: track.height - root.pad * 2
     x: root.current * root.segWidth + root.pad
     width: Math.max(0, root.segWidth - root.pad * 2)
-    radius: 999
+    radius: Style.cornerRadius
     color: Util.alpha(Color.accent, 0.22)
 
     Behavior on x {

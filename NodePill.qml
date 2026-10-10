@@ -21,7 +21,7 @@ Item {
     id: pill
     width: parent.width
     implicitHeight: content.implicitHeight + Style.spacing.lg * 2
-    radius: 999
+    radius: Style.cornerRadius
     color: Util.alpha(Color.foreground, 0.06)
     borderSpec: Border.none()
 
@@ -61,7 +61,7 @@ Item {
         visible: root.badgeText !== ""
         implicitWidth: Math.max(Style.space(14), badgeText.implicitWidth + Style.space(6))
         implicitHeight: Style.space(14)
-        radius: height / 2
+        radius: Style.cornerRadius
         color: Color.accent
 
         Text {

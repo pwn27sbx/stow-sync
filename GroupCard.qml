@@ -35,7 +35,7 @@ Item {
     implicitHeight: inner.implicitHeight + Style.spacing.sm * 2
     color: Util.alpha(Color.foreground, 0.04)
     borderSpec: Border.none()
-    radius: Style.space(10)
+    radius: Style.cornerRadius
     padding: Style.spacing.sm
 
     Rectangle {
@@ -43,7 +43,7 @@ Item {
       width: Style.space(3)
       height: parent.height
       anchors.left: parent.left
-      radius: width / 2
+      radius: Style.cornerRadius
       color: Color.accent
     }
 
@@ -57,7 +57,7 @@ Item {
     Column {
       id: inner
       x: Style.space(3)
-      width: parent.width - Style.space(3)
+      width: parent.width - Style.space(3) - Style.spacing.xxl
       spacing: Style.spacing.sm
 
       RowLayout {
@@ -113,7 +113,6 @@ Item {
         Text {
           Layout.alignment: Qt.AlignVCenter
           Layout.maximumWidth: Style.space(140)
-          Layout.rightMargin: Style.space(8)
           textFormat: Text.PlainText
           text: root.count !== "" ? (root.count + (root.unit !== "" ? " " + root.unit : "")) : ""
           color: Util.alpha(root.foreground, 0.72)
@@ -125,13 +124,20 @@ Item {
 
         Button {
           Layout.alignment: Qt.AlignVCenter
-          Layout.rightMargin: Style.space(8)
           visible: root.hasAction
           text: root.actionText
           fontSize: Style.font.caption
           horizontalPadding: Style.spacing.sm
           verticalPadding: Style.spacing.xxs
           onClicked: root.actionClicked()
+        }
+
+        // Reserved fixed-width chevron slot: group cards keep their chevron on
+        // the left, so this slot is empty but keeps the count's right edge in
+        // line with the repo lanes' right labels.
+        Item {
+          Layout.preferredWidth: Style.space(14)
+          Layout.preferredHeight: Style.space(14)
         }
       }
 
