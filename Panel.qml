@@ -299,6 +299,7 @@ Panel {
           onEditClicked: root.editConfig()
           onCloseClicked: root.close()
           onDismissed: root.dismissError()
+          onHelpToggled: root.helpOpen = !root.helpOpen
         }
 
         SegmentedTabs {

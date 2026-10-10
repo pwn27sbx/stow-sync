@@ -1044,13 +1044,13 @@ test("repoInfoRows renders the info table with relative times", () => {
   }
   const rows = Model.repoInfoRows(repo, "0.1.0", "2026-10-09T18:00:00-05:00")
   same(rows.map((r) => r.label), [
-    "Repo", "Remote", "Branch", "Ahead / behind", "Last commit", "Last publish", "Packages", "Plugin"
+    "Repo", "Remote", "Branch", "Sync", "Last commit", "Last publish", "Packages", "Plugin"
   ])
   assert.equal(rows[0].value, "~/.dotfiles")
   assert.equal(rows[1].value, "https://github.com/u/r.git")
   assert.equal(rows[1].copy, true)
   assert.equal(rows[2].value, "main @ abc1234")
-  assert.equal(rows[3].value, "0 / 0")
+  assert.equal(rows[3].value, "\u21910 \u21930")
   assert.equal(rows[4].value, "3h ago")
   assert.equal(rows[5].value, "1d ago")
   assert.equal(rows[6].value, "16 packages")

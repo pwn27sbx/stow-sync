@@ -1639,7 +1639,7 @@ function repoInfoRows(repo, version, now) {
     { label: "Repo", value: String(r.path || "") },
     { label: "Remote", value: remote, copy: remote !== "" },
     { label: "Branch", value: branchValue },
-    { label: "Ahead / behind", value: num(r.ahead, 0) + " / " + num(r.behind, 0) },
+    { label: "Sync", value: "\u2191" + num(r.ahead, 0) + " \u2193" + num(r.behind, 0) },
     { label: "Last commit", value: relativeTime(r.head_time, now) },
     { label: "Last publish", value: published === "" ? "never" : published },
     { label: "Packages", value: pluralCount(num(r.stowed_packages, 0), "package") },

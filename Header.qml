@@ -23,6 +23,7 @@ Item {
   signal editClicked()
   signal closeClicked()
   signal dismissed()
+  signal helpToggled()
 
   function toneColor() {
     if (root.stateTone === "urgent") return Color.urgent
@@ -107,6 +108,18 @@ Item {
         fontSize: Style.font.caption
         enabled: !root.busy
         onClicked: root.editClicked()
+      }
+
+      Button {
+        Layout.alignment: Qt.AlignVCenter
+        Layout.preferredWidth: Style.space(32)
+        Layout.preferredHeight: Style.space(32)
+        horizontalPadding: 0
+        verticalPadding: 0
+        iconText: "\uf11c"
+        tooltipText: "Keys (?)"
+        fontSize: Style.font.caption
+        onClicked: root.helpToggled()
       }
 
       Button {

@@ -59,7 +59,7 @@ Item {
         spacing: Style.spacing.sm
 
         Text {
-          Layout.preferredWidth: Style.space(72)
+          Layout.preferredWidth: Style.space(96)
           textFormat: Text.PlainText
           text: String(modelData.label)
           color: Util.alpha(root.foreground, 0.72)

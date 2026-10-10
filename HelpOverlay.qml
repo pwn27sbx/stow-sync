@@ -29,17 +29,8 @@ Item {
     { key: "Esc", action: "Back / close" }
   ]
 
-  Button {
-    anchors.right: parent.right
-    anchors.bottom: parent.bottom
-    anchors.margins: Style.spacing.sm
-    text: "?  keys"
-    tooltipText: "Keyboard shortcuts"
-    fontSize: Style.font.caption
-    horizontalPadding: Style.spacing.sm
-    verticalPadding: Style.spacing.xxs
-    onClicked: root.toggleRequested()
-  }
+  // The toggle button now lives in the header (icon button, tooltip "Keys (?)");
+  // this overlay only renders the key list.
 
   Rectangle {
     anchors.fill: parent
