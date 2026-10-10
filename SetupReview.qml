@@ -45,6 +45,9 @@ Column {
       required property var modelData
       width: parent.width
       spacing: Style.spacing.xs
+      // Hide the whole section when a group has no items (e.g. "Afterwards /
+      // Optional steps" with no post steps) so no empty card is drawn.
+      visible: modelData.items.length > 0
 
       Text {
         width: parent.width

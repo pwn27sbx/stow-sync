@@ -28,10 +28,11 @@ Item {
     RowLayout {
       id: content
       anchors.centerIn: parent
-      spacing: Style.spacing.sm
+      spacing: 0
 
       Text {
         Layout.alignment: Qt.AlignVCenter
+        Layout.rightMargin: root.icon !== "" ? Style.spacing.sm : 0
         visible: root.icon !== ""
         textFormat: Text.PlainText
         text: root.icon
@@ -49,26 +50,30 @@ Item {
         font.pixelSize: Style.font.bodySmall
         font.bold: true
       }
-    }
 
-    Rectangle {
-      visible: root.badgeText !== ""
-      width: Math.max(Style.space(14), badge.implicitWidth + Style.space(6))
-      height: Style.space(14)
-      radius: height / 2
-      color: Color.accent
-      anchors.horizontalCenter: parent.right
-      anchors.verticalCenter: parent.top
-
-      Text {
+      // Count badge inline after the label: Style.space(6) spacing, vertically
+      // centered, so it never overlaps the pill border or the label; the pill
+      // grows to fit any count.
+      Rectangle {
         id: badge
-        anchors.centerIn: parent
-        textFormat: Text.PlainText
-        text: root.badgeText
-        color: Color.background
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
-        font.bold: true
+        Layout.alignment: Qt.AlignVCenter
+        Layout.leftMargin: root.badgeText !== "" ? Style.space(6) : 0
+        visible: root.badgeText !== ""
+        implicitWidth: Math.max(Style.space(14), badgeText.implicitWidth + Style.space(6))
+        implicitHeight: Style.space(14)
+        radius: height / 2
+        color: Color.accent
+
+        Text {
+          id: badgeText
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: root.badgeText
+          color: Color.background
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
       }
     }
   }

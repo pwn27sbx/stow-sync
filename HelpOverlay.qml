@@ -48,7 +48,7 @@ Item {
       anchors.centerIn: parent
       color: Color.popups.background
       borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
-      radius: Style.space(10)
+      radius: Style.space(4)
 
       Column {
         id: helpColumn
