@@ -16,7 +16,7 @@ Column {
   property string version: ""; property string now: ""
   property bool busy: false; property bool motion: true
   property var checkedPaths: ({}); property var hiddenPaths: []
-  property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false
+  property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false; property bool notSetUp: false
   property string focusedKey: ""; property var packages: []
   property color foreground: Color.foreground
   signal reviewRequested(); signal publishRequested(); signal updateRequested()
@@ -59,7 +59,7 @@ Column {
     Bridge {
       width: parent.width
       bridge: Model.bridgeState(root.statusData)
-      sentence: Model.explain(root.statusData)
+      sentence: Model.explain(root.statusData, { machineSetup: root.notSetUp })
       busy: root.busy
       motion: root.motion
       foreground: root.foreground
@@ -120,7 +120,7 @@ Column {
         required property var modelData
         required property int index
         width: parent.width
-        lane: Model.repoLaneSummary(modelData, root.now)
+        lane: Model.repoLaneSummary(modelData, root.now, { neutral: root.notSetUp })
         repo: modelData
         version: root.version
         now: root.now
@@ -187,7 +187,7 @@ Column {
     Text {
       width: parent.width
       textFormat: Text.PlainText
-      text: Model.explain(root.statusData)
+      text: Model.explain(root.statusData, { machineSetup: root.notSetUp })
       color: Util.alpha(root.foreground, 0.72)
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall

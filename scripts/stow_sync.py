@@ -3032,6 +3032,78 @@ def cmd_setup_prereqs(
     }
 
 
+def cmd_setup_repos(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Read-only list of the user's GitHub repos for the Connect picker.
+
+    Runs ``gh repo list --limit 100 --json name,url,isPrivate`` with no prompt
+    (README 10b.4/finding 11). Missing ``gh``, a failed call or unparseable
+    output returns ``ok: false`` with a short message.
+    """
+    if shutil.which("gh") is None:
+        return {"ok": False, "error": "GitHub CLI (gh) is not installed."}
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        result = run_bounded(
+            ["gh", "repo", "list", "--limit", "100", "--json", "name,url,isPrivate"],
+            60,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "gh repo list timed out"}
+    except OSError as exc:
+        return {"ok": False, "error": _shorten(str(exc))}
+    if result.returncode != 0:
+        return {"ok": False, "error": _short_error(result)}
+    try:
+        data = json.loads(_decode(result.stdout) or "[]")
+    except ValueError:
+        return {"ok": False, "error": "could not parse the gh repo list output"}
+    repos: list[dict[str, Any]] = []
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            url = str(item.get("url") or "")
+            if name == "" or url == "":
+                continue
+            repos.append({"name": name, "url": url, "private": item.get("isPrivate") is True})
+    return {"ok": True, "repos": repos}
+
+
+def cmd_setup_fixture(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Hidden live-check hook: return a recorded JSON file verbatim, read-only.
+
+    Mirrors ``setup-plan --fixture`` (README 8b/11): the panel uses it to render
+    the Report step from a recorded apply result without ever running a setup on
+    the real ``$HOME``. Removed before the marketplace submission.
+    """
+    path_arg = opt_value(args, "--path")
+    if not _setup_str(path_arg):
+        raise CommandError("missing --path")
+    path = expand_path(path_arg)
+    if not os.path.isfile(path):
+        raise CommandError("fixture not found: " + to_tilde(path))
+    if os.path.getsize(path) > MAX_RESPONSE_BYTES:
+        raise CommandError("fixture is too large")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise CommandError("fixture is not valid JSON: " + _shorten(str(exc)))
+    return {"ok": True, "data": data}
+
+
 def _classify_conflict(entry: dict[str, str]) -> dict[str, Any]:
     """Classify one parsed stow conflict as identical / different / blocked."""
     base = {"target": entry["target"], "source": entry["source"], "message": entry["message"]}
@@ -3893,6 +3965,8 @@ def cmd_setup_backups(
 COMMANDS = {
     "version": cmd_version,
     "setup-prereqs": cmd_setup_prereqs,
+    "setup-repos": cmd_setup_repos,
+    "setup-fixture": cmd_setup_fixture,
     "setup-connect": cmd_setup_connect,
     "setup-clone": cmd_setup_clone,
     "setup-plan": cmd_setup_plan,

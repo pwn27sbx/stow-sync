@@ -22,34 +22,22 @@ Panel {
   readonly property var barIdentity: hostWidget || root
   readonly property string scriptPath: String(Qt.resolvedUrl("scripts/stow_sync.py")).replace(/^file:\/\//, "")
   readonly property string version: "0.1.0"
-  readonly property string configPath: {
-    var custom = String(root.setting("configPath", ""))
-    return custom !== "" ? custom : (Quickshell.env("HOME") + "/.config/stow-sync/config.json")
-  }
-  property var statusData: null; property int activeTab: 0
-  property var checkedPaths: ({}); property var hiddenPaths: []
-  property bool showHidden: false; property bool showExisting: false
-  property string focusedKey: ""; property int repoCycleIndex: 0
-  property string errorText: ""; property string resultText: ""
-  property bool started: false; property double nowMs: Date.now()
-  property string busyVerb: ""; property string overlayMode: ""
-  property bool setupOpen: false
+  readonly property string configPath: String(root.setting("configPath", "")) !== "" ? String(root.setting("configPath", "")) : (Quickshell.env("HOME") + "/.config/stow-sync/config.json")
+  property var statusData: null; property int activeTab: 0; property var checkedPaths: ({}); property var hiddenPaths: []
+  property bool showHidden: false; property bool showExisting: false; property string focusedKey: ""; property int repoCycleIndex: 0
+  property string errorText: ""; property string resultText: ""; property bool started: false; property double nowMs: Date.now()
+  property string busyVerb: ""; property string overlayMode: ""; property bool setupOpen: false; property bool backupsFetched: false
   property string confirmKind: ""; property var confirmPayload: ({})
   // Publish card and cumulative batch state (publish / upload / update).
-  property string publishMessage: ""; property var publishLines: []
-  property var publishTargets: []; property var publishSecrets: []
-  property bool publishAllowSecrets: false; property string publishError: ""
-  property string publishRepoFilter: ""; property string publishUpstream: "origin/main"
+  property string publishMessage: ""; property var publishLines: []; property var publishTargets: []; property var publishSecrets: []
+  property bool publishAllowSecrets: false; property string publishError: ""; property string publishRepoFilter: ""; property string publishUpstream: "origin/main"
   property int publishCommitDone: 0; property bool publishHadError: false
-  property string batchKind: ""; property int batchRemaining: 0
-  property string batchError: ""
+  property string batchKind: ""; property int batchRemaining: 0; property string batchError: ""
   // Adopt and diff cards.
-  property string adoptRepo: ""; property string adoptPath: ""
-  property string adoptPackage: ""; property var adoptSuggestions: []
-  property string adoptError: ""; property string diffTitle: ""
-  property string diffBody: ""; property bool diffTruncated: false
+  property string adoptRepo: ""; property string adoptPath: ""; property string adoptPackage: ""; property var adoptSuggestions: []
+  property string adoptError: ""; property string diffTitle: ""; property string diffBody: ""; property bool diffTruncated: false
   readonly property string clock: Qt.formatTime(new Date(root.nowMs), "HH:mm")
-  readonly property var hero: Model.heroState(root.statusData, root.clock)
+  readonly property var hero: Model.heroState(root.statusData, root.clock, { machineSetup: root.setupOn })
   readonly property var primary: Model.primaryAction(root.statusData)
   readonly property var tabs: ["Overview", "Changes", "Packages"]
   readonly property var changeView: Model.changesView(root.statusData, { hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting })
@@ -61,7 +49,7 @@ Panel {
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
   readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"; readonly property int contentInset: Style.space(12)
-  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData)
+  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property bool setupNotSetUp: root.setupOn && Model.allReposMissing(root.statusData)
   property bool helpOpen: false
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5)
   readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
@@ -75,14 +63,15 @@ Panel {
   }
   function refresh() { runner.refreshStatus(false) }
   function refreshWithFetch() { runner.refreshStatus(true) }
-  function ensureStarted() { if (root.started) return; root.started = true; root.refresh() }
+  function ensureStarted() { if (root.started) return; root.started = true; root.refresh(); if (root.setupOn) root.refreshSetupBackups() }
+  function refreshSetupBackups() { if (root.setupOn) runner.runAction("setup-backups", ["setup-backups"]) }
   function dismissError() { root.errorText = "" }
   function setResult(text, isError) {
     var value = String(text === undefined || text === null ? "" : text)
     if (isError) { root.errorText = value; root.resultText = ""; resultTimer.stop() }
     else { root.resultText = value; resultTimer.restart() }
   }
-  function applyStatus(payload) { root.statusData = payload; root.errorText = "" }
+  function applyStatus(payload) { root.statusData = payload; root.errorText = ""; if (root.setupOn && !root.backupsFetched) { root.backupsFetched = true; root.refreshSetupBackups() } }
   function switchTabTo(index) { root.activeTab = index; root.focusedKey = "" }
   function switchTab(dx) { var n = root.tabs.length; if (n > 0) root.switchTabTo((root.activeTab + dx + n) % n) }
   function isChecked(key) { return root.checkedPaths[key] !== false }
@@ -110,6 +99,7 @@ Panel {
   }
   function acceptConfirm() {
     if (root.busy) return
+    if (root.confirmKind === "setup-undo") { runner.runAction("setup-undo", ["setup-undo", "--backup", String(root.confirmPayload.backup || "")]); return }
     if (root.confirmKind === "upload") { root.startBatch("push", Model.uploadPlan(root.statusData)); return }
     if (root.confirmKind === "update") { root.startBatch("pull", Model.updatePlan(root.statusData)); return }
     var mutation = Model.mutationFor(root.confirmKind, root.confirmPayload)
@@ -163,7 +153,11 @@ Panel {
   }
   function openDiff(repo, path) { root.diffTitle = "Diff \u2014 " + path; root.diffBody = ""; root.diffTruncated = false; runner.runAction("diff", ["diff", "--repo", repo, "--path", path]) }
   function applyAction(tag, payload) {
-    if (String(tag).indexOf("setup-") === 0) { setupWizard.handleResult(tag, payload); return }
+    if (String(tag).indexOf("setup-") === 0) {
+      setupWizard.handleResult(tag, payload)
+      if (tag === "setup-undo" || tag === "setup-apply") { root.overlayMode = ""; root.refreshSetupBackups() }
+      return
+    }
     var outcome = Model.actionOutcome(tag, payload)
     if (outcome.kind === "diff") { root.diffBody = outcome.body; root.diffTruncated = outcome.truncated; root.overlayMode = "diff"; return }
     if (outcome.kind === "suggest") { if (root.overlayMode === "publish") root.publishMessage = outcome.message; return }
@@ -221,6 +215,7 @@ Panel {
   }
   function editConfig() { Util.execArgv(["xdg-open", root.configPath]) }
   function openSetup() { root.overlayMode = ""; root.setupOpen = true }
+  function openSetupBackups() { root.setupOpen = true; setupWizard.openBackups(); root.refreshSetupBackups() }
   function overlayCancel() { if (!root.busy) root.overlayMode = "" }
   function handleEscape() {
     if (root.setupOpen) { setupWizard.back(); return }
@@ -285,12 +280,14 @@ Panel {
           message: root.feedbackText
           isError: root.feedbackError
           showSetup: root.setupOn
+          showSetupBackups: root.setupOn && setupWizard.backups.length > 0
           onRefreshClicked: root.refreshWithFetch()
           onEditClicked: root.editConfig()
           onCloseClicked: root.close()
           onDismissed: root.dismissError()
           onHelpToggled: root.helpOpen = !root.helpOpen
           onSetupClicked: root.openSetup()
+          onSetupBackupsClicked: root.openSetupBackups()
         }
 
         SegmentedTabs {
@@ -326,6 +323,7 @@ Panel {
             showHidden: root.showHidden
             showExisting: root.showExisting
             setupNeeded: root.setupNeeded
+            notSetUp: root.setupNotSetUp
             focusedKey: root.focusedKey
             packages: root.packages
             onReviewRequested: root.switchTabTo(1)
@@ -394,6 +392,7 @@ Panel {
       busy: root.busy; motion: root.motionOn; foreground: Color.foreground
       onRequested: function(tag, args) { runner.runAction(tag, args) }
       onClosed: root.setupOpen = false
+      onUndoConfirmRequested: function(backup, sentence) { root.confirmKind = "setup-undo"; root.confirmPayload = { backup: backup, sentence: sentence }; root.overlayMode = "confirm" }
     }
   }
 }

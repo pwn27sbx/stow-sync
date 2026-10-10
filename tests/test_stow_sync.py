@@ -3028,6 +3028,13 @@ class FreshOmarchyHome:
         os.chmod(script, 0o755)
         return script
 
+    def install_fake_gh_output(self, output: str, exit_code: int = 0) -> Path:
+        """Install a ``gh`` that prints ``output`` (via a quoted heredoc)."""
+        script = self.fakebin / "gh"
+        write(script, "#!/bin/sh\ncat <<'STOW_SYNC_GH_EOF'\n" + output + "\nSTOW_SYNC_GH_EOF\nexit " + str(exit_code) + "\n")
+        os.chmod(script, 0o755)
+        return script
+
     def install_fake_stow_wrapper(self, log: Path) -> Path:
         """Front ``stow`` with a wrapper that logs its argv, then execs it."""
         script = self.fakebin / "stow"
@@ -4035,6 +4042,61 @@ class SetupPostNeedsTests(SetupTestBase):
         self.assertEqual(entry["state"], "failed")
         self.assertEqual(entry["exit"], 3)
         self.assertEqual(entry["last_line"], "boom")
+
+
+class SetupReposTests(SetupTestBase):
+    def repos(self) -> dict:
+        return ss.dispatch(["setup-repos"], None, str(self.state))
+
+    def test_lists_gh_repos(self) -> None:
+        self.env.install_fake_gh_output(
+            '[{"name":"dotfiles","url":"https://github.com/me/dotfiles","isPrivate":false},'
+            ' {"name":"wallpapers","url":"https://github.com/me/wallpapers","isPrivate":true}]'
+        )
+        result = self.repos()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([r["name"] for r in result["repos"]], ["dotfiles", "wallpapers"])
+        self.assertTrue(result["repos"][1]["private"])
+        self.assertFalse(result["repos"][0]["private"])
+
+    def test_missing_gh(self) -> None:
+        with patch.object(ss.shutil, "which", return_value=None):
+            result = self.repos()
+        self.assertFalse(result["ok"])
+        self.assertIn("not installed", result["error"])
+
+    def test_gh_failure_is_reported(self) -> None:
+        self.env.install_fake_gh_output("gh: not logged in", exit_code=1)
+        result = self.repos()
+        self.assertFalse(result["ok"])
+        self.assertIn("not logged in", result["error"])
+
+    def test_bad_json_is_reported(self) -> None:
+        self.env.install_fake_gh_output("definitely not json", exit_code=0)
+        result = self.repos()
+        self.assertFalse(result["ok"])
+        self.assertIn("parse", result["error"])
+
+
+class SetupFixtureHookTests(SetupTestBase):
+    def test_returns_recorded_json(self) -> None:
+        path = self.env.root / "apply.json"
+        path.write_text(json.dumps({"ok": True, "backup": "x", "packages": []}), encoding="utf-8")
+        result = ss.dispatch(["setup-fixture", "--path", str(path)], None, str(self.state))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["data"]["backup"], "x")
+
+    def test_missing_and_bad_json(self) -> None:
+        missing = ss.dispatch(
+            ["setup-fixture", "--path", str(self.env.root / "nope.json")], None, str(self.state)
+        )
+        self.assertFalse(missing["ok"])
+        self.assertIn("fixture", missing["error"])
+        bad = self.env.root / "bad.json"
+        bad.write_text("{not json", encoding="utf-8")
+        result = ss.dispatch(["setup-fixture", "--path", str(bad)], None, str(self.state))
+        self.assertFalse(result["ok"])
+        self.assertIn("JSON", result["error"])
 
 
 class SetupPerformMoveTests(unittest.TestCase):

@@ -48,10 +48,14 @@ Item {
     if (request.isStatus) seconds = request.fetch ? 120 : 20
     else if (request.tag === "push" || request.tag === "pull") seconds = 300
     else if (request.tag === "commit") seconds = 30
-    else if (request.tag === "setup-connect") seconds = 300
+    else if (request.tag === "setup-prereqs") seconds = 60
+    else if (request.tag === "setup-repos") seconds = 70
+    else if (request.tag === "setup-connect") seconds = 600
+    else if (request.tag === "setup-clone") seconds = 900
     else if (request.tag === "setup-plan") seconds = 120
     else if (request.tag === "setup-apply") seconds = 1800
     else if (request.tag === "setup-undo") seconds = 300
+    else if (request.tag === "setup-backups") seconds = 30
     return seconds * 1000 + 10000
   }
 

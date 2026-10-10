@@ -29,7 +29,9 @@ Item {
   readonly property var rightRows: root.infoRows.slice(Math.ceil(root.infoRows.length / 2))
   readonly property color stripeColor: root.lane.stripeTone === "urgent"
     ? Color.urgent
-    : Util.alpha(Color.accent, root.lane.stripeAlpha === undefined ? 0.5 : root.lane.stripeAlpha)
+    : (root.lane.stripeTone === "neutral"
+      ? Util.alpha(root.foreground, 0.25)
+      : Util.alpha(Color.accent, root.lane.stripeAlpha === undefined ? 0.5 : root.lane.stripeAlpha))
 
   function displayValue(row) {
     return String(row.label) === "Remote" ? Model.shortRemote(String(row.value)) : String(row.value)

@@ -26,7 +26,7 @@ BarWidget {
   readonly property bool busy: panelItem && panelItem.busy === true
   readonly property bool setupAvailable: Model.setupVisible(root.settings, root.statusData)
   readonly property var iconState: Model.barIconState(statusData)
-  readonly property string tooltipText: "Stow Sync — " + Model.heroState(statusData).title
+  readonly property string tooltipText: "Stow Sync — " + Model.heroState(statusData, "", { machineSetup: root.setupAvailable }).title
 
   function tokenColor(token) {
     if (token === "urgent") return Color.urgent

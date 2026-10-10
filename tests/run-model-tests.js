@@ -1380,6 +1380,43 @@ test("anyRepoMissing: true when a configured repo is absent", () => {
   assert.equal(Model.anyRepoMissing({ repos: [{ exists: true }, { exists: false }] }), true)
 })
 
+test("allReposMissing: true only when every repo is absent", () => {
+  assert.equal(Model.allReposMissing(null), false)
+  assert.equal(Model.allReposMissing({ repos: [] }), false)
+  assert.equal(Model.allReposMissing({ repos: [{ exists: true }] }), false)
+  assert.equal(Model.allReposMissing({ repos: [{ exists: false }, { exists: true }] }), false)
+  assert.equal(Model.allReposMissing({ repos: [{ exists: false }, { exists: false }] }), true)
+})
+
+test("heroState: a fresh machine with machineSetup on is not the publish state", () => {
+  const status = {
+    repos: [
+      { path: "~/.dotfiles", exists: false, state: "missing" },
+      { path: "~/wallpapers", exists: false, state: "missing" }
+    ]
+  }
+  const hero = Model.heroState(status, "12:00", { machineSetup: true })
+  assert.equal(hero.title, "This machine is not set up yet")
+  assert.equal(hero.hint, "Use Set up to download and link everything")
+  // Without the opt-in switch, a missing repo is still the attention state.
+  assert.equal(Model.heroState(status, "12:00").title, "Needs your attention")
+  // One missing repo of two is not "not set up".
+  const partial = { repos: [{ exists: false, state: "missing" }, { path: "~/wallpapers", exists: true }] }
+  assert.notEqual(Model.heroState(partial, "12:00", { machineSetup: true }).title, "This machine is not set up yet")
+})
+
+test("explain: a fresh machine points to Set up", () => {
+  const status = { repos: [{ path: "~/.dotfiles", exists: false, state: "missing" }] }
+  assert.ok(Model.explain(status, { machineSetup: true }).indexOf("not set up") !== -1)
+  assert.ok(Model.explain(status).indexOf("attention") !== -1)
+})
+
+test("repoLaneSummary: neutral stripe on a fresh machine", () => {
+  const lane = Model.repoLaneSummary({ path: "~/.dotfiles", state: "missing" }, "12:00", { neutral: true })
+  assert.equal(lane.stripeTone, "neutral")
+  assert.equal(Model.repoLaneSummary({ path: "~/.dotfiles", state: "missing" }, "12:00").stripeTone, "urgent")
+})
+
 test("setupPrefillUrl: uses the dotfiles remote when present", () => {
   assert.equal(Model.setupPrefillUrl(null), "")
   assert.equal(Model.setupPrefillUrl({ repos: [{ path: "~/.dotfiles", remote_url: "" }] }), "")
@@ -1387,26 +1424,73 @@ test("setupPrefillUrl: uses the dotfiles remote when present", () => {
   assert.equal(Model.setupPrefillUrl({ repos: [{ path: "~/wallpapers", remote_url: "x" }] }), "")
 })
 
-test("setupConnectRows: one row per repo with error tone", () => {
+test("setupConnectRows: waiting/cloning/cloned/ready/error checklist", () => {
   same(Model.setupConnectRows(null), [])
-  const ok = Model.setupConnectRows({
-    ok: true,
-    repos: [
-      { path: "~/.dotfiles", cloned: true, already: false, error: null },
-      { path: "~/wallpapers", cloned: false, already: false, error: "The wallpapers repo is private. Run gh auth login and gh auth setup-git, then try again." }
+  const rows = Model.setupConnectRows([
+    { path: "~/.dotfiles", state: "cloned" },
+    { path: "~/wallpapers", state: "cloning" },
+    { path: "~/third", state: "waiting" },
+    { path: "~/bad", state: "error", error: "The wallpapers repo is private." }
+  ])
+  same(rows.map(function(r) { return r.status }), ["done", "running", "waiting", "failed"])
+  assert.equal(rows[0].detail, "Cloned")
+  assert.equal(rows[1].detail, "Cloning\u2026")
+  assert.equal(rows[3].detail, "The wallpapers repo is private.")
+  assert.equal(rows[3].tone, "urgent")
+})
+
+test("setupValidUrl: github URL or a .git suffix", () => {
+  assert.equal(Model.setupValidUrl(""), false)
+  assert.equal(Model.setupValidUrl("   "), false)
+  assert.equal(Model.setupValidUrl("not a url"), false)
+  assert.equal(Model.setupValidUrl("https://github.com/me/dotfiles.git"), true)
+  assert.equal(Model.setupValidUrl("https://github.com/me/dotfiles"), true)
+  assert.equal(Model.setupValidUrl("git@github.com:me/dotfiles.git"), true)
+  assert.equal(Model.setupValidUrl("/tmp/whatever.git"), true)
+})
+
+test("setupRepoPickerRows: likely dotfiles first", () => {
+  same(Model.setupRepoPickerRows(null), [])
+  const rows = Model.setupRepoPickerRows([
+    { name: "wallpapers", url: "u1", private: true },
+    { name: "dotfiles", url: "u2", private: false },
+    { name: "app", url: "u3", private: false }
+  ])
+  assert.equal(rows.length, 3)
+  assert.equal(rows[0].value, "u2")
+  assert.equal(rows[0].likely, true)
+  assert.equal(rows[1].value, "u3")
+  assert.equal(rows[2].detail, "private")
+})
+
+test("setupPrereqRows: labelled checks with fixes", () => {
+  same(Model.setupPrereqRows(null), [])
+  const rows = Model.setupPrereqRows({
+    ok: true, needs_gh: true, ok_to_connect: false,
+    checks: [
+      { id: "stow", ok: true, detail: "found at /usr/bin/stow", fix: "omarchy pkg add stow" },
+      { id: "git", ok: false, detail: "git is not installed", fix: "omarchy pkg add git" },
+      { id: "pacman-db", ok: false, detail: "No pacman sync database", fix: "omarchy update" },
+      { id: "gh", ok: true, detail: "found", fix: "omarchy pkg add github-cli" },
+      { id: "gh-auth", ok: false, detail: "not logged in", fix: "gh auth login, then gh auth setup-git" }
     ]
   })
-  assert.equal(ok.length, 2)
-  assert.equal(ok[0].label, "~/.dotfiles")
-  assert.equal(ok[0].detail, "Cloned")
-  assert.equal(ok[0].tone, "accent")
-  assert.equal(ok[1].label, "~/wallpapers")
-  assert.equal(ok[1].tone, "urgent")
-  assert.ok(ok[1].detail.indexOf("private") !== -1)
-  const failed = Model.setupConnectRows({ ok: false, error: "boom" })
-  assert.equal(failed.length, 1)
-  assert.equal(failed[0].tone, "urgent")
-  assert.equal(failed[0].detail, "boom")
+  const byId = {}
+  rows.forEach(function(r) { byId[r.id] = r })
+  assert.equal(byId.stow.label, "GNU Stow")
+  assert.equal(byId.git.label, "Git")
+  assert.equal(byId.git.tone, "urgent")
+  assert.equal(byId["pacman-db"].label, "Package database")
+  assert.equal(byId.gh.label, "GitHub CLI")
+  assert.equal(byId["gh-auth"].label, "GitHub login")
+  assert.equal(byId["gh-auth"].fix, "gh auth login, then gh auth setup-git")
+})
+
+test("setupPrereqReady: only when ok_to_connect", () => {
+  assert.equal(Model.setupPrereqReady(null), false)
+  assert.equal(Model.setupPrereqReady({ ok: true, ok_to_connect: true }), true)
+  assert.equal(Model.setupPrereqReady({ ok: true, ok_to_connect: false }), false)
+  assert.equal(Model.setupPrereqReady({ ok: false }), false)
 })
 
 test("setupPlanGroups: full plan produces every ordered group", () => {
@@ -1420,7 +1504,10 @@ test("setupPlanGroups: full plan produces every ordered group", () => {
       { repo: "~/.dotfiles", package: "app", status: "blocked", links: [], files_to_backup: 0, conflicts: [{ target: "~/.config/app/conf", kind: "blocked", reason: "target is a symlink not owned by stow" }] }
     ],
     requires: [{ name: "git", found: true }, { name: "gowall", found: false }],
-    post: [{ id: "wallpaper-tint", label: "Recolor wallpapers", default: true, timeout_s: 900 }],
+    post: [
+      { id: "wallpaper-tint", label: "Recolor wallpapers", default: true, available: true, missing: [], timeout_s: 900 },
+      { id: "zen-sync", label: "Link Zen", default: false, available: false, missing: ["gowall"], timeout_s: 120 }
+    ],
     notes: ["Restore ~/.config/hypr with config-sync."]
   })
   const groups = Model.setupPlanGroups(plan)
@@ -1429,18 +1516,20 @@ test("setupPlanGroups: full plan produces every ordered group", () => {
   groups.forEach(function(g) { byKey[g.key] = g })
   assert.equal(byKey.download.title, "Will download")
   assert.equal(byKey.download.items[0].label, "~/wallpapers")
-  assert.equal(byKey.download.items[0].detail, "private")
-  assert.equal(byKey.link.count, 3) // fish, ghostty, walls (not already, not blocked)
+  assert.equal(byKey.link.count, 3)
   assert.equal(byKey.backup.items.length, 2)
-  assert.equal(byKey.backup.items[0].detail, "identical")
-  assert.equal(byKey.backup.items[1].detail, "different")
   assert.equal(byKey.skipped.tone, "urgent")
   assert.equal(byKey.skipped.items[0].label, "~/.dotfiles · app")
   assert.equal(byKey.missing.items[0].label, "gowall")
+  assert.equal(byKey.missing.expandByDefault, true)
+  assert.equal(byKey.notes.expandByDefault, true)
+  assert.equal(byKey.after.expandByDefault, false)
   assert.equal(byKey.after.items[0].label, "Recolor wallpapers")
   assert.equal(byKey.after.items[0].default, true)
+  assert.equal(byKey.after.items[0].available, true)
+  assert.equal(byKey.after.items[1].available, false)
+  assert.equal(byKey.after.items[1].detail, "needs gowall")
   assert.equal(byKey.notes.items[0].label, "Restore ~/.config/hypr with config-sync.")
-  // empty plan -> no groups
   same(Model.setupPlanGroups(setupPlan({})), [])
   same(Model.setupPlanGroups(null), [])
 })
@@ -1463,42 +1552,91 @@ test("setupPrimaryLabel: names exactly what will happen", () => {
   assert.equal(Model.setupPrimaryLabel(blocked), "Set up · review 1 blocked package")
 })
 
-test("setupStepState: done and failed rows from apply results", () => {
+test("setupStepState: done/failed/skipped from the rich apply result", () => {
   same(Model.setupStepState(null), [])
   const rows = Model.setupStepState({
-    applied: [{ repo: "~/.dotfiles", package: "fish", status: "applied", files_backed_up: 1 }, { repo: "~/wallpapers", package: "walls", status: "applied", files_backed_up: 0 }],
-    failed: [{ repo: "~/.dotfiles", package: "ghostty", error: "stow: simulated failure" }],
-    skipped: [{ path: "~/x", status: "repo-missing", reason: "Run Connect again" }],
-    services: [{ unit: "ai-tools-check.timer", ok: true }],
-    post: [{ id: "wallpaper-tint", ok: false, error: "post command timed out after 900s" }]
+    packages: [
+      { repo: "~/.dotfiles", package: "fish", state: "applied" },
+      { repo: "~/.dotfiles", package: "ghostty", state: "failed" },
+      { repo: "~/.dotfiles", package: "app", state: "blocked" }
+    ],
+    services: [{ unit: "ai-tools-check.timer", state: "enabled" }],
+    post: [
+      { id: "wallpaper-tint", state: "ran", exit: 0, last_line: "recolored" },
+      { id: "zen-sync", state: "skipped", reason: "needs gowall" },
+      { id: "boom", state: "failed", exit: 1, last_line: "kaboom" }
+    ]
   })
   const byLabel = {}
   rows.forEach(function(r) { byLabel[r.label] = r })
   assert.equal(byLabel["~/.dotfiles · fish"].status, "done")
   assert.equal(byLabel["~/.dotfiles · ghostty"].status, "failed")
-  assert.equal(byLabel["~/.dotfiles · ghostty"].detail, "stow: simulated failure")
-  assert.equal(byLabel["~/x"].status, "failed")
-  assert.equal(byLabel["~/x"].detail, "Run Connect again")
+  assert.equal(byLabel["~/.dotfiles · app"].status, "failed")
   assert.equal(byLabel["ai-tools-check.timer"].status, "done")
-  assert.equal(byLabel["wallpaper-tint"].status, "failed")
+  assert.equal(byLabel["wallpaper-tint"].status, "done")
+  assert.equal(byLabel["wallpaper-tint"].detail, "recolored")
+  assert.equal(byLabel["zen-sync"].status, "skipped")
+  assert.equal(byLabel["zen-sync"].detail, "needs gowall")
+  assert.equal(byLabel["boom"].status, "failed")
+  assert.equal(byLabel["boom"].detail, "kaboom")
 })
 
-test("setupReport: counts, backup id and failure lines", () => {
-  same(Model.setupReport(null), { backup: "", ok: false, appliedCount: 0, failedCount: 0, skippedCount: 0, lines: [] })
+test("setupReport: grouped results, counts and backup dir", () => {
+  same(Model.setupReport(null).sections, [])
   const report = Model.setupReport({
-    ok: true, backup: "20261010T010807Z",
-    applied: [{ repo: "~/.dotfiles", package: "fish" }, { repo: "~/wallpapers", package: "walls" }],
-    failed: [{ repo: "~/.dotfiles", package: "ghostty", error: "stow: boom" }],
-    skipped: [{ path: "~/x", status: "repo-missing", reason: "Run Connect again" }],
-    services: [{ unit: "t.timer", ok: false, error: "no such unit" }],
-    post: [{ id: "p", ok: true, error: null }]
+    ok: true,
+    backup: "20261010T043006Z",
+    backup_dir: "/home/u/.local/state/stow-sync/setup-backups/20261010T043006Z",
+    packages: [{ repo: "~/.dotfiles", package: "fish", state: "applied" }],
+    applied: [{ repo: "~/.dotfiles", package: "fish" }],
+    moved: [{ path: "~/.config/fish/config.fish", backup: "/b/files/.config/fish/config.fish" }],
+    services: [{ unit: "ai-tools-check.timer", state: "enabled" }],
+    post: [
+      { id: "wallpaper-tint", state: "ran", exit: 0, last_line: "recolored" },
+      { id: "zen-sync", state: "skipped", reason: "needs gowall" }
+    ],
+    notes: ["Restore hypr with config-sync."]
   })
-  assert.equal(report.backup, "20261010T010807Z")
-  assert.equal(report.appliedCount, 2)
-  assert.equal(report.failedCount, 1)
-  assert.equal(report.skippedCount, 1)
-  assert.ok(report.lines.some(function(l) { return l.tone === "urgent" && l.detail === "stow: boom" }))
-  assert.ok(report.lines.some(function(l) { return l.tone === "urgent" && l.detail === "no such unit" }))
+  assert.equal(report.backup, "20261010T043006Z")
+  assert.equal(report.backupDir, "/home/u/.local/state/stow-sync/setup-backups/20261010T043006Z")
+  assert.equal(report.linked, 1)
+  assert.equal(report.moved, 1)
+  const keys = report.sections.map(function(s) { return s.key })
+  assert.ok(keys.indexOf("moved") !== -1)
+  assert.ok(keys.indexOf("notes") !== -1)
+  const post = report.sections.filter(function(s) { return s.key === "post" })[0]
+  assert.equal(post.items[1].detail, "skipped: needs gowall")
+})
+
+test("setupUndoSentence: names what undo does", () => {
+  assert.equal(
+    Model.setupUndoSentence({ packages: Array(17).fill({ state: "applied" }), moved: Array(16).fill({}) }),
+    "Unlink the 17 packages and put back the 16 original files"
+  )
+  assert.equal(
+    Model.setupUndoSentence({ packages: Array(1).fill({ state: "applied" }), moved: Array(1).fill({}) }),
+    "Unlink the 1 package and put back the 1 original file"
+  )
+  assert.equal(Model.setupUndoSentence(null), "Unlink the 0 packages and put back the 0 original files")
+})
+
+test("setupBackupsRows: id, date, counts and undone", () => {
+  same(Model.setupBackupsRows(null), [])
+  const rows = Model.setupBackupsRows([
+    { id: "20261010T043006Z", created: "2026-10-10T04:30:06+00:00", undone: false, counts: { packages: 17, moved: 16, services: 1 } }
+  ])
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].id, "20261010T043006Z")
+  assert.equal(rows[0].detail, "17 packages \u00b7 16 files \u00b7 1 service")
+  assert.equal(rows[0].undone, false)
+})
+
+test("setupStepName covers the five wizard steps", () => {
+  assert.equal(Model.setupWizardSteps.length, 5)
+  same(Model.setupWizardSteps, ["Check", "Connect", "Review", "Apply", "Report"])
+  assert.equal(Model.setupStepName(0), "Check")
+  assert.equal(Model.setupStepName(4), "Report")
+  assert.equal(Model.setupStepName(9), "")
 })
 
 test("selectRepoCycle / toggleHiddenPath / nextCursor: pure panel helpers", () => {

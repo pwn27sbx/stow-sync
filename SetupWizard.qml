@@ -6,11 +6,9 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Opt-in "Set up this machine" wizard (README section 8b). Modal overlay with
-// four steps: Connect, Review, Apply, Report. It owns its own state and asks
-// Panel to run backend commands through `requested`; Panel feeds every result
-// back with handleResult/handleFailure. Only instantiated when machineSetup is
-// true, so a user who never enables it sees nothing setup-related.
+// Opt-in "Set up this machine" wizard shell (README 8b/10b). Renders the state
+// machine in SetupFlow.qml: five steps (Check, Connect, Review, Apply, Report)
+// plus the "Setup backups" view. Only instantiated when machineSetup is true.
 Item {
   id: root
 
@@ -23,163 +21,39 @@ Item {
 
   signal requested(string tag, var args)
   signal closed()
+  signal undoConfirmRequested(string backup, string sentence)
 
-  property int step: 0
-  property string url: ""
-  property var connectResult: null
-  property var plan: null
-  property string planToken: ""
-  property bool planLoading: false
-  property var applyResult: null
-  property var undoResult: null
-  property var postChecked: ({})
-  property string errorText: ""
-  property bool applying: false
-
-  readonly property bool running: root.applying
   readonly property bool contentActiveFocus: urlField.activeFocus
-  readonly property var stepRows: Model.setupStepState(root.applyResult)
-  readonly property var report: Model.setupReport(root.applyResult)
-  readonly property var stepNames: ["Connect", "Review", "Apply", "Report"]
+  readonly property var backups: flow.backups
+
+  function handleResult(tag, payload) { flow.handleResult(tag, payload) }
+  function handleFailure(tag, message) { flow.handleFailure(tag, message) }
+  function openBackups() { flow.openBackups() }
+  function primary() { flow.primary() }
+  function back() { flow.back() }
 
   visible: opened
-  onOpenedChanged: if (opened) root.start()
+  onOpenedChanged: if (opened) flow.start()
 
-  function start() {
-    root.step = 0
-    root.url = Model.setupPrefillUrl(root.statusData)
-    root.connectResult = null
-    root.plan = null
-    root.planToken = ""
-    root.planLoading = false
-    root.applyResult = null
-    root.undoResult = null
-    root.postChecked = ({})
-    root.errorText = ""
-    root.applying = false
-    // Hidden setupFixture (README 8b live check): render a recorded plan
-    // straight into Review, read-only, without touching Connect or Apply.
-    var fixture = root.settings ? String(root.settings.setupFixture || "") : ""
-    if (fixture !== "") { root.step = 1; root.loadPlan() }
-  }
-
-  function selectedPostIds() {
-    var ids = []
-    var post = (root.plan && root.plan.post) || []
-    for (var i = 0; i < post.length; i++) {
-      var id = String(post[i].id || "")
-      var checked = root.postChecked[id] !== undefined ? root.postChecked[id] === true : post[i].default === true
-      if (checked) ids.push(id)
-    }
-    return ids
-  }
-
-  function primaryLabel() {
-    if (root.step === 0) return root.connectResult ? "Review" : "Connect"
-    if (root.step === 1) return root.planToken === "fixture" ? "Close" : Model.setupPrimaryLabel(root.plan)
-    if (root.step === 2) return root.applying ? "Setting up\u2026" : (root.applyResult ? "Continue" : "Set up")
-    return "Finish"
-  }
-
-  function primary() {
-    if (root.running) return
-    if (root.step === 0) {
-      if (!root.connectResult) {
-        if (String(root.url).trim() === "") { root.errorText = "Enter the dotfiles repository URL."; return }
-        root.errorText = ""
-        root.requested("setup-connect", ["setup-connect", "--url", root.url])
-      } else {
-        root.step = 1
-        root.loadPlan()
-      }
-      return
-    }
-    if (root.step === 1) {
-      if (root.planToken === "fixture") { root.closed(); return }
-      if (root.planLoading) return
-      root.step = 2
-      root.applying = true
-      root.errorText = ""
-      root.requested("setup-apply", ["setup-apply", "--token", root.planToken, "--post", root.selectedPostIds().join(",")])
-      return
-    }
-    if (root.step === 2) {
-      if (root.applyResult) root.step = 3
-      return
-    }
-    root.closed()
-  }
-
-  function loadPlan() {
-    root.planLoading = true
-    root.errorText = ""
-    var args = ["setup-plan"]
-    var fixture = root.settings ? String(root.settings.setupFixture || "") : ""
-    if (fixture !== "") args = args.concat(["--fixture", fixture])
-    root.requested("setup-plan", args)
-  }
-
-  function back() {
-    if (root.running) { root.errorText = "Setup is running"; return }
-    if (root.step === 1 || root.step === 2) { root.step = 0; return }
-    root.closed()
-  }
-
-  function undo() {
-    if (root.running || !root.applyResult) return
-    root.errorText = ""
-    root.requested("setup-undo", ["setup-undo", "--backup", String(root.applyResult.backup || "")])
-  }
-
-  function handleResult(tag, payload) {
-    if (tag === "setup-connect") {
-      if (!payload || payload.ok === false) { root.errorText = String(payload && payload.error || "Connect failed."); return }
-      root.connectResult = payload
-      return
-    }
-    if (tag === "setup-plan") {
-      root.planLoading = false
-      if (!payload || payload.ok === false) { root.errorText = String(payload && payload.error || "Could not build the plan."); return }
-      root.plan = payload.plan
-      root.planToken = String(payload.token || "")
-      var selection = {}
-      var post = (payload.plan && payload.plan.post) || []
-      for (var i = 0; i < post.length; i++) selection[String(post[i].id || "")] = post[i].default === true
-      root.postChecked = selection
-      return
-    }
-    if (tag === "setup-apply") {
-      root.applying = false
-      if (!payload || payload.ok === false) { root.errorText = String(payload && payload.error || "Setup failed."); return }
-      root.applyResult = payload
-      return
-    }
-    if (tag === "setup-undo") {
-      if (!payload || payload.ok === false) { root.errorText = String(payload && payload.error || "Undo failed."); return }
-      root.undoResult = payload
-      return
-    }
-  }
-
-  function handleFailure(tag, message) {
-    root.applying = false
-    root.planLoading = false
-    root.errorText = String(message || "The helper failed.")
+  SetupFlow {
+    id: flow
+    settings: root.settings
+    statusData: root.statusData
+    onRequested: function(tag, args) { root.requested(tag, args) }
+    onClosed: root.closed()
+    onUndoConfirmRequested: function(backup, sentence) { root.undoConfirmRequested(backup, sentence) }
   }
 
   Rectangle {
     anchors.fill: parent
     color: Util.alpha(Color.background, 0.72)
 
-    MouseArea {
-      anchors.fill: parent
-      onClicked: if (!root.running) root.closed()
-    }
+    MouseArea { anchors.fill: parent; onClicked: if (!flow.running) root.closed() }
 
     BorderSurface {
       id: card
       width: Math.min(parent.width - Style.space(24), Style.space(560))
-      height: Math.min(parent.height - Style.space(16), Style.space(460))
+      height: Math.min(parent.height - Style.space(16), Style.space(480))
       anchors.centerIn: parent
       color: Color.popups.background
       borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
@@ -203,7 +77,7 @@ Item {
           Text {
             width: parent.width
             textFormat: Text.PlainText
-            text: "Set up this machine"
+            text: flow.mode === "backups" ? "Setup backups" : "Set up this machine"
             color: root.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.title
@@ -213,7 +87,7 @@ Item {
           Text {
             width: parent.width
             textFormat: Text.PlainText
-            text: "Step " + (root.step + 1) + " of 4 \u00b7 " + root.stepNames[root.step]
+            text: flow.stepLine
             color: Util.alpha(root.foreground, 0.72)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -222,19 +96,19 @@ Item {
           TextField {
             id: urlField
             width: parent.width
-            visible: root.step === 0
-            text: root.url
+            visible: flow.mode === "wizard" && flow.step === 1
+            text: flow.url
             placeholderText: "https://github.com/<you>/dotfiles.git"
             foreground: root.foreground
-            onTextEdited: root.url = text
-            onAccepted: root.primary()
+            onTextEdited: flow.url = text
+            onAccepted: flow.primary()
           }
 
           Text {
             width: parent.width
-            visible: root.errorText !== ""
+            visible: flow.errorText !== ""
             textFormat: Text.PlainText
-            text: root.errorText
+            text: flow.errorText
             color: Color.urgent
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
@@ -254,21 +128,10 @@ Item {
           contentHeight: body.implicitHeight
           boundsBehavior: Flickable.StopAtBounds
 
-          SetupStep {
+          Loader {
             id: body
             width: bodyArea.width
-            step: root.step
-            connectRows: Model.setupConnectRows(root.connectResult)
-            plan: root.plan
-            planLoading: root.planLoading
-            stepRows: root.stepRows
-            report: root.report
-            undoResult: root.undoResult
-            postChecked: root.postChecked
-            busy: root.busy
-            foreground: root.foreground
-            onPostToggled: function(id, value) { var next = {}; for (var k in root.postChecked) next[k] = root.postChecked[k]; next[id] = value; root.postChecked = next }
-            onUndoRequested: root.undo()
+            sourceComponent: flow.mode === "backups" ? backupsView : wizardView
           }
         }
 
@@ -279,18 +142,55 @@ Item {
           spacing: Style.spacing.sm
 
           Button {
-            text: root.step === 0 ? "Cancel" : (root.step === 3 ? "Close" : "Back")
-            enabled: !root.running
-            onClicked: root.back()
+            text: flow.backLabel()
+            enabled: !flow.running
+            onClicked: flow.back()
           }
 
           Button {
-            text: root.primaryLabel()
-            enabled: !root.running && !root.planLoading
-            onClicked: root.primary()
+            text: flow.primaryLabel()
+            enabled: flow.primaryEnabled()
+            onClicked: flow.primary()
           }
         }
       }
+    }
+  }
+
+  Component {
+    id: wizardView
+
+    SetupStep {
+      step: flow.step
+      prereqs: flow.prereqs
+      checking: flow.checking
+      repoPicker: flow.repoPicker
+      connectEntries: flow.connectEntries
+      connectRunning: flow.connectRunning
+      plan: flow.plan
+      planLoading: flow.planLoading
+      stepRows: flow.stepRows
+      report: flow.report
+      undoSentence: flow.undoSentence
+      postChecked: flow.postChecked
+      busy: root.busy
+      foreground: root.foreground
+      onPostToggled: function(id, value) { var next = {}; for (var k in flow.postChecked) next[k] = flow.postChecked[k]; next[id] = value; flow.postChecked = next }
+      onCheckAgainRequested: flow.runCheck()
+      onRepoPicked: function(url) { flow.url = url }
+      onUndoRequested: flow.requestUndo(flow.applyResult ? flow.applyResult.backup : "")
+    }
+  }
+
+  Component {
+    id: backupsView
+
+    SetupBackups {
+      rows: flow.backups
+      busy: root.busy
+      foreground: root.foreground
+      onUndoRequested: function(id) { flow.requestUndo(id) }
+      onDoneRequested: root.closed()
     }
   }
 }
