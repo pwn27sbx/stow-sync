@@ -810,8 +810,6 @@ function pluralUnit(count, singular, pluralForm) {
   return num(count, 0) === 1 ? singular : (pluralForm !== undefined ? pluralForm : singular + "s")
 }
 
-// Top-of-panel state: one glyph, one plain sentence and one hint line.
-// `now` is the panel's current "HH:MM" used only when no fetch time exists.
 // --- bar icon overlays (Unit 7) ------------------------------------------
 // At most one status dot plus the up/down chevrons: the dot is `urgent` when
 // anything needs attention (conflict/diverged/operation/stow conflict/missing),
@@ -830,6 +828,8 @@ function barIconState(data, opts) {
   }
 }
 
+// Top-of-panel state: one glyph, one plain sentence and one hint line.
+// `now` is the panel's current "HH:MM" used only when no fetch time exists.
 function heroState(data, now) {
   var d = data || {}
   var attention = attentionFor(d)
