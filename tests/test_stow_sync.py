@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2974,6 +2975,7 @@ class FreshOmarchyHome:
         self.fakebin = self.root / "fakebin"
         self.fakebin.mkdir()
         self.systemctl_log = self.root / "systemctl.log"
+        self.real_stow = shutil.which("stow")
         self.fish_default = "fish default\n"
         self.ghostty_default = "ghostty default\n"
         self.nvim_default = "nvim default\n"
@@ -3005,9 +3007,36 @@ class FreshOmarchyHome:
             'case "$*" in\n'
             "  *is-enabled*) echo disabled ;;\n"
             "esac\n"
+            'case "$*" in\n'
+            "  *disable*)\n"
+            '    for u in "$@"; do\n'
+            '      case "$u" in\n'
+            '        -*|"") ;;\n'
+            '        *.*) rm -f "$HOME"/.config/systemd/user/*.wants/"$u" 2>/dev/null ;;\n'
+            "      esac\n"
+            "    done\n"
+            "    ;;\n"
+            "esac\n"
             "exit 0\n",
         )
         os.chmod(script, 0o755)
+
+    def install_fake_gh(self, exit_code: int = 0) -> Path:
+        """Install a ``gh`` on the fake PATH that always exits ``exit_code``."""
+        script = self.fakebin / "gh"
+        write(script, "#!/bin/sh\n" + f"exit {exit_code}\n")
+        os.chmod(script, 0o755)
+        return script
+
+    def install_fake_stow_wrapper(self, log: Path) -> Path:
+        """Front ``stow`` with a wrapper that logs its argv, then execs it."""
+        script = self.fakebin / "stow"
+        write(
+            script,
+            "#!/bin/sh\n" f'echo "stow $@" >> "{log}"\n' f'exec "{self.real_stow}" "$@"\n',
+        )
+        os.chmod(script, 0o755)
+        return script
 
     def _seed_defaults(self) -> None:
         home = self.home
@@ -3066,6 +3095,14 @@ class FreshOmarchyHome:
                     "argv": ["~/.local/bin/slow"],
                     "default": False,
                     "timeout_s": 1,
+                },
+                {
+                    "id": "needy",
+                    "label": "Needs a tool",
+                    "argv": ["~/.local/bin/needy"],
+                    "default": False,
+                    "timeout_s": 30,
+                    "needs": ["stow-sync-missing-tool"],
                 },
             ],
             "notes": ["note one", "note two"],
@@ -3161,10 +3198,19 @@ class SetupTestBase(unittest.TestCase):
         return self.apply(plan["token"], extra)
 
     def connect(self) -> dict:
+        """Connect (clone dotfiles), then clone every other recipe repo.
+
+        Mirrors the wizard: one request per repo so each clone has its own
+        timeout (README 10a.2).
+        """
         result = ss.dispatch(
             ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
         )
         self.assertTrue(result["ok"], result)
+        for entry in result["repos"]:
+            clone = ss.dispatch(["setup-clone", "--path", entry["path"]], None, str(self.state))
+            self.assertTrue(clone["ok"], clone)
+            self.assertIn(clone["state"], ("cloned", "ready"), clone)
         return result
 
     def link_entry(self, plan: dict, package: str) -> dict:
@@ -3273,6 +3319,26 @@ class SetupRecipeValidationTests(SetupTestBase):
         message = self._invalid(lambda r: r.update(services=[1]))
         self.assertIn("services must be a list of strings", message)
 
+    def test_post_needs_must_be_a_list_of_strings(self) -> None:
+        message = self._invalid(lambda r: r["post"][0].update(needs="gowall"))
+        self.assertIn("needs", message)
+        message = self._invalid(lambda r: r["post"][0].update(needs=[""]))
+        self.assertIn("needs", message)
+
+    def test_post_needs_is_normalized(self) -> None:
+        recipe = valid_setup_recipe()
+        recipe["post"][0]["needs"] = ["gowall", "jq"]
+        result = ss.validate_setup_recipe(recipe)
+        self.assertEqual(result["post"][0]["needs"], ["gowall", "jq"])
+        self.assertEqual(result["post"][1]["needs"], [])
+
+    def test_example_recipe_declares_needs_and_mise_step(self) -> None:
+        recipe = valid_setup_recipe()
+        by_id = {entry["id"]: entry for entry in recipe["post"]}
+        self.assertEqual(by_id["wallpaper-tint"]["needs"], ["gowall"])
+        self.assertIn("mise-install", by_id)
+        self.assertTrue(by_id["mise-install"]["argv"][0].startswith("~/"))
+
 
 # --------------------------------------------------------------------------
 # .stow-sync is never a package; connect
@@ -3292,23 +3358,23 @@ class SetupConnectTests(SetupTestBase):
             ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
         )
         self.assertTrue(result["ok"], result)
-        self.assertTrue(result["cloned"])
-        self.assertFalse(result["already"])
+        self.assertEqual(result["state"], "cloned")
         self.assertEqual(result["path"], "~/.dotfiles")
+        self.assertEqual([entry["path"] for entry in result["repos"]], ["~/wallpapers"])
+        self.assertFalse((self.home / "wallpapers").exists())
         self.assertEqual(result["recipe"]["version"], 1)
         self.assertTrue((self.dotfiles / ".stow-sync" / "setup.json").is_file())
 
-    def test_connect_second_time_reports_already(self) -> None:
+    def test_connect_second_time_reports_ready(self) -> None:
         first = ss.dispatch(
             ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
         )
-        self.assertTrue(first["cloned"])
+        self.assertEqual(first["state"], "cloned")
         second = ss.dispatch(
             ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
         )
         self.assertTrue(second["ok"], second)
-        self.assertTrue(second["already"])
-        self.assertFalse(second["cloned"])
+        self.assertEqual(second["state"], "ready")
 
     def test_connect_wrong_remote_refuses(self) -> None:
         self.env.clone_dotfiles()
@@ -3342,16 +3408,18 @@ class SetupConnectTests(SetupTestBase):
         self.assertIsNone(result["recipe"])
         self.assertIn(".stow-sync/setup.json", result["hint"])
 
-    def test_connect_clones_every_recipe_repo(self) -> None:
+    def test_connect_clones_dotfiles_and_lists_other_repos(self) -> None:
         result = ss.dispatch(
             ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
         )
         self.assertTrue(result["ok"], result)
         self.assertTrue((self.dotfiles / ".stow-sync" / "setup.json").is_file())
+        self.assertFalse((self.home / "wallpapers").exists())
+        self.assertEqual([entry["path"] for entry in result["repos"]], ["~/wallpapers"])
+        clone = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
+        self.assertTrue(clone["ok"], clone)
+        self.assertEqual(clone["state"], "cloned")
         self.assertTrue((self.home / "wallpapers").is_dir())
-        by_path = {entry["path"]: entry for entry in result["repos"]}
-        self.assertTrue(by_path["~/.dotfiles"]["cloned"])
-        self.assertTrue(by_path["~/wallpapers"]["cloned"])
 
     def test_connect_reports_private_repo_auth_failure(self) -> None:
         real_run_git = ss.run_git
@@ -3367,16 +3435,18 @@ class SetupConnectTests(SetupTestBase):
                 )
             return real_run_git(repo, args, *rest, **kwargs)
 
-        with patch.object(ss, "run_git", side_effect=fake_run_git):
-            result = ss.dispatch(
-                ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
-            )
+        result = ss.dispatch(
+            ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+        )
         self.assertTrue(result["ok"], result)
         self.assertTrue((self.dotfiles / ".stow-sync" / "setup.json").is_file())
         self.assertFalse((self.home / "wallpapers").exists())
-        by_path = {entry["path"]: entry for entry in result["repos"]}
-        self.assertIn("private", by_path["~/wallpapers"]["error"])
-        self.assertIn("gh auth login", by_path["~/wallpapers"]["error"])
+        with patch.object(ss, "run_git", side_effect=fake_run_git):
+            clone = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
+        self.assertTrue(clone["ok"], clone)
+        self.assertEqual(clone["state"], "error")
+        self.assertIn("private", clone["error"])
+        self.assertIn("gh auth login", clone["error"])
 
 
 # --------------------------------------------------------------------------
@@ -3657,6 +3727,22 @@ class SetupApplyTests(SetupTestBase):
         self.assertTrue(summary["nothing_to_do"])
         self.assertTrue(all(entry["status"] in ("already",) for entry in second["plan"]["link"]))
 
+    def test_apply_returns_rich_result(self) -> None:
+        self.connect()
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(os.path.isabs(result["backup_dir"]))
+        self.assertTrue(os.path.isdir(result["backup_dir"]))
+        self.assertEqual(result["notes"], ["note one", "note two"])
+        packages = {entry["package"]: entry for entry in result["packages"]}
+        self.assertEqual(packages["fish"]["state"], "applied")
+        self.assertIn("repo", packages["fish"])
+        moved = {entry["path"]: entry for entry in result["moved"]}
+        self.assertIn("~/.config/fish/config.fish", moved)
+        self.assertTrue(os.path.isabs(moved["~/.config/fish/config.fish"]["backup"]))
+        self.assertEqual(result["services"][0]["unit"], "ai-tools-check.timer")
+        self.assertEqual(result["services"][0]["state"], "enabled")
+
 
 # --------------------------------------------------------------------------
 # Undo and backups
@@ -3737,8 +3823,218 @@ class SetupUndoTests(SetupTestBase):
         self.assertEqual(len(listing["backups"]), 1)
         entry = listing["backups"][0]
         self.assertEqual(entry["id"], result["backup"])
-        self.assertEqual(entry["counts"]["moves"], 4)
+        self.assertEqual(entry["counts"]["moved"], 4)
         self.assertEqual(entry["counts"]["packages"], 7)
+        self.assertEqual(entry["counts"]["services"], 1)
+        self.assertFalse(entry["undone"])
+
+    def test_second_undo_refuses_already_undone(self) -> None:
+        result = self._apply()
+        first = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertTrue(first["ok"], first)
+        listing = ss.dispatch(["setup-backups"], None, str(self.state))
+        self.assertTrue(listing["backups"][0]["undone"])
+        second = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertFalse(second["ok"])
+        self.assertIn("already undone", second["error"])
+
+    def test_undo_disables_services_before_unstow_and_clears_wants(self) -> None:
+        result = self._apply()
+        wants = (
+            self.home
+            / ".config"
+            / "systemd"
+            / "user"
+            / "timers.target.wants"
+            / "ai-tools-check.timer"
+        )
+        wants.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(
+            str(self.dotfiles / "ai-tools" / ".config" / "systemd" / "user" / "ai-tools-check.timer"),
+            wants,
+        )
+        wrapper = self.env.install_fake_stow_wrapper(self.env.systemctl_log)
+        self.addCleanup(lambda: wrapper.unlink(missing_ok=True))
+        undo = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertTrue(undo["ok"], undo)
+        self.assertEqual(
+            [entry["unit"] for entry in undo["services_disabled"]], ["ai-tools-check.timer"]
+        )
+        self.assertTrue(all(entry["ok"] for entry in undo["services_disabled"]))
+        self.assertFalse(wants.exists())
+        log = self.env.systemctl_log.read_text(encoding="utf-8")
+        self.assertIn("--user disable --now ai-tools-check.timer", log)
+        self.assertLess(
+            log.index("--user disable --now ai-tools-check.timer"),
+            log.index("stow -D"),
+        )
+
+
+class SetupPrereqsTests(SetupTestBase):
+    def prereqs(self, extra: list[str] | None = None) -> dict:
+        args = ["setup-prereqs"]
+        if extra:
+            args += extra
+        return ss.dispatch(args, None, str(self.state))
+
+    def check(self, result: dict, cid: str) -> dict:
+        for entry in result["checks"]:
+            if entry["id"] == cid:
+                return entry
+        raise AssertionError("no prerequisite check " + cid)
+
+    def _db(self) -> str:
+        path = self.env.root / "core.db"
+        path.write_text("x", encoding="utf-8")
+        return str(path)
+
+    def test_all_present_and_no_github(self) -> None:
+        with patch.object(ss, "PACMAN_SYNC_DB", self._db()):
+            result = self.prereqs()
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["ok_to_connect"])
+        self.assertFalse(result["needs_gh"])
+        self.assertEqual({c["id"] for c in result["checks"]}, {"stow", "git", "pacman-db"})
+
+    def test_missing_stow_and_git_block(self) -> None:
+        with patch.object(ss.shutil, "which", return_value=None):
+            result = self.prereqs()
+        self.assertFalse(self.check(result, "stow")["ok"])
+        self.assertIn("omarchy pkg add stow", self.check(result, "stow")["fix"])
+        self.assertFalse(self.check(result, "git")["ok"])
+        self.assertIn("omarchy pkg add git", self.check(result, "git")["fix"])
+        self.assertFalse(result["ok_to_connect"])
+
+    def test_pacman_db_missing_blocks_only_when_tool_missing(self) -> None:
+        absent = str(self.env.root / "no-such-core.db")
+        with patch.object(ss, "PACMAN_SYNC_DB", absent), patch.object(
+            ss.shutil, "which", return_value=None
+        ):
+            result = self.prereqs()
+        db = self.check(result, "pacman-db")
+        self.assertFalse(db["ok"])
+        self.assertIn("omarchy update", db["fix"])
+        self.assertIn("pacman -Syu", db["detail"])
+        self.assertFalse(result["ok_to_connect"])
+        with patch.object(ss, "PACMAN_SYNC_DB", absent):
+            ok = self.prereqs()
+        self.assertFalse(self.check(ok, "pacman-db")["ok"])
+        self.assertTrue(ok["ok_to_connect"])
+
+    def test_gh_checks_only_for_private_recipe(self) -> None:
+        self.env.clone_dotfiles()
+        self.env.install_fake_gh(0)
+        with patch.object(ss, "PACMAN_SYNC_DB", self._db()):
+            result = self.prereqs()
+        self.assertTrue(result["needs_gh"], result)
+        self.assertTrue(self.check(result, "gh")["ok"])
+        self.assertTrue(self.check(result, "gh-auth")["ok"])
+        self.assertTrue(result["ok_to_connect"])
+
+    def test_gh_auth_failure_blocks_for_private_recipe(self) -> None:
+        self.env.clone_dotfiles()
+        self.env.install_fake_gh(1)
+        with patch.object(ss, "PACMAN_SYNC_DB", self._db()):
+            result = self.prereqs()
+        self.assertTrue(self.check(result, "gh")["ok"])
+        auth = self.check(result, "gh-auth")
+        self.assertFalse(auth["ok"])
+        self.assertIn("gh auth login", auth["fix"])
+        self.assertFalse(result["ok_to_connect"])
+
+    def test_github_url_requires_gh_without_recipe(self) -> None:
+        self.env.install_fake_gh(1)
+        result = self.prereqs(["--url", "https://github.com/me/dotfiles.git"])
+        self.assertTrue(result["needs_gh"], result)
+        self.assertIn("gh-auth", [c["id"] for c in result["checks"]])
+        self.assertFalse(result["ok_to_connect"])
+
+    def test_non_github_url_without_recipe_skips_gh(self) -> None:
+        result = self.prereqs(["--url", "/tmp/whatever.git"])
+        self.assertFalse(result["needs_gh"])
+        self.assertNotIn("gh-auth", [c["id"] for c in result["checks"]])
+
+
+class SetupCloneTests(SetupTestBase):
+    def test_clone_clones_one_recipe_repo(self) -> None:
+        self.env.clone_dotfiles()
+        result = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["state"], "cloned")
+        self.assertTrue((self.home / "wallpapers").is_dir())
+
+    def test_clone_ready_when_already_present(self) -> None:
+        self.env.clone_dotfiles()
+        ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
+        again = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
+        self.assertTrue(again["ok"], again)
+        self.assertEqual(again["state"], "ready")
+
+    def test_clone_unknown_path_refuses(self) -> None:
+        self.env.clone_dotfiles()
+        result = ss.dispatch(["setup-clone", "--path", "~/nope"], None, str(self.state))
+        self.assertFalse(result["ok"])
+        self.assertIn("recipe", result["error"])
+
+    def test_clone_uses_900_second_timeout(self) -> None:
+        self.env.clone_dotfiles()
+        captured: dict = {}
+        real_run_git = ss.run_git
+
+        def spy(repo, args, *rest, **kwargs):
+            if args and args[0] == "clone":
+                captured["timeout"] = kwargs.get("timeout")
+            return real_run_git(repo, args, *rest, **kwargs)
+
+        with patch.object(ss, "run_git", side_effect=spy):
+            result = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(captured.get("timeout"), 900)
+
+
+class SetupPostNeedsTests(SetupTestBase):
+    def test_plan_marks_unavailable_post(self) -> None:
+        self.env.clone_dotfiles()
+        plan = self.plan()
+        by_id = {entry["id"]: entry for entry in plan["plan"]["post"]}
+        needy = by_id["needy"]
+        self.assertFalse(needy["available"])
+        self.assertEqual(needy["missing"], ["stow-sync-missing-tool"])
+        self.assertFalse(needy["default"])
+        hello = by_id["hello"]
+        self.assertTrue(hello["available"])
+        self.assertEqual(hello["missing"], [])
+
+    def test_apply_skips_unavailable_post_with_reason(self) -> None:
+        self.connect()
+        self.env.install_script("needy", "#!/bin/sh\necho should-not-run\nexit 0\n")
+        result = self.plan_and_apply(["--post", "needy"])
+        self.assertTrue(result["ok"], result)
+        entry = result["post"][0]
+        self.assertEqual(entry["id"], "needy")
+        self.assertEqual(entry["state"], "skipped")
+        self.assertEqual(entry["reason"], "needs stow-sync-missing-tool")
+        self.assertFalse(entry["ok"])
+
+    def test_post_result_records_exit_and_last_line(self) -> None:
+        self.connect()
+        self.env.install_script("hello", "#!/bin/sh\necho first\necho hello world\nexit 0\n")
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        entry = result["post"][0]
+        self.assertEqual(entry["state"], "ran")
+        self.assertEqual(entry["exit"], 0)
+        self.assertEqual(entry["last_line"], "hello world")
+
+    def test_post_failure_records_last_line(self) -> None:
+        self.connect()
+        self.env.install_script("hello", "#!/bin/sh\necho boom >&2\nexit 3\n")
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        entry = result["post"][0]
+        self.assertEqual(entry["state"], "failed")
+        self.assertEqual(entry["exit"], 3)
+        self.assertEqual(entry["last_line"], "boom")
 
 
 class SetupPerformMoveTests(unittest.TestCase):

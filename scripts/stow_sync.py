@@ -2541,10 +2541,12 @@ def cmd_status_short(
 # --------------------------------------------------------------------------
 # Unit 8a: "Set up this machine" backend (README section 8a)
 #
-# Five commands implement the opt-in one-click restore: setup-connect,
-# setup-plan, setup-apply, setup-undo and setup-backups. Everything runs
-# against a temporary HOME in tests; the plan token is the only guard between
-# a reviewed plan and a mutating apply (README section 8.1).
+# The opt-in one-click restore is split across seven commands: setup-prereqs,
+# setup-connect, setup-clone, setup-plan, setup-apply, setup-undo and
+# setup-backups. Everything runs against a temporary HOME in tests; the plan
+# token is the only guard between a reviewed plan and a mutating apply
+# (README section 8.1). Connect clones the dotfiles repo only; setup-clone
+# clones one further recipe repo per request (README 10a.2).
 # --------------------------------------------------------------------------
 
 SETUP_RECIPE_VERSION = 1
@@ -2554,12 +2556,16 @@ SETUP_BACKUPS_DIRNAME = "setup-backups"
 SETUP_RECIPE_RELPATH = os.path.join(".stow-sync", "setup.json")
 DEFAULT_SETUP_PATH = "~/.dotfiles"
 SETUP_PLAN_ERROR = "The setup plan changed. Review it again."
+# Prerequisite checks (README 10a.1). The pacman sync database path is a module
+# constant so tests can point it at a missing file without touching the host.
+PACMAN_SYNC_DB = "/var/lib/pacman/sync/core.db"
+SETUP_GH_FIX = "gh auth login, then gh auth setup-git"
 
 _SETUP_TOP_KEYS = frozenset(
     {"version", "repos", "skip_packages", "services", "requires", "post", "notes"}
 )
 _SETUP_REPO_KEYS = frozenset({"path", "url", "packages", "order", "private"})
-_SETUP_POST_KEYS = frozenset({"id", "label", "argv", "default", "timeout_s"})
+_SETUP_POST_KEYS = frozenset({"id", "label", "argv", "default", "timeout_s", "needs"})
 
 
 def setup_recipe_file(repo_path: str) -> str:
@@ -2699,6 +2705,11 @@ def validate_setup_recipe(data: Any) -> dict[str, Any]:
         timeout_s = item.get("timeout_s", 300)
         if not isinstance(timeout_s, int) or isinstance(timeout_s, bool) or timeout_s <= 0:
             raise CommandError("recipe: " + where + ".timeout_s must be a positive integer")
+        needs_raw = item.get("needs", [])
+        if not isinstance(needs_raw, list) or not all(_setup_str(x) for x in needs_raw):
+            raise CommandError(
+                "recipe: " + where + ".needs must be a list of non-empty strings"
+            )
         posts.append(
             {
                 "id": item["id"],
@@ -2706,6 +2717,7 @@ def validate_setup_recipe(data: Any) -> dict[str, Any]:
                 "argv": list(argv),
                 "default": default,
                 "timeout_s": timeout_s,
+                "needs": list(needs_raw),
             }
         )
 
@@ -2774,44 +2786,78 @@ def _clone_failure_text(path: str, url: str, private: bool, result: Any) -> str:
     return "Clone failed: " + text
 
 
-def _setup_repo_result(
-    path: str,
-    url: str,
-    private: bool,
-    cloned: bool = False,
-    already: bool = False,
-    error: str | None = None,
+def _setup_state_result(
+    path: str, url: str, private: bool, state: str, error: str | None = None
 ) -> dict[str, Any]:
+    """One clone/verify result: ``state`` is ``cloned``, ``ready`` or ``error``."""
     return {
         "path": to_tilde(path),
         "url": url,
         "private": private,
-        "cloned": cloned,
-        "already": already,
+        "state": state,
         "error": error,
     }
 
 
-def _setup_clone_repo(repo_path: str, url: str, private: bool) -> dict[str, Any]:
-    """Clone one repo if missing; report its result (never raises for a clone)."""
+def _setup_repo_state(
+    repo_path: str, url: str, private: bool, timeout: float = 300
+) -> dict[str, Any]:
+    """Clone one repo if missing and report a single ``state`` (README 10a.2).
+
+    ``cloned`` (this call cloned it), ``ready`` (it already existed with the
+    same remote) or ``error`` (with the private-repo auth message when the
+    failure is an auth failure). Never raises for a clone failure.
+    """
     if os.path.isdir(repo_path) and _is_git_repo(repo_path):
-        return _setup_repo_result(repo_path, url, private, already=True)
+        origin = _git_origin_url(repo_path)
+        if origin is None:
+            return _setup_state_result(
+                repo_path,
+                url,
+                private,
+                "error",
+                "existing repository has no origin remote: " + to_tilde(repo_path),
+            )
+        if normalize_remote_url(origin) != normalize_remote_url(url):
+            return _setup_state_result(
+                repo_path,
+                url,
+                private,
+                "error",
+                "existing repository has a different remote: " + to_tilde(repo_path),
+            )
+        return _setup_state_result(repo_path, url, private, "ready")
     if os.path.exists(repo_path):
-        return _setup_repo_result(
+        return _setup_state_result(
             repo_path,
             url,
             private,
-            error="path exists but is not a git repository: " + to_tilde(repo_path),
+            "error",
+            "path exists but is not a git repository: " + to_tilde(repo_path),
         )
     parent = os.path.dirname(repo_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    result = run_git(None, ["clone", url, repo_path], timeout=300)
+    result = run_git(None, ["clone", url, repo_path], timeout=timeout)
     if result.returncode != 0:
-        return _setup_repo_result(
-            repo_path, url, private, error=_clone_failure_text(repo_path, url, private, result)
+        return _setup_state_result(
+            repo_path, url, private, "error", _clone_failure_text(repo_path, url, private, result)
         )
-    return _setup_repo_result(repo_path, url, private, cloned=True)
+    return _setup_state_result(repo_path, url, private, "cloned")
+
+
+def _setup_connect_recipe(path: str) -> tuple[Any, str | None]:
+    """Read the recipe from a cloned dotfiles repo (``None`` + hint when absent)."""
+    recipe_path = setup_recipe_file(path)
+    if not os.path.isfile(recipe_path):
+        hint = "No setup recipe found. Add " + to_tilde(recipe_path) + " to the repository."
+        return None, hint
+    try:
+        with open(recipe_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise CommandError("recipe is not valid JSON: " + _shorten(str(exc)))
+    return validate_setup_recipe(data), None
 
 
 def cmd_setup_connect(
@@ -2819,76 +2865,37 @@ def cmd_setup_connect(
     config_path: str | None = None,
     state_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Clone the dotfiles repo and every other recipe repo (README 8a.1).
+    """Clone the dotfiles repo only, then report the other repos to clone.
 
-    Cloning is non-destructive and idempotent: the dotfiles repo is cloned
-    first from ``--url``/``--path``, then every other repo in its recipe is
-    cloned in ``order`` so ``setup-plan`` always sees the full tree. Each repo
-    gets its own result (including the private-repo auth message); one failed
-    repo does not abort the others.
+    Cloning is non-destructive and idempotent. The other recipe repos are
+    returned (with url and privacy) so the caller clones them one request at a
+    time with ``setup-clone`` and its longer timeout (README 10a.2).
     """
     url = opt_value(args, "--url")
     if not _setup_str(url):
         raise CommandError("missing --url")
     raw_path = opt_value(args, "--path") or DEFAULT_SETUP_PATH
     path = expand_path(raw_path)
-    cloned = False
-    already = False
-    if not os.path.exists(path):
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        result = run_git(None, ["clone", url, path], timeout=300)
-        if result.returncode != 0:
-            return {"ok": False, "error": _clone_failure_text(path, url, False, result)}
-        cloned = True
-    else:
-        if not _is_git_repo(path):
-            return {
-                "ok": False,
-                "error": "path exists but is not a git repository: " + to_tilde(path),
-            }
-        origin = _git_origin_url(path)
-        if origin is None:
-            return {
-                "ok": False,
-                "error": "existing repository has no origin remote: " + to_tilde(path),
-            }
-        if normalize_remote_url(origin) != normalize_remote_url(url):
-            return {
-                "ok": False,
-                "error": "existing repository has a different remote: " + to_tilde(path),
-            }
-        already = True
+    dotfiles_state = _setup_repo_state(path, url, False, timeout=300)
+    if dotfiles_state["state"] == "error":
+        return {"ok": False, "error": dotfiles_state["error"]}
 
-    recipe_path = setup_recipe_file(path)
-    recipe: Any = None
-    hint: str | None = None
-    if os.path.isfile(recipe_path):
-        try:
-            with open(recipe_path, "r", encoding="utf-8") as handle:
-                recipe = json.load(handle)
-        except (OSError, ValueError) as exc:
-            return {"ok": False, "error": "recipe is not valid JSON: " + _shorten(str(exc))}
-        recipe = validate_setup_recipe(recipe)
-    else:
-        hint = "No setup recipe found. Add " + to_tilde(recipe_path) + " to the repository."
+    recipe, hint = _setup_connect_recipe(path)
 
-    repos: list[dict[str, Any]] = [
-        _setup_repo_result(path, url, False, cloned=cloned, already=already)
-    ]
+    repos: list[dict[str, Any]] = []
     if recipe is not None:
         target_norm = os.path.normpath(path)
         for repo in sorted(recipe["repos"], key=lambda item: item["order"]):
             repo_path = expand_path(repo["path"])
             if os.path.normpath(repo_path) == target_norm:
                 continue
-            repos.append(_setup_clone_repo(repo_path, repo["url"], repo["private"]))
+            repos.append(
+                {"path": to_tilde(repo_path), "url": repo["url"], "private": repo["private"]}
+            )
 
-    result = {
+    result: dict[str, Any] = {
         "ok": True,
-        "already": already,
-        "cloned": cloned,
+        "state": dotfiles_state["state"],
         "path": to_tilde(path),
         "recipe": recipe,
         "repos": repos,
@@ -2896,6 +2903,133 @@ def cmd_setup_connect(
     if hint:
         result["hint"] = hint
     return result
+
+
+def cmd_setup_clone(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Clone ONE recipe repo with the long clone timeout (README 10a.2)."""
+    raw_path = opt_value(args, "--path")
+    if not _setup_str(raw_path):
+        raise CommandError("missing --path")
+    repo_path = expand_path(raw_path)
+    recipe = load_setup_recipe_file(_default_recipe_path())
+    wanted = os.path.normpath(repo_path)
+    entry: dict[str, Any] | None = None
+    for repo in recipe["repos"]:
+        if os.path.normpath(expand_path(repo["path"])) == wanted:
+            entry = repo
+            break
+    if entry is None:
+        raise CommandError("no recipe repo at " + to_tilde(repo_path))
+    return {"ok": True, **_setup_repo_state(repo_path, entry["url"], entry["private"], timeout=900)}
+
+
+def _is_github_url(url: str) -> bool:
+    text = (url or "").strip().lower()
+    return (
+        text.startswith("https://github.com/")
+        or text.startswith("http://github.com/")
+        or text.startswith("git@github.com:")
+    )
+
+
+def _setup_prereq_recipe(args: list[str]) -> dict[str, Any] | None:
+    """The recipe to inspect for private repos, or ``None`` when unknown."""
+    recipe_arg = opt_value(args, "--recipe")
+    if recipe_arg:
+        return load_setup_recipe_file(expand_path(recipe_arg))
+    default = _default_recipe_path()
+    if os.path.isfile(default):
+        return load_setup_recipe_file(default)
+    return None
+
+
+def _prereq_which(cid: str, command: str, fix: str) -> dict[str, Any]:
+    found = shutil.which(command)
+    detail = ("found at " + found) if found else (command + " is not installed")
+    return {"id": cid, "ok": found is not None, "detail": detail, "fix": fix}
+
+
+def _prereq_pacman_db() -> dict[str, Any]:
+    present = os.path.isfile(PACMAN_SYNC_DB)
+    if present:
+        detail = "pacman sync database present"
+    else:
+        detail = (
+            "No pacman sync database at "
+            + PACMAN_SYNC_DB
+            + "; Omarchy blocks a direct pacman -Syu"
+        )
+    return {"id": "pacman-db", "ok": present, "detail": detail, "fix": "omarchy update"}
+
+
+def _prereq_gh_auth() -> dict[str, Any]:
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        result = run_bounded(["gh", "auth", "status"], 15, env=env)
+        ok = result.returncode == 0
+        detail = "GitHub CLI is authenticated" if ok else _short_error(result)
+    except subprocess.TimeoutExpired:
+        ok = False
+        detail = "gh auth status timed out"
+    except OSError as exc:
+        ok = False
+        detail = _shorten(str(exc))
+    return {"id": "gh-auth", "ok": ok, "detail": detail, "fix": SETUP_GH_FIX}
+
+
+def cmd_setup_prereqs(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Read-only prerequisite check for the wizard (README 10a.1).
+
+    Reports ``stow``, ``git``, the pacman sync database, and — only when a known
+    recipe repo is private or the ``--url`` is a GitHub URL — ``gh`` and
+    ``gh-auth``. ``ok_to_connect`` is true only when the blocking checks pass.
+    """
+    url = opt_value(args, "--url")
+    recipe = _setup_prereq_recipe(args)
+    needs_gh = False
+    if recipe is not None:
+        needs_gh = any(repo.get("private") for repo in recipe["repos"])
+    if not needs_gh and _setup_str(url) and _is_github_url(url):
+        needs_gh = True
+
+    checks: list[dict[str, Any]] = [
+        _prereq_which("stow", "stow", "omarchy pkg add stow"),
+        _prereq_which("git", "git", "omarchy pkg add git"),
+        _prereq_pacman_db(),
+    ]
+    if needs_gh:
+        checks.append(_prereq_which("gh", "gh", "omarchy pkg add github-cli"))
+        checks.append(_prereq_gh_auth())
+
+    by_id = {check["id"]: check for check in checks}
+    blocking: list[str] = []
+    if not by_id["stow"]["ok"]:
+        blocking.append("stow")
+    if not by_id["git"]["ok"]:
+        blocking.append("git")
+    # The pacman database only blocks when a tool still has to be installed.
+    if blocking and not by_id["pacman-db"]["ok"]:
+        blocking.append("pacman-db")
+    if needs_gh and not by_id["gh-auth"]["ok"]:
+        blocking.append("gh-auth")
+
+    return {
+        "ok": True,
+        "checks": checks,
+        "needs_gh": needs_gh,
+        "blocking": blocking,
+        "ok_to_connect": not blocking,
+    }
 
 
 def _classify_conflict(entry: dict[str, str]) -> dict[str, Any]:
@@ -3015,6 +3149,25 @@ def build_setup_plan(recipe: dict[str, Any]) -> dict[str, Any]:
             )
     services = _build_setup_services(recipe)
     requires = _build_setup_requires(recipe)
+    post: list[dict[str, Any]] = []
+    for entry in recipe["post"]:
+        needs = list(entry.get("needs", []))
+        missing = [name for name in needs if shutil.which(name) is None]
+        available = not missing
+        # An unavailable step is never enabled by default (README 10a.3), but it
+        # stays in the plan so the Review can show it disabled with "needs X".
+        post.append(
+            {
+                "id": entry["id"],
+                "label": entry["label"],
+                "argv": list(entry["argv"]),
+                "timeout_s": entry["timeout_s"],
+                "needs": needs,
+                "available": available,
+                "missing": missing,
+                "default": bool(entry.get("default")) and available,
+            }
+        )
     summary = {
         "repos_to_clone": len(clone),
         "packages_to_link": sum(1 for l in links if l["status"] in ("new", "conflicts")),
@@ -3035,7 +3188,7 @@ def build_setup_plan(recipe: dict[str, Any]) -> dict[str, Any]:
         "link": links,
         "services": services,
         "requires": requires,
-        "post": [dict(entry) for entry in recipe["post"]],
+        "post": post,
         "notes": list(recipe["notes"]),
         "summary": summary,
     }
@@ -3291,11 +3444,40 @@ def _selected_post_commands(plan: dict[str, Any], args: list[str]) -> list[dict[
     return [entry for entry in plan["post"] if entry.get("default")]
 
 
+def _last_nonempty_line(text: str, limit: int = 200) -> str | None:
+    """The last non-empty line of a process' output, trimmed and capped."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    return lines[-1][:limit]
+
+
 def _run_setup_post(
     plan: dict[str, Any], args: list[str], home: str
 ) -> list[dict[str, Any]]:
+    """Run the selected post steps, skipping any whose ``needs`` are missing.
+
+    Every result carries ``state`` (``ran``/``failed``/``skipped``), ``exit``
+    and ``last_line`` so the UI can show what each step actually did (README
+    10a.3/10a.4).
+    """
     results: list[dict[str, Any]] = []
     for entry in _selected_post_commands(plan, args):
+        if entry.get("available") is False:
+            missing = entry.get("missing") or []
+            reason = ("needs " + ", ".join(missing)) if missing else "unavailable"
+            results.append(
+                {
+                    "id": entry["id"],
+                    "ok": False,
+                    "state": "skipped",
+                    "exit": None,
+                    "last_line": None,
+                    "reason": reason,
+                    "error": None,
+                }
+            )
+            continue
         argv = [expand_path(part) for part in entry["argv"]]
         timeout = entry.get("timeout_s", 300)
         try:
@@ -3305,19 +3487,38 @@ def _run_setup_post(
                 {
                     "id": entry["id"],
                     "ok": False,
+                    "state": "failed",
+                    "exit": None,
+                    "last_line": None,
+                    "reason": None,
                     "error": f"post command timed out after {timeout}s",
                 }
             )
             continue
         except OSError as exc:
-            results.append({"id": entry["id"], "ok": False, "error": _shorten(str(exc))})
+            results.append(
+                {
+                    "id": entry["id"],
+                    "ok": False,
+                    "state": "failed",
+                    "exit": None,
+                    "last_line": None,
+                    "reason": None,
+                    "error": _shorten(str(exc)),
+                }
+            )
             continue
+        combined = _decode(result.stdout) + "\n" + _decode(result.stderr)
+        ok = result.returncode == 0
         results.append(
             {
                 "id": entry["id"],
-                "ok": result.returncode == 0,
-                "returncode": result.returncode,
-                "error": None if result.returncode == 0 else _short_error(result),
+                "ok": ok,
+                "state": "ran" if ok else "failed",
+                "exit": result.returncode,
+                "last_line": _last_nonempty_line(combined),
+                "reason": None,
+                "error": None if ok else _short_error(result),
             }
         )
     return results
@@ -3397,11 +3598,15 @@ def cmd_setup_apply(
 
     applied: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+    packages: list[dict[str, Any]] = []
     for link in plan.get("link", []):
         repo_path = expand_path(link["repo"])
         target_dir = home
         if link["status"] == "already":
             skipped.append({"repo": link["repo"], "package": link["package"], "status": "already"})
+            packages.append(
+                {"repo": link["repo"], "package": link["package"], "state": "already"}
+            )
             continue
         if link["status"] == "blocked":
             skipped.append(
@@ -3411,6 +3616,9 @@ def cmd_setup_apply(
                     "status": link["status"],
                     "conflicts": link["conflicts"],
                 }
+            )
+            packages.append(
+                {"repo": link["repo"], "package": link["package"], "state": "blocked"}
             )
             continue
         pkg_moves: list[dict[str, Any]] = []
@@ -3427,6 +3635,9 @@ def cmd_setup_apply(
         if stow_error is not None:
             _setup_rollback_moves(manifest, manifest_path, backup_root, pkg_moves)
             failed.append({"repo": link["repo"], "package": link["package"], "error": stow_error})
+            packages.append(
+                {"repo": link["repo"], "package": link["package"], "state": "failed"}
+            )
             manifest["packages"].append(
                 {"repo": link["repo"], "package": link["package"], "status": "failed"}
             )
@@ -3442,6 +3653,7 @@ def cmd_setup_apply(
                 "files_backed_up": len(pkg_moves),
             }
         )
+        packages.append({"repo": link["repo"], "package": link["package"], "state": "applied"})
         manifest["packages"].append(
             {
                 "repo": link["repo"],
@@ -3472,7 +3684,9 @@ def cmd_setup_apply(
             except OSError as exc:
                 ok = False
                 error = _shorten(str(exc))
-            services_results.append({"unit": unit, "ok": ok, "error": error})
+            services_results.append(
+                {"unit": unit, "ok": ok, "state": "enabled" if ok else "failed", "error": error}
+            )
             manifest["services"].append({"unit": unit, "ok": ok})
     _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
 
@@ -3492,14 +3706,22 @@ def cmd_setup_apply(
     manifest["post"] = [{"id": entry["id"], "ok": entry["ok"]} for entry in post_results]
     _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
 
+    moved = [
+        {"path": move["path"], "backup": os.path.join(backup_root, "files", move["backup"])}
+        for move in manifest["moves"]
+    ]
     return {
         "ok": True,
         "backup": backup_id,
+        "backup_dir": backup_root,
         "applied": applied,
         "failed": failed,
         "skipped": skipped,
+        "packages": packages,
+        "moved": moved,
         "services": services_results,
         "post": post_results,
+        "notes": list(plan.get("notes", [])),
         "config_reloaded": config_reloaded,
         "summary": {
             "applied": len(applied),
@@ -3531,6 +3753,29 @@ def cmd_setup_undo(
         return {"ok": False, "error": "cannot read backup: " + _shorten(str(exc))}
     home = manifest.get("home") or os.path.expanduser("~")
     target_dir = expand_path(manifest.get("target", "~")) or home
+    if manifest.get("undone"):
+        return {"ok": False, "error": "already undone: " + str(backup_id)}
+
+    # Undo must disable every service the apply enabled BEFORE unstowing, or the
+    # `*.wants` symlink is left dangling once the unit is unstowed (finding 28).
+    services_disabled: list[dict[str, Any]] = []
+    for service in manifest.get("services", []):
+        unit = service.get("unit")
+        if not unit:
+            continue
+        error: str | None = None
+        try:
+            result = run_bounded(["systemctl", "--user", "disable", "--now", unit], 60)
+            ok = result.returncode == 0
+            if not ok:
+                error = _short_error(result)
+        except subprocess.TimeoutExpired:
+            ok = False
+            error = "systemctl timed out"
+        except OSError as exc:
+            ok = False
+            error = _shorten(str(exc))
+        services_disabled.append({"unit": unit, "ok": ok, "error": error})
 
     unstowed: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
@@ -3591,6 +3836,15 @@ def cmd_setup_undo(
         except (OSError, CommandError) as exc:
             errors.append({"path": move["path"], "error": _shorten(str(exc))})
 
+    if services_disabled:
+        try:
+            run_bounded(["systemctl", "--user", "daemon-reload"], 30)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    if not refused and not errors:
+        manifest["undone"] = True
+        _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+
     return {
         "ok": True,
         "backup": backup_id,
@@ -3598,6 +3852,7 @@ def cmd_setup_undo(
         "refused": refused,
         "restored": restored,
         "errors": errors,
+        "services_disabled": services_disabled,
     }
 
 
@@ -3623,10 +3878,12 @@ def cmd_setup_backups(
             backups.append(
                 {
                     "id": name,
-                    "date": data.get("created"),
+                    "created": data.get("created"),
+                    "undone": bool(data.get("undone", False)),
                     "counts": {
-                        "moves": len(data.get("moves", [])),
                         "packages": len(data.get("packages", [])),
+                        "moved": len(data.get("moves", [])),
+                        "services": len(data.get("services", [])),
                     },
                 }
             )
@@ -3635,7 +3892,9 @@ def cmd_setup_backups(
 
 COMMANDS = {
     "version": cmd_version,
+    "setup-prereqs": cmd_setup_prereqs,
     "setup-connect": cmd_setup_connect,
+    "setup-clone": cmd_setup_clone,
     "setup-plan": cmd_setup_plan,
     "setup-apply": cmd_setup_apply,
     "setup-undo": cmd_setup_undo,
