@@ -1,0 +1,3 @@
+WARNING! stowing pkgB would cause conflicts:
+  * existing target is not owned by stow: .config/app/conf
+All operations aborted.

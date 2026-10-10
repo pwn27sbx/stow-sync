@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "repos": [
+    { "path": "~/wallpapers", "url": "https://github.com/pwn27sbx/wallpapers.git", "packages": ["walls"], "order": 1, "private": true },
+    { "path": "~/.dotfiles", "url": "https://github.com/pwn27sbx/dotfiles.git", "packages": "auto", "order": 2 }
+  ],
+  "skip_packages": ["odd", "zen"],
+  "services": ["ai-tools-check.timer"],
+  "requires": ["git", "stow", "python3", "jq", "gowall", "tsuzuri"],
+  "post": [
+    { "id": "wallpaper-tint", "label": "Recolor wallpapers for every theme", "argv": ["~/.local/bin/wallpaper-tint", "--all"], "default": true, "timeout_s": 900 },
+    { "id": "zen-sync", "label": "Link the Zen Browser config", "argv": ["~/.dotfiles/zen/zen-sync", "link"], "default": false, "timeout_s": 120 }
+  ],
+  "notes": [
+    "Restore ~/.config/hypr, shell.json and Omarchy hooks with the config-sync plugin.",
+    "EasyEffects: uncomment its launch line in ~/.config/hypr/autostart.lua or add the memory-capped user service."
+  ]
+}

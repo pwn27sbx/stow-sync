@@ -194,17 +194,35 @@ def _baseline_error(prefix: str, exc: BaseException) -> str:
 
 
 def _write_json_atomic(
-    path: str, data: dict[str, Any], mode: int = 0o600, prefix: str = ".baseline-"
+    path: str,
+    data: dict[str, Any],
+    mode: int = 0o600,
+    prefix: str = ".baseline-",
+    fsync: bool = False,
 ) -> None:
-    """Write JSON to ``path`` atomically with a fixed permission mode."""
+    """Write JSON to ``path`` atomically with a fixed permission mode.
+
+    With ``fsync=True`` the temp file and its directory are flushed to disk
+    before the atomic rename, so an append-and-fsync manifest survives a crash
+    (README section 8a apply).
+    """
     directory = os.path.dirname(path) or "."
     fd, tmp_path = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False)
             handle.write("\n")
+            if fsync:
+                handle.flush()
+                os.fsync(handle.fileno())
         os.chmod(tmp_path, mode)
         os.replace(tmp_path, path)
+        if fsync:
+            dir_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -1149,6 +1167,68 @@ def parse_conflicts(text: str, target_dir: str) -> list[dict[str, str]]:
 
 def _resolve_under(base: str, rel: str) -> str:
     return os.path.normpath(os.path.join(base, rel))
+
+
+# Stow 2.4.1 emits two conflict forms. The first names both the source and the
+# target ("neither a link nor a directory"); the second names only the target
+# when it is a symlink Stow does not own ("existing target is not owned by
+# stow"). Both are pinned verbatim in tests/fixtures/.
+_CONFLICT_NOT_OWNED = re.compile(r"existing target is not owned by stow: (?P<target>.+)$")
+
+
+def parse_conflict_entries(text: str, target_dir: str) -> list[dict[str, str]]:
+    """Parse both Stow 2.4.1 conflict forms with a ``form`` tag.
+
+    ``form`` is ``"over"`` for ``cannot stow X over existing target Y`` and
+    ``"not-owned"`` for ``existing target is not owned by stow: Y``. Entries
+    carry ``target``/``source`` as ``~``-relative display strings plus
+    ``target_abs``/``source_abs`` for classification; ``source_abs`` is empty
+    for the not-owned form.
+    """
+    entries: list[dict[str, str]] = []
+    in_block = False
+    for line in text.splitlines():
+        if line.startswith("WARNING! stowing") and "would cause conflicts" in line:
+            in_block = True
+            continue
+        if in_block and line.strip() == "All operations aborted.":
+            in_block = False
+            continue
+        if not in_block:
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("* "):
+            continue
+        message = stripped[2:]
+        over = _CONFLICT_LINE.search(message)
+        if over:
+            source_abs = _resolve_under(target_dir, over.group("source"))
+            target_abs = _resolve_under(target_dir, over.group("target"))
+            entries.append(
+                {
+                    "form": "over",
+                    "target": to_tilde(target_abs),
+                    "target_abs": target_abs,
+                    "source": to_tilde(source_abs),
+                    "source_abs": source_abs,
+                    "message": message,
+                }
+            )
+            continue
+        not_owned = _CONFLICT_NOT_OWNED.search(message)
+        if not_owned:
+            target_abs = _resolve_under(target_dir, not_owned.group("target"))
+            entries.append(
+                {
+                    "form": "not-owned",
+                    "target": to_tilde(target_abs),
+                    "target_abs": target_abs,
+                    "source": "",
+                    "source_abs": "",
+                    "message": message,
+                }
+            )
+    return entries
 
 
 # A stow ``-v`` line is ``ACTION: body`` (LINK, UNLINK, MKDIR, RMDIR, ...).
@@ -2458,8 +2538,1061 @@ def cmd_status_short(
     return " · ".join(segments)
 
 
+# --------------------------------------------------------------------------
+# Unit 8a: "Set up this machine" backend (README section 8a)
+#
+# Five commands implement the opt-in one-click restore: setup-connect,
+# setup-plan, setup-apply, setup-undo and setup-backups. Everything runs
+# against a temporary HOME in tests; the plan token is the only guard between
+# a reviewed plan and a mutating apply (README section 8.1).
+# --------------------------------------------------------------------------
+
+SETUP_RECIPE_VERSION = 1
+SETUP_PLAN_FILENAME = "setup-plan.json"
+SETUP_PLAN_TTL_SECONDS = 600
+SETUP_BACKUPS_DIRNAME = "setup-backups"
+SETUP_RECIPE_RELPATH = os.path.join(".stow-sync", "setup.json")
+DEFAULT_SETUP_PATH = "~/.dotfiles"
+SETUP_PLAN_ERROR = "The setup plan changed. Review it again."
+
+_SETUP_TOP_KEYS = frozenset(
+    {"version", "repos", "skip_packages", "services", "requires", "post", "notes"}
+)
+_SETUP_REPO_KEYS = frozenset({"path", "url", "packages", "order", "private"})
+_SETUP_POST_KEYS = frozenset({"id", "label", "argv", "default", "timeout_s"})
+
+
+def setup_recipe_file(repo_path: str) -> str:
+    """Absolute path of the setup recipe inside a repo checkout."""
+    return os.path.join(repo_path, SETUP_RECIPE_RELPATH)
+
+
+def normalize_remote_url(url: Any) -> str:
+    """Normalize a git URL for comparison: drop a trailing ``/`` and ``.git``."""
+    text = str(url or "").strip()
+    while text.endswith("/"):
+        text = text[:-1]
+    if text.endswith(".git"):
+        text = text[:-4]
+    return text.rstrip("/")
+
+
+def _setup_str(value: Any) -> bool:
+    return isinstance(value, str) and value != ""
+
+
+def validate_setup_recipe(data: Any) -> dict[str, Any]:
+    """Strictly validate a setup recipe and return its normalized copy.
+
+    Every failure raises :class:`CommandError` with a precise, distinct
+    message (README section 8.2) so callers and tests can tell them apart.
+    """
+    if not isinstance(data, dict):
+        raise CommandError("recipe: root must be an object")
+    unknown = sorted(set(data) - _SETUP_TOP_KEYS)
+    if unknown:
+        raise CommandError("recipe: unknown key: " + unknown[0])
+    if data.get("version") != SETUP_RECIPE_VERSION:
+        raise CommandError("recipe: version must be 1")
+
+    repos_raw = data.get("repos")
+    if not isinstance(repos_raw, list):
+        raise CommandError("recipe: repos must be a list")
+    repos: list[dict[str, Any]] = []
+    seen_orders: set[int] = set()
+    for index, repo in enumerate(repos_raw):
+        where = "repos[" + str(index) + "]"
+        if not isinstance(repo, dict):
+            raise CommandError("recipe: " + where + " must be an object")
+        unknown = sorted(set(repo) - _SETUP_REPO_KEYS)
+        if unknown:
+            raise CommandError("recipe: " + where + " has unknown key: " + unknown[0])
+        if not _setup_str(repo.get("path")):
+            raise CommandError("recipe: " + where + ".path must be a non-empty string")
+        if not _setup_str(repo.get("url")):
+            raise CommandError("recipe: " + where + ".url must be a non-empty string")
+        order = repo.get("order")
+        if not isinstance(order, int) or isinstance(order, bool):
+            raise CommandError("recipe: " + where + ".order must be an integer")
+        if order in seen_orders:
+            raise CommandError("recipe: duplicate order: " + str(order))
+        seen_orders.add(order)
+        packages = repo.get("packages")
+        if packages == "auto":
+            normalized_packages: Any = "auto"
+        elif isinstance(packages, list):
+            for name in packages:
+                try:
+                    validate_package_name(name)
+                except CommandError:
+                    raise CommandError(
+                        "recipe: " + where + ".packages has an invalid package name: " + str(name)
+                    )
+            normalized_packages = list(packages)
+        else:
+            raise CommandError(
+                "recipe: " + where + '.packages must be "auto" or a list of package names'
+            )
+        private = repo.get("private", False)
+        if not isinstance(private, bool):
+            raise CommandError("recipe: " + where + ".private must be a boolean")
+        repos.append(
+            {
+                "path": repo["path"],
+                "url": repo["url"],
+                "packages": normalized_packages,
+                "order": order,
+                "private": private,
+            }
+        )
+
+    skip_raw = data.get("skip_packages", [])
+    if not isinstance(skip_raw, list):
+        raise CommandError("recipe: skip_packages must be a list of package names")
+    for name in skip_raw:
+        try:
+            validate_package_name(name)
+        except CommandError:
+            raise CommandError("recipe: skip_packages has an invalid package name: " + str(name))
+
+    services_raw = data.get("services", [])
+    if not isinstance(services_raw, list) or not all(isinstance(x, str) for x in services_raw):
+        raise CommandError("recipe: services must be a list of strings")
+    requires_raw = data.get("requires", [])
+    if not isinstance(requires_raw, list) or not all(isinstance(x, str) for x in requires_raw):
+        raise CommandError("recipe: requires must be a list of strings")
+    notes_raw = data.get("notes", [])
+    if not isinstance(notes_raw, list) or not all(isinstance(x, str) for x in notes_raw):
+        raise CommandError("recipe: notes must be a list of strings")
+
+    post_raw = data.get("post", [])
+    if not isinstance(post_raw, list):
+        raise CommandError("recipe: post must be a list")
+    home = os.path.expanduser("~")
+    posts: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(post_raw):
+        where = "post[" + str(index) + "]"
+        if not isinstance(item, dict):
+            raise CommandError("recipe: " + where + " must be an object")
+        unknown = sorted(set(item) - _SETUP_POST_KEYS)
+        if unknown:
+            raise CommandError("recipe: " + where + " has unknown key: " + unknown[0])
+        if not _setup_str(item.get("id")):
+            raise CommandError("recipe: " + where + ".id must be a non-empty string")
+        if item["id"] in seen_ids:
+            raise CommandError("recipe: duplicate post id: " + item["id"])
+        seen_ids.add(item["id"])
+        if not isinstance(item.get("label"), str):
+            raise CommandError("recipe: " + where + ".label must be a string")
+        argv = item.get("argv")
+        if not isinstance(argv, list) or not argv or not all(_setup_str(a) for a in argv):
+            raise CommandError("recipe: " + where + ".argv must be a non-empty list of strings")
+        expanded0 = os.path.expanduser(argv[0])
+        if not os.path.isabs(expanded0) or not _under(os.path.normpath(expanded0), os.path.normpath(home)):
+            raise CommandError(
+                "recipe: " + where + ".argv[0] must resolve inside $HOME: " + argv[0]
+            )
+        default = item.get("default", False)
+        if not isinstance(default, bool):
+            raise CommandError("recipe: " + where + ".default must be a boolean")
+        timeout_s = item.get("timeout_s", 300)
+        if not isinstance(timeout_s, int) or isinstance(timeout_s, bool) or timeout_s <= 0:
+            raise CommandError("recipe: " + where + ".timeout_s must be a positive integer")
+        posts.append(
+            {
+                "id": item["id"],
+                "label": item["label"],
+                "argv": list(argv),
+                "default": default,
+                "timeout_s": timeout_s,
+            }
+        )
+
+    return {
+        "version": SETUP_RECIPE_VERSION,
+        "repos": repos,
+        "skip_packages": list(skip_raw),
+        "services": list(services_raw),
+        "requires": list(requires_raw),
+        "post": posts,
+        "notes": list(notes_raw),
+    }
+
+
+def load_setup_recipe_file(path: str) -> dict[str, Any]:
+    """Read and strictly validate a recipe file, or raise :class:`CommandError`."""
+    if not os.path.isfile(path):
+        raise CommandError("recipe not found: " + to_tilde(path))
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise CommandError("recipe is not valid JSON: " + _shorten(str(exc)))
+    return validate_setup_recipe(data)
+
+
+def _git_origin_url(repo_path: str) -> str | None:
+    """Return ``origin``'s URL, or ``None`` when the remote is absent."""
+    result = run_git(repo_path, ["remote", "get-url", "origin"])
+    if result.returncode != 0:
+        return None
+    return _decode(result.stdout).strip() or None
+
+
+def _is_git_repo(path: str) -> bool:
+    try:
+        result = run_git(path, ["rev-parse", "--is-inside-work-tree"])
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and _decode(result.stdout).strip() == "true"
+
+
+_AUTH_FAILURE_MARKERS = (
+    "authentication failed",
+    "could not read username",
+    "could not read password",
+    "permission denied",
+    "terminal prompts disabled",
+    "repository not found",
+    " 401",
+    " 403",
+)
+
+
+def _clone_failure_text(path: str, url: str, private: bool, result: Any) -> str:
+    """Map a clone failure to a short, human message (README section 8a.2)."""
+    text = _short_error(result)
+    lowered = text.lower()
+    if private and any(marker in lowered for marker in _AUTH_FAILURE_MARKERS):
+        basename = os.path.basename(os.path.normpath(path))
+        name = basename.lstrip(".") or basename
+        return (
+            f"The {name} repo is private. Run gh auth login and gh auth setup-git, "
+            "then try again."
+        )
+    return "Clone failed: " + text
+
+
+def cmd_setup_connect(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Clone the dotfiles repo if missing and report its setup recipe."""
+    url = opt_value(args, "--url")
+    if not _setup_str(url):
+        raise CommandError("missing --url")
+    raw_path = opt_value(args, "--path") or DEFAULT_SETUP_PATH
+    path = expand_path(raw_path)
+    cloned = False
+    already = False
+    if not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        result = run_git(None, ["clone", url, path], timeout=300)
+        if result.returncode != 0:
+            return {"ok": False, "error": _clone_failure_text(path, url, False, result)}
+        cloned = True
+    else:
+        if not _is_git_repo(path):
+            return {
+                "ok": False,
+                "error": "path exists but is not a git repository: " + to_tilde(path),
+            }
+        origin = _git_origin_url(path)
+        if origin is None:
+            return {
+                "ok": False,
+                "error": "existing repository has no origin remote: " + to_tilde(path),
+            }
+        if normalize_remote_url(origin) != normalize_remote_url(url):
+            return {
+                "ok": False,
+                "error": "existing repository has a different remote: " + to_tilde(path),
+            }
+        already = True
+
+    recipe_path = setup_recipe_file(path)
+    recipe: Any = None
+    hint: str | None = None
+    if os.path.isfile(recipe_path):
+        try:
+            with open(recipe_path, "r", encoding="utf-8") as handle:
+                recipe = json.load(handle)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": "recipe is not valid JSON: " + _shorten(str(exc))}
+    else:
+        hint = "No setup recipe found. Add " + to_tilde(recipe_path) + " to the repository."
+    result = {
+        "ok": True,
+        "already": already,
+        "cloned": cloned,
+        "path": to_tilde(path),
+        "recipe": recipe,
+    }
+    if hint:
+        result["hint"] = hint
+    return result
+
+
+def _classify_conflict(entry: dict[str, str]) -> dict[str, Any]:
+    """Classify one parsed stow conflict as identical / different / blocked."""
+    base = {"target": entry["target"], "source": entry["source"], "message": entry["message"]}
+    target = entry["target_abs"]
+    if entry["form"] == "not-owned":
+        return {**base, "kind": "blocked", "reason": "target is a symlink not owned by stow"}
+    if os.path.islink(target):
+        return {**base, "kind": "blocked", "reason": "target is a symlink"}
+    if os.path.isdir(target):
+        return {**base, "kind": "different"}
+    source = entry.get("source_abs") or ""
+    if source and os.path.isfile(source) and os.path.isfile(target):
+        try:
+            if sha256_file(target) == sha256_file(source):
+                return {**base, "kind": "identical"}
+        except OSError:
+            pass
+    return {**base, "kind": "different"}
+
+
+def classify_setup_package(repo_path: str, target_dir: str, package: str) -> dict[str, Any]:
+    """Dry-run one package and classify it: already / new / conflicts / blocked."""
+    dry = stow_dry_run(repo_path, target_dir, package)
+    text = _decode(dry.stderr)
+    raw = parse_conflict_entries(text, target_dir)
+    if not raw and dry.returncode == 0:
+        pending = parse_pending_links(text, target_dir)
+        if pending:
+            return {"status": "new", "links": pending, "conflicts": []}
+        return {"status": "already", "links": [], "conflicts": []}
+    classified = [_classify_conflict(entry) for entry in raw]
+    if not classified:
+        return {
+            "status": "blocked",
+            "links": [],
+            "conflicts": [
+                {
+                    "target": "",
+                    "source": "",
+                    "message": _short_error(dry),
+                    "kind": "blocked",
+                    "reason": "stow reported a failure it did not classify",
+                }
+            ],
+        }
+    blocked = [c for c in classified if c["kind"] == "blocked"]
+    return {"status": "blocked" if blocked else "conflicts", "links": [], "conflicts": classified}
+
+
+def _systemctl_state(unit: str) -> str | None:
+    """``systemctl --user is-enabled`` state, or ``None`` when undetectable."""
+    try:
+        result = run_bounded(["systemctl", "--user", "is-enabled", unit], 10)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    state = _decode(result.stdout).strip()
+    return state or "not-found"
+
+
+def _build_setup_services(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    services: list[dict[str, Any]] = []
+    for unit in recipe["services"]:
+        state = _systemctl_state(unit)
+        if state is None or state == "enabled":
+            continue
+        services.append({"unit": unit, "enabled": False, "state": state})
+    return services
+
+
+def _build_setup_requires(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for name in recipe["requires"]:
+        found = shutil.which(name)
+        entries.append({"name": name, "found": found is not None, "path": found})
+    return entries
+
+
+def build_setup_plan(recipe: dict[str, Any]) -> dict[str, Any]:
+    """Build the deterministic setup plan (README section 8a step 1)."""
+    target_dir = os.path.expanduser("~")
+    skip = set(recipe["skip_packages"])
+    clone: list[dict[str, Any]] = []
+    links: list[dict[str, Any]] = []
+    for repo in sorted(recipe["repos"], key=lambda item: item["order"]):
+        repo_path = expand_path(repo["path"])
+        if not os.path.isdir(repo_path):
+            clone.append(
+                {
+                    "path": to_tilde(repo_path),
+                    "url": repo["url"],
+                    "order": repo["order"],
+                    "private": repo["private"],
+                }
+            )
+            continue
+        if repo["packages"] == "auto":
+            packages = detect_packages(repo_path)
+        else:
+            packages = list(repo["packages"])
+        for package in packages:
+            if package in skip:
+                continue
+            result = classify_setup_package(repo_path, target_dir, package)
+            links.append(
+                {
+                    "repo": to_tilde(repo_path),
+                    "package": package,
+                    "status": result["status"],
+                    "links": result["links"],
+                    "conflicts": result["conflicts"],
+                    "files_to_backup": sum(
+                        1 for c in result["conflicts"] if c["kind"] in ("identical", "different")
+                    ),
+                }
+            )
+    services = _build_setup_services(recipe)
+    requires = _build_setup_requires(recipe)
+    summary = {
+        "repos_to_clone": len(clone),
+        "packages_to_link": sum(1 for l in links if l["status"] in ("new", "conflicts")),
+        "files_to_backup": sum(l["files_to_backup"] for l in links),
+        "blocked_packages": sum(1 for l in links if l["status"] == "blocked"),
+        "services_to_enable": len(services),
+        "missing_tools": sum(1 for r in requires if not r["found"]),
+    }
+    summary["nothing_to_do"] = (
+        summary["repos_to_clone"] == 0
+        and summary["packages_to_link"] == 0
+        and summary["files_to_backup"] == 0
+        and summary["blocked_packages"] == 0
+    )
+    return {
+        "version": SETUP_RECIPE_VERSION,
+        "clone": clone,
+        "link": links,
+        "services": services,
+        "requires": requires,
+        "post": [dict(entry) for entry in recipe["post"]],
+        "notes": list(recipe["notes"]),
+        "summary": summary,
+    }
+
+
+def setup_plan_path(state_dir: str) -> str:
+    return os.path.join(state_dir, SETUP_PLAN_FILENAME)
+
+
+def _setup_plan_canonical(plan: dict[str, Any]) -> str:
+    return json.dumps(plan, sort_keys=True, separators=(",", ":"))
+
+
+def _setup_plan_token(canonical: str, created: str) -> str:
+    return hashlib.sha256((canonical + "|" + created).encode("utf-8")).hexdigest()
+
+
+def save_setup_plan(state_dir: str, recipe_path: str, plan: dict[str, Any]) -> tuple[str, str]:
+    """Persist the plan token (dir 0700, file 0600, atomic) and return it."""
+    created = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    canonical = _setup_plan_canonical(plan)
+    token = _setup_plan_token(canonical, created)
+    os.makedirs(state_dir, 0o700, exist_ok=True)
+    _write_json_atomic(
+        setup_plan_path(state_dir),
+        {
+            "version": SETUP_RECIPE_VERSION,
+            "token": token,
+            "created": created,
+            "canonical": canonical,
+            "plan": plan,
+            "recipe_path": recipe_path,
+        },
+        0o600,
+        prefix=".setup-plan-",
+    )
+    return token, created
+
+
+def _load_setup_plan(state_dir: str) -> dict[str, Any] | None:
+    path = setup_plan_path(state_dir)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _default_recipe_path() -> str:
+    return setup_recipe_file(os.path.expanduser(os.path.join("~", ".dotfiles")))
+
+
+def cmd_setup_plan(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Build the setup plan and store its 10-minute token (README 8.1/8a)."""
+    recipe_arg = opt_value(args, "--recipe")
+    recipe_path = expand_path(recipe_arg) if recipe_arg else _default_recipe_path()
+    recipe = load_setup_recipe_file(recipe_path)
+    plan = build_setup_plan(recipe)
+    state = resolve_state_dir(state_dir)
+    token, created = save_setup_plan(state, recipe_path, plan)
+    return {
+        "ok": True,
+        "token": token,
+        "created": created,
+        "recipe": to_tilde(recipe_path),
+        "plan": plan,
+        "summary": plan["summary"],
+    }
+
+
+def _new_backup_id(state_dir: str) -> str:
+    base = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    root = os.path.join(state_dir, SETUP_BACKUPS_DIRNAME)
+    candidate = base
+    suffix = 1
+    while os.path.exists(os.path.join(root, candidate)):
+        suffix += 1
+        candidate = f"{base}-{suffix}"
+    return candidate
+
+
+def _path_type_info(path: str) -> dict[str, Any]:
+    st = os.lstat(path)
+    mode = st.st_mode
+    if stat.S_ISLNK(mode):
+        return {
+            "type": "symlink",
+            "mode": format(stat.S_IMODE(mode), "04o"),
+            "sha256": None,
+            "link_target": os.readlink(path),
+        }
+    if stat.S_ISDIR(mode):
+        return {
+            "type": "dir",
+            "mode": format(stat.S_IMODE(mode), "04o"),
+            "sha256": None,
+            "link_target": None,
+        }
+    sha = sha256_file(path) if stat.S_ISREG(mode) else None
+    return {
+        "type": "file",
+        "mode": format(stat.S_IMODE(mode), "04o"),
+        "sha256": sha,
+        "link_target": None,
+    }
+
+
+def _setup_perform_move(src: str, dst: str) -> None:
+    """Move ``src`` to ``dst`` on the same filesystem, preserving type/mode."""
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        if exc.errno == errno.ENOTEMPTY or os.path.isdir(src):
+            shutil.move(src, dst)
+        else:
+            raise
+
+
+def _setup_backup_one(
+    manifest: dict[str, Any],
+    manifest_path: str,
+    backup_root: str,
+    target_abs: str,
+    home: str,
+) -> dict[str, Any]:
+    """Record one conflict move in the manifest, fsync, then perform the move.
+
+    The manifest is written *before* the move so a crash mid-apply is undoable
+    (README section 8a step 3).
+    """
+    rel = os.path.relpath(target_abs, home)
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        raise CommandError("refusing to back up a path outside $HOME: " + target_abs)
+    info = _path_type_info(target_abs)
+    move = {
+        "path": to_tilde(target_abs),
+        "backup": rel,
+        "type": info["type"],
+        "mode": info["mode"],
+        "sha256": info["sha256"],
+        "link_target": info["link_target"],
+    }
+    if move not in manifest["moves"]:
+        manifest["moves"].append(move)
+    _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+    backup_path = os.path.join(backup_root, "files", rel)
+    _setup_perform_move(target_abs, backup_path)
+    return move
+
+
+def _setup_move_back(
+    manifest: dict[str, Any],
+    manifest_path: str,
+    backup_root: str,
+    move: dict[str, Any],
+    target_abs: str,
+) -> None:
+    """Restore one backup, removing an apply-created symlink first."""
+    backup_path = os.path.join(backup_root, "files", move["backup"])
+    if os.path.islink(target_abs):
+        os.unlink(target_abs)
+    if os.path.lexists(backup_path):
+        os.makedirs(os.path.dirname(target_abs) or ".", exist_ok=True)
+        _setup_perform_move(backup_path, target_abs)
+    if move in manifest["moves"]:
+        manifest["moves"].remove(move)
+
+
+def _setup_rollback_moves(
+    manifest: dict[str, Any],
+    manifest_path: str,
+    backup_root: str,
+    moves: list[dict[str, Any]],
+) -> None:
+    for move in reversed(moves):
+        try:
+            _setup_move_back(manifest, manifest_path, backup_root, move, expand_path(move["path"]))
+        except OSError:
+            continue
+    _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+
+
+def _is_apply_link(target: Any, repo_path: str) -> bool:
+    path = expand_path(target) if isinstance(target, str) else ""
+    if not path or not os.path.islink(path):
+        return False
+    real = os.path.realpath(path)
+    return _under(real, os.path.realpath(repo_path))
+
+
+def _path_matches_move(move: dict[str, Any], path: str) -> bool:
+    if not os.path.lexists(path):
+        return False
+    kind = move.get("type")
+    if kind == "symlink":
+        return os.path.islink(path) and os.readlink(path) == move.get("link_target")
+    if kind == "dir":
+        return os.path.isdir(path) and not os.path.islink(path)
+    if os.path.islink(path) or not os.path.isfile(path):
+        return False
+    recorded = move.get("sha256")
+    return recorded is None or sha256_file(path) == recorded
+
+
+def _selected_post_commands(plan: dict[str, Any], args: list[str]) -> list[dict[str, Any]]:
+    override = opt_value(args, "--post")
+    if override is not None:
+        wanted = [part.strip() for part in override.split(",") if part.strip()]
+        by_id = {entry["id"]: entry for entry in plan["post"]}
+        return [by_id[i] for i in wanted if i in by_id]
+    return [entry for entry in plan["post"] if entry.get("default")]
+
+
+def _run_setup_post(
+    plan: dict[str, Any], args: list[str], home: str
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for entry in _selected_post_commands(plan, args):
+        argv = [expand_path(part) for part in entry["argv"]]
+        timeout = entry.get("timeout_s", 300)
+        try:
+            result = run_bounded(argv, timeout, cwd=home, env=os.environ.copy())
+        except subprocess.TimeoutExpired:
+            results.append(
+                {
+                    "id": entry["id"],
+                    "ok": False,
+                    "error": f"post command timed out after {timeout}s",
+                }
+            )
+            continue
+        except OSError as exc:
+            results.append({"id": entry["id"], "ok": False, "error": _shorten(str(exc))})
+            continue
+        results.append(
+            {
+                "id": entry["id"],
+                "ok": result.returncode == 0,
+                "returncode": result.returncode,
+                "error": None if result.returncode == 0 else _short_error(result),
+            }
+        )
+    return results
+
+
+def cmd_setup_apply(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Apply a reviewed plan, backing up every conflict first (README 8a)."""
+    token_arg = opt_value(args, "--token")
+    state = resolve_state_dir(state_dir)
+    stored = _load_setup_plan(state)
+    if not token_arg or not stored:
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+    required = ("token", "created", "canonical", "plan")
+    if any(not stored.get(key) for key in required) or not isinstance(stored.get("plan"), dict):
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+    try:
+        created_dt = datetime.fromisoformat(str(stored["created"]))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+    if created_dt.tzinfo is None:
+        created_dt = created_dt.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - created_dt).total_seconds()
+    if age < 0 or age > SETUP_PLAN_TTL_SECONDS:
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+    if token_arg != stored["token"]:
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+    if _setup_plan_token(str(stored["canonical"]), str(stored["created"])) != stored["token"]:
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+
+    recipe_path = stored.get("recipe_path") or opt_value(args, "--recipe")
+    if not _setup_str(recipe_path):
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+    try:
+        recipe = load_setup_recipe_file(expand_path(recipe_path))
+        fresh_plan = build_setup_plan(recipe)
+    except CommandError:
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+    if _setup_plan_canonical(fresh_plan) != stored["canonical"]:
+        return {"ok": False, "error": SETUP_PLAN_ERROR}
+    plan = stored["plan"]
+
+    home = os.path.expanduser("~")
+    backup_id = _new_backup_id(state)
+    backup_root = os.path.join(state, SETUP_BACKUPS_DIRNAME, backup_id)
+    os.makedirs(backup_root, 0o700, exist_ok=True)
+    manifest_path = os.path.join(backup_root, "manifest.json")
+    manifest: dict[str, Any] = {
+        "version": 1,
+        "id": backup_id,
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "home": home,
+        "target": "~",
+        "moves": [],
+        "packages": [],
+        "services": [],
+        "post": [],
+    }
+    _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+
+    cloned: list[str] = []
+    clone_errors: list[dict[str, Any]] = []
+    cloned_repos: set[str] = set()
+    for entry in plan.get("clone", []):
+        path = expand_path(entry["path"])
+        if os.path.isdir(path):
+            continue
+        os.makedirs(os.path.dirname(path) or home, exist_ok=True)
+        result = run_git(None, ["clone", entry["url"], path], timeout=300)
+        if result.returncode != 0:
+            clone_errors.append(
+                {
+                    "path": entry["path"],
+                    "error": _clone_failure_text(path, entry["url"], entry.get("private", False), result),
+                }
+            )
+            continue
+        cloned.append(entry["path"])
+        cloned_repos.add(entry["path"])
+
+    # The reviewed plan could not preview packages of repos that did not exist
+    # yet. After a successful clone, derive their packages so one apply is
+    # complete (README 8a.3). Only clean "new" packages are applied here;
+    # conflicts/blocked packages are reported so the owner reviews the plan
+    # again before anything is forced.
+    extra_links: list[dict[str, Any]] = []
+    if cloned_repos:
+        skip_packages = set(recipe["skip_packages"])
+        for repo in sorted(recipe["repos"], key=lambda item: item["order"]):
+            repo_path = expand_path(repo["path"])
+            if to_tilde(repo_path) not in cloned_repos:
+                continue
+            if repo["packages"] == "auto":
+                packages = detect_packages(repo_path)
+            else:
+                packages = list(repo["packages"])
+            for package in packages:
+                if package in skip_packages:
+                    continue
+                classified = classify_setup_package(repo_path, home, package)
+                extra_links.append(
+                    {
+                        "repo": to_tilde(repo_path),
+                        "package": package,
+                        "status": classified["status"],
+                        "links": classified["links"],
+                        "conflicts": classified["conflicts"],
+                        "source": "post-clone",
+                    }
+                )
+
+    applied: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for link in plan.get("link", []) + extra_links:
+        repo_path = expand_path(link["repo"])
+        target_dir = home
+        if link["status"] == "already":
+            skipped.append({"repo": link["repo"], "package": link["package"], "status": "already"})
+            continue
+        if link["status"] == "blocked" or (
+            link.get("source") == "post-clone" and link["status"] == "conflicts"
+        ):
+            reason = (
+                "detected after cloning; review the plan again"
+                if link.get("source") == "post-clone"
+                else None
+            )
+            entry = {
+                "repo": link["repo"],
+                "package": link["package"],
+                "status": link["status"],
+                "conflicts": link["conflicts"],
+            }
+            if reason:
+                entry["reason"] = reason
+            skipped.append(entry)
+            continue
+        pkg_moves: list[dict[str, Any]] = []
+        for conflict in link.get("conflicts", []):
+            if conflict["kind"] == "blocked":
+                continue
+            target_abs = expand_path(conflict["target"])
+            pkg_moves.append(_setup_backup_one(manifest, manifest_path, backup_root, target_abs, home))
+        try:
+            real = stow_real(repo_path, target_dir, link["package"])
+            stow_error: str | None = None if real.returncode == 0 else _short_error(real)
+        except subprocess.TimeoutExpired:
+            stow_error = "stow timed out"
+        if stow_error is not None:
+            _setup_rollback_moves(manifest, manifest_path, backup_root, pkg_moves)
+            failed.append({"repo": link["repo"], "package": link["package"], "error": stow_error})
+            manifest["packages"].append(
+                {"repo": link["repo"], "package": link["package"], "status": "failed"}
+            )
+            _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+            continue
+        actions = parse_stow_actions(_decode(real.stderr), target_dir)
+        applied.append(
+            {
+                "repo": link["repo"],
+                "package": link["package"],
+                "status": "applied",
+                "actions": actions,
+                "files_backed_up": len(pkg_moves),
+            }
+        )
+        manifest["packages"].append(
+            {
+                "repo": link["repo"],
+                "package": link["package"],
+                "status": "applied",
+                "targets": [move["path"] for move in pkg_moves],
+            }
+        )
+        _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+
+    services_results: list[dict[str, Any]] = []
+    if plan.get("services"):
+        try:
+            run_bounded(["systemctl", "--user", "daemon-reload"], 30)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        for service in plan["services"]:
+            unit = service["unit"]
+            error: str | None = None
+            try:
+                result = run_bounded(["systemctl", "--user", "enable", "--now", unit], 60)
+                ok = result.returncode == 0
+                if not ok:
+                    error = _short_error(result)
+            except subprocess.TimeoutExpired:
+                ok = False
+                error = "systemctl timed out"
+            except OSError as exc:
+                ok = False
+                error = _shorten(str(exc))
+            services_results.append({"unit": unit, "ok": ok, "error": error})
+            manifest["services"].append({"unit": unit, "ok": ok})
+    _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+
+    config_targets = {os.path.normpath(default_config_path())}
+    if config_path:
+        config_targets.add(os.path.normpath(expand_path(config_path)))
+    replaced = {os.path.normpath(expand_path(move["path"])) for move in manifest["moves"]}
+    config_reloaded = False
+    if replaced & config_targets:
+        try:
+            load_config(config_path)
+            config_reloaded = True
+        except (OSError, ValueError):
+            config_reloaded = False
+
+    post_results = _run_setup_post(plan, args, home)
+    manifest["post"] = [{"id": entry["id"], "ok": entry["ok"]} for entry in post_results]
+    _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+
+    return {
+        "ok": True,
+        "backup": backup_id,
+        "cloned": cloned,
+        "clone_errors": clone_errors,
+        "applied": applied,
+        "failed": failed,
+        "skipped": skipped,
+        "services": services_results,
+        "post": post_results,
+        "config_reloaded": config_reloaded,
+        "summary": {
+            "applied": len(applied),
+            "failed": len(failed),
+            "skipped": len(skipped),
+            "backups": len(manifest["moves"]),
+        },
+    }
+
+
+def cmd_setup_undo(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Un-stow this apply's packages and restore every backup (README 8a)."""
+    backup_id = opt_value(args, "--backup")
+    if not _setup_str(backup_id):
+        raise CommandError("missing --backup")
+    state = resolve_state_dir(state_dir)
+    backup_root = os.path.join(state, SETUP_BACKUPS_DIRNAME, backup_id)
+    manifest_path = os.path.join(backup_root, "manifest.json")
+    if not os.path.isfile(manifest_path):
+        return {"ok": False, "error": "unknown backup: " + str(backup_id)}
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": "cannot read backup: " + _shorten(str(exc))}
+    home = manifest.get("home") or os.path.expanduser("~")
+    target_dir = expand_path(manifest.get("target", "~")) or home
+
+    unstowed: list[dict[str, Any]] = []
+    refused: list[dict[str, Any]] = []
+    refused_paths: set[str] = set()
+    for pkg in manifest.get("packages", []):
+        if pkg.get("status") != "applied":
+            continue
+        repo_path = expand_path(pkg["repo"])
+        bad = [t for t in pkg.get("targets", []) if not _is_apply_link(t, repo_path)]
+        if bad:
+            refused.append(
+                {"repo": pkg["repo"], "package": pkg["package"], "paths": bad}
+            )
+            for path in bad:
+                refused_paths.add(os.path.normpath(expand_path(path)))
+            continue
+        try:
+            result = run_bounded(
+                ["stow", "-D", "-v", "-d", repo_path, "-t", target_dir, pkg["package"]],
+                30,
+                env=stow_env(),
+            )
+        except subprocess.TimeoutExpired:
+            refused.append({"repo": pkg["repo"], "package": pkg["package"], "error": "stow timed out"})
+            continue
+        if result.returncode != 0:
+            refused.append(
+                {"repo": pkg["repo"], "package": pkg["package"], "error": _short_error(result)}
+            )
+            continue
+        unstowed.append({"repo": pkg["repo"], "package": pkg["package"]})
+
+    restored: list[str] = []
+    errors: list[dict[str, Any]] = []
+    for move in manifest.get("moves", []):
+        target_abs = expand_path(move["path"])
+        if os.path.normpath(target_abs) in refused_paths:
+            errors.append({"path": move["path"], "error": "destination is not this apply's symlink"})
+            continue
+        backup_path = os.path.join(backup_root, "files", move["backup"])
+        try:
+            if not os.path.lexists(backup_path):
+                if os.path.islink(target_abs):
+                    raise CommandError("backup is missing")
+                continue
+            if os.path.islink(target_abs):
+                os.unlink(target_abs)
+            if os.path.lexists(target_abs):
+                if _path_matches_move(move, target_abs):
+                    restored.append(move["path"])
+                    continue
+                raise CommandError("destination changed")
+            os.makedirs(os.path.dirname(target_abs) or ".", exist_ok=True)
+            _setup_perform_move(backup_path, target_abs)
+            if not _path_matches_move(move, target_abs):
+                raise CommandError("restored bytes differ")
+            restored.append(move["path"])
+        except (OSError, CommandError) as exc:
+            errors.append({"path": move["path"], "error": _shorten(str(exc))})
+
+    return {
+        "ok": True,
+        "backup": backup_id,
+        "unstowed": unstowed,
+        "refused": refused,
+        "restored": restored,
+        "errors": errors,
+    }
+
+
+def cmd_setup_backups(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """List the backups under ``<state_dir>/setup-backups`` (read-only)."""
+    state = resolve_state_dir(state_dir)
+    root = os.path.join(state, SETUP_BACKUPS_DIRNAME)
+    backups: list[dict[str, Any]] = []
+    if os.path.isdir(root):
+        for name in sorted(os.listdir(root)):
+            manifest_path = os.path.join(root, name, "manifest.json")
+            if not os.path.isfile(manifest_path):
+                continue
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            backups.append(
+                {
+                    "id": name,
+                    "date": data.get("created"),
+                    "counts": {
+                        "moves": len(data.get("moves", [])),
+                        "packages": len(data.get("packages", [])),
+                    },
+                }
+            )
+    return {"ok": True, "backups": backups}
+
+
 COMMANDS = {
     "version": cmd_version,
+    "setup-connect": cmd_setup_connect,
+    "setup-plan": cmd_setup_plan,
+    "setup-apply": cmd_setup_apply,
+    "setup-undo": cmd_setup_undo,
+    "setup-backups": cmd_setup_backups,
     "status": cmd_status,
     "baseline": cmd_baseline,
     "diff": cmd_diff,

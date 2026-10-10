@@ -8,6 +8,7 @@ environment is isolated from the host's global config, identity and hooks.
 
 from __future__ import annotations
 
+import copy
 import errno
 import io
 import json
@@ -18,7 +19,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -731,6 +732,19 @@ class ConflictFixtureTests(unittest.TestCase):
             conflict["message"],
             "cannot stow ../crepo/mypkg/.config/app/conf over existing target "
             ".config/app/conf since neither a link nor a directory and --adopt not specified",
+        )
+
+    def test_pinned_not_owned_fixture_parses_real_stow_wording(self) -> None:
+        fixture = (FIXTURES / "stow_conflict_not_owned_stderr.txt").read_text(encoding="utf-8")
+        self.assertIn("existing target is not owned by stow", fixture)
+        target_dir = "/tmp/target"
+        entries = ss.parse_conflict_entries(fixture, target_dir)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["form"], "not-owned")
+        self.assertEqual(entries[0]["target_abs"], os.path.join(target_dir, ".config/app/conf"))
+        self.assertEqual(entries[0]["source_abs"], "")
+        self.assertEqual(
+            entries[0]["message"], "existing target is not owned by stow: .config/app/conf"
         )
 
 
@@ -2926,6 +2940,734 @@ class NotifyWiringTests(unittest.TestCase):
         with patch("sys.stdout", new_callable=io.StringIO):
             ss.main(["status", "--short", "--config", str(self.config), "--state-dir", str(self.state_dir)])
         self.assertEqual(self.notify_file.read_text(encoding="utf-8"), before)
+
+
+# --------------------------------------------------------------------------
+# Unit 8a: "Set up this machine" backend (README section 8a)
+# --------------------------------------------------------------------------
+
+SETUP_EXAMPLE = ROOT / "docs" / "setup-recipe.example.json"
+
+
+def valid_setup_recipe() -> dict:
+    """A fresh, valid copy of the documented example recipe."""
+    return json.loads(SETUP_EXAMPLE.read_text(encoding="utf-8"))
+
+
+class FreshOmarchyHome:
+    """Temp HOME that simulates a fresh Omarchy install plus two remotes.
+
+    Seeds the Omarchy default files the recipe packages collide with, two bare
+    remotes (dotfiles with a recipe and packages, and wallpapers) and a third
+    bare with no recipe. Every setup test runs inside this HOME; a fake
+    ``systemctl`` earlier on ``PATH`` keeps service detection hermetic.
+    """
+
+    def __init__(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="stow-sync-setup-")
+        self.root = Path(self._tmp.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.remotes = self.root / "remotes"
+        self.remotes.mkdir()
+        self.state = self.root / "state"
+        self.fakebin = self.root / "fakebin"
+        self.fakebin.mkdir()
+        self.systemctl_log = self.root / "systemctl.log"
+        self.fish_default = "fish default\n"
+        self.ghostty_default = "ghostty default\n"
+        self.nvim_default = "nvim default\n"
+        self.config_default = '{\n  "version": 1\n}\n'
+        self._install_fake_systemctl()
+        self._seed_defaults()
+        self.dotfiles_bare = self.remotes / "dotfiles.git"
+        self.wallpapers_bare = self.remotes / "wallpapers.git"
+        self.plain_bare = self.remotes / "plain.git"
+        self._seed_dotfiles_remote()
+        self._seed_wallpapers_remote()
+        self._seed_plain_remote()
+
+    def close(self) -> None:
+        self._tmp.cleanup()
+
+    def __enter__(self) -> "FreshOmarchyHome":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def _install_fake_systemctl(self) -> None:
+        script = self.fakebin / "systemctl"
+        write(
+            script,
+            "#!/bin/sh\n"
+            f'echo "$@" >> "{self.systemctl_log}"\n'
+            'case "$*" in\n'
+            "  *is-enabled*) echo disabled ;;\n"
+            "esac\n"
+            "exit 0\n",
+        )
+        os.chmod(script, 0o755)
+
+    def _seed_defaults(self) -> None:
+        home = self.home
+        write(home / ".config" / "fish" / "config.fish", self.fish_default)
+        write(home / ".config" / "ghostty" / "config", self.ghostty_default)
+        write(home / ".config" / "nvim" / "init.lua", self.nvim_default)
+        write(
+            home / ".config" / "omarchy" / "backgrounds" / "everforest" / "existing.png",
+            "existing\n",
+        )
+        write(home / ".config" / "stow-sync" / "config.json", self.config_default)
+
+    def _init_bare(self, bare: Path) -> None:
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", str(bare)],
+            check=True,
+            capture_output=True,
+            env=git_test_env(),
+        )
+
+    def _seed_dotfiles_remote(self) -> None:
+        self._init_bare(self.dotfiles_bare)
+        work = self.root / "seed-dotfiles"
+        init_repo(work)
+        recipe = {
+            "version": 1,
+            "repos": [
+                {
+                    "path": "~/wallpapers",
+                    "url": str(self.wallpapers_bare),
+                    "packages": ["walls"],
+                    "order": 1,
+                    "private": True,
+                },
+                {
+                    "path": "~/.dotfiles",
+                    "url": str(self.dotfiles_bare),
+                    "packages": "auto",
+                    "order": 2,
+                },
+            ],
+            "skip_packages": ["odd"],
+            "services": ["ai-tools-check.timer"],
+            "requires": ["git", "stow"],
+            "post": [
+                {
+                    "id": "hello",
+                    "label": "Say hello",
+                    "argv": ["~/.local/bin/hello"],
+                    "default": True,
+                    "timeout_s": 30,
+                },
+                {
+                    "id": "slow",
+                    "label": "Sleep",
+                    "argv": ["~/.local/bin/slow"],
+                    "default": False,
+                    "timeout_s": 1,
+                },
+            ],
+            "notes": ["note one", "note two"],
+        }
+        write(work / ".stow-sync" / "setup.json", json.dumps(recipe, indent=2))
+        write(work / "fish" / ".config" / "fish" / "config.fish", self.fish_default)
+        write(work / "ghostty" / ".config" / "ghostty" / "config", "repo ghostty\n")
+        write(work / "nvim" / ".config" / "nvim" / "init.lua", "repo nvim\n")
+        write(
+            work / "omarchy" / ".config" / "omarchy" / "backgrounds" / "everforest" / "wall.png",
+            "wall\n",
+        )
+        write(work / "app" / ".config" / "app" / "conf", "app repo\n")
+        write(
+            work / "stow-sync" / ".config" / "stow-sync" / "config.json",
+            '{"version": 1, "repos": []}\n',
+        )
+        write(work / "odd" / ".stow-local-ignore", ".*\n")
+        write(work / "odd" / "junk", "junk\n")
+        commit_all(work, "seed")
+        git(work, "remote", "add", "origin", str(self.dotfiles_bare))
+        git(work, "push", "-q", "origin", "main")
+
+    def _seed_wallpapers_remote(self) -> None:
+        self._init_bare(self.wallpapers_bare)
+        work = self.root / "seed-wallpapers"
+        init_repo(work)
+        write(work / "walls" / ".config" / "walls" / "wall.png", "wall\n")
+        commit_all(work, "seed")
+        git(work, "remote", "add", "origin", str(self.wallpapers_bare))
+        git(work, "push", "-q", "origin", "main")
+
+    def _seed_plain_remote(self) -> None:
+        self._init_bare(self.plain_bare)
+        work = self.root / "seed-plain"
+        init_repo(work)
+        write(work / "README.md", "plain\n")
+        commit_all(work, "seed")
+        git(work, "remote", "add", "origin", str(self.plain_bare))
+        git(work, "push", "-q", "origin", "main")
+
+    def clone_dotfiles(self) -> Path:
+        dest = self.home / ".dotfiles"
+        subprocess.run(
+            ["git", "clone", str(self.dotfiles_bare), str(dest)],
+            check=True,
+            capture_output=True,
+            env=git_test_env(),
+        )
+        return dest
+
+    def install_script(self, name: str, body: str) -> Path:
+        path = self.home / ".local" / "bin" / name
+        write(path, body)
+        os.chmod(path, 0o755)
+        return path
+
+
+class SetupTestBase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = FreshOmarchyHome()
+        self.addCleanup(self.env.close)
+        os.environ.pop("STOW_SYNC_STATE_DIR", None)
+        self.addCleanup(lambda: os.environ.pop("STOW_SYNC_STATE_DIR", None))
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.env.home),
+                "PATH": str(self.env.fakebin) + os.pathsep + os.environ.get("PATH", ""),
+            },
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        self.home = self.env.home
+        self.state = self.env.state
+        self.dotfiles = self.home / ".dotfiles"
+
+    def plan(self, recipe: Path | None = None) -> dict:
+        args = ["setup-plan"]
+        if recipe is not None:
+            args += ["--recipe", str(recipe)]
+        return ss.dispatch(args, None, str(self.state))
+
+    def apply(self, token: str, extra: list[str] | None = None) -> dict:
+        args = ["setup-apply", "--token", token]
+        if extra:
+            args += extra
+        return ss.dispatch(args, None, str(self.state))
+
+    def plan_and_apply(self, extra: list[str] | None = None) -> dict:
+        plan = self.plan()
+        self.assertTrue(plan["ok"], plan)
+        return self.apply(plan["token"], extra)
+
+    def link_entry(self, plan: dict, package: str) -> dict:
+        for entry in plan["plan"]["link"]:
+            if entry["package"] == package:
+                return entry
+        raise AssertionError("no link entry for package " + package)
+
+
+# --------------------------------------------------------------------------
+# Recipe validation
+# --------------------------------------------------------------------------
+
+
+class SetupRecipeValidationTests(SetupTestBase):
+    def test_example_recipe_is_valid(self) -> None:
+        recipe = valid_setup_recipe()
+        result = ss.validate_setup_recipe(recipe)
+        self.assertEqual(result["version"], 1)
+        self.assertEqual(len(result["repos"]), 2)
+        self.assertEqual(result["repos"][0]["path"], "~/wallpapers")
+        self.assertTrue(result["repos"][0]["private"])
+        self.assertEqual(result["skip_packages"], ["odd", "zen"])
+        self.assertEqual(result["post"][0]["timeout_s"], 900)
+        self.assertFalse(result["post"][1]["default"])
+
+    def _invalid(self, mutate) -> str:
+        recipe = copy.deepcopy(valid_setup_recipe())
+        mutate(recipe)
+        with self.assertRaises(ss.CommandError) as ctx:
+            ss.validate_setup_recipe(recipe)
+        return str(ctx.exception)
+
+    def test_version_must_be_one(self) -> None:
+        self.assertIn("version must be 1", self._invalid(lambda r: r.update(version=2)))
+
+    def test_unknown_top_level_key_rejected(self) -> None:
+        message = self._invalid(lambda r: r.update(extra=1))
+        self.assertIn("unknown key", message)
+        self.assertIn("extra", message)
+
+    def test_repos_must_be_a_list(self) -> None:
+        self.assertIn("repos must be a list", self._invalid(lambda r: r.update(repos="x")))
+
+    def test_unknown_repo_key_rejected(self) -> None:
+        message = self._invalid(lambda r: r["repos"][0].update(bogus=1))
+        self.assertIn("repos[0] has unknown key", message)
+
+    def test_repo_path_must_be_non_empty_string(self) -> None:
+        message = self._invalid(lambda r: r["repos"][0].update(path=""))
+        self.assertIn("path must be a non-empty string", message)
+
+    def test_repo_url_must_be_non_empty_string(self) -> None:
+        message = self._invalid(lambda r: r["repos"][0].update(url=""))
+        self.assertIn("url must be a non-empty string", message)
+
+    def test_repo_packages_must_be_auto_or_list(self) -> None:
+        message = self._invalid(lambda r: r["repos"][0].update(packages="all"))
+        self.assertIn("auto", message)
+
+    def test_repo_packages_rejects_invalid_name(self) -> None:
+        message = self._invalid(lambda r: r["repos"][0].update(packages=["bad/name"]))
+        self.assertIn("invalid package name", message)
+
+    def test_repo_private_must_be_boolean(self) -> None:
+        message = self._invalid(lambda r: r["repos"][0].update(private="yes"))
+        self.assertIn("private must be a boolean", message)
+
+    def test_repo_order_must_be_integer(self) -> None:
+        message = self._invalid(lambda r: r["repos"][0].update(order="1"))
+        self.assertIn("order must be an integer", message)
+
+    def test_duplicate_order_rejected(self) -> None:
+        message = self._invalid(lambda r: r["repos"][1].update(order=1))
+        self.assertIn("duplicate order: 1", message)
+
+    def test_skip_packages_must_be_list(self) -> None:
+        message = self._invalid(lambda r: r.update(skip_packages="odd"))
+        self.assertIn("skip_packages", message)
+
+    def test_post_unknown_key_rejected(self) -> None:
+        message = self._invalid(lambda r: r["post"][0].update(extra=True))
+        self.assertIn("post[0] has unknown key", message)
+
+    def test_post_id_must_be_non_empty(self) -> None:
+        message = self._invalid(lambda r: r["post"][0].update(id=""))
+        self.assertIn("id must be a non-empty string", message)
+
+    def test_duplicate_post_id_rejected(self) -> None:
+        message = self._invalid(lambda r: r["post"][1].update(id="wallpaper-tint"))
+        self.assertIn("duplicate post id", message)
+
+    def test_post_argv_must_be_non_empty_list(self) -> None:
+        message = self._invalid(lambda r: r["post"][0].update(argv=[]))
+        self.assertIn("argv must be a non-empty list", message)
+
+    def test_post_argv0_must_resolve_inside_home(self) -> None:
+        message = self._invalid(lambda r: r["post"][0].update(argv=["/usr/bin/env"]))
+        self.assertIn("$HOME", message)
+
+    def test_post_timeout_must_be_positive_integer(self) -> None:
+        message = self._invalid(lambda r: r["post"][0].update(timeout_s=0))
+        self.assertIn("timeout_s must be a positive integer", message)
+
+    def test_services_must_be_strings(self) -> None:
+        message = self._invalid(lambda r: r.update(services=[1]))
+        self.assertIn("services must be a list of strings", message)
+
+
+# --------------------------------------------------------------------------
+# .stow-sync is never a package; connect
+# --------------------------------------------------------------------------
+
+
+class SetupConnectTests(SetupTestBase):
+    def test_stow_sync_directory_is_never_a_package(self) -> None:
+        self.env.clone_dotfiles()
+        self.assertNotIn(".stow-sync", ss.detect_packages(str(self.dotfiles)))
+        plan = self.plan()
+        self.assertTrue(plan["ok"], plan)
+        self.assertNotIn(".stow-sync", [entry["package"] for entry in plan["plan"]["link"]])
+
+    def test_connect_fresh_clone_returns_recipe(self) -> None:
+        result = ss.dispatch(
+            ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["cloned"])
+        self.assertFalse(result["already"])
+        self.assertEqual(result["path"], "~/.dotfiles")
+        self.assertEqual(result["recipe"]["version"], 1)
+        self.assertTrue((self.dotfiles / ".stow-sync" / "setup.json").is_file())
+
+    def test_connect_second_time_reports_already(self) -> None:
+        first = ss.dispatch(
+            ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+        )
+        self.assertTrue(first["cloned"])
+        second = ss.dispatch(
+            ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+        )
+        self.assertTrue(second["ok"], second)
+        self.assertTrue(second["already"])
+        self.assertFalse(second["cloned"])
+
+    def test_connect_wrong_remote_refuses(self) -> None:
+        self.env.clone_dotfiles()
+        result = ss.dispatch(
+            ["setup-connect", "--url", str(self.env.plain_bare)], None, str(self.state)
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("different remote", result["error"])
+
+    def test_connect_not_a_repo_refuses(self) -> None:
+        self.dotfiles.mkdir(parents=True)
+        result = ss.dispatch(
+            ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("not a git repository", result["error"])
+
+    def test_connect_missing_recipe_returns_hint(self) -> None:
+        result = ss.dispatch(
+            [
+                "setup-connect",
+                "--url",
+                str(self.env.plain_bare),
+                "--path",
+                str(self.home / "plain"),
+            ],
+            None,
+            str(self.state),
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertIsNone(result["recipe"])
+        self.assertIn(".stow-sync/setup.json", result["hint"])
+
+
+# --------------------------------------------------------------------------
+# Plan classification
+# --------------------------------------------------------------------------
+
+
+class SetupPlanTests(SetupTestBase):
+    def test_plan_classifies_identical_different_new_and_already(self) -> None:
+        self.env.clone_dotfiles()
+        stow_apply(self.dotfiles, self.home, "omarchy")
+        plan = self.plan()
+        self.assertTrue(plan["ok"], plan)
+
+        fish = self.link_entry(plan, "fish")
+        self.assertEqual(fish["status"], "conflicts")
+        self.assertEqual(fish["conflicts"][0]["kind"], "identical")
+        self.assertEqual(fish["files_to_backup"], 1)
+
+        ghostty = self.link_entry(plan, "ghostty")
+        self.assertEqual(ghostty["status"], "conflicts")
+        self.assertEqual(ghostty["conflicts"][0]["kind"], "different")
+
+        nvim = self.link_entry(plan, "nvim")
+        self.assertEqual(nvim["conflicts"][0]["kind"], "different")
+
+        omarchy = self.link_entry(plan, "omarchy")
+        self.assertEqual(omarchy["status"], "already")
+
+        app = self.link_entry(plan, "app")
+        self.assertEqual(app["status"], "new")
+
+        summary = plan["plan"]["summary"]
+        self.assertEqual(summary["blocked_packages"], 0)
+        self.assertFalse(summary["nothing_to_do"])
+
+    def test_plan_flags_blocked_symlink(self) -> None:
+        self.env.clone_dotfiles()
+        foreign = self.env.root / "foreign.txt"
+        write(foreign, "foreign\n")
+        target = self.home / ".config" / "app" / "conf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(foreign, target)
+        plan = self.plan()
+        app = self.link_entry(plan, "app")
+        self.assertEqual(app["status"], "blocked")
+        self.assertEqual(app["conflicts"][0]["kind"], "blocked")
+        self.assertEqual(plan["plan"]["summary"]["blocked_packages"], 1)
+
+    def test_plan_treats_plugin_config_as_different_conflict(self) -> None:
+        self.env.clone_dotfiles()
+        plan = self.plan()
+        entry = self.link_entry(plan, "stow-sync")
+        self.assertEqual(entry["status"], "conflicts")
+        self.assertEqual(entry["conflicts"][0]["kind"], "different")
+        self.assertEqual(
+            entry["conflicts"][0]["target"], "~/.config/stow-sync/config.json"
+        )
+
+    def test_plan_skips_packages_on_missing_repo_as_clone(self) -> None:
+        # dotfiles is present, wallpapers is not -> clone step, no link entry.
+        self.env.clone_dotfiles()
+        plan = self.plan()
+        self.assertEqual([entry["path"] for entry in plan["plan"]["clone"]], ["~/wallpapers"])
+        self.assertNotIn("walls", [entry["package"] for entry in plan["plan"]["link"]])
+
+    def test_plan_lists_recipe_services_requires_and_notes(self) -> None:
+        self.env.clone_dotfiles()
+        plan = self.plan()
+        self.assertEqual([s["unit"] for s in plan["plan"]["services"]], ["ai-tools-check.timer"])
+        requires = {entry["name"]: entry["found"] for entry in plan["plan"]["requires"]}
+        self.assertTrue(requires["git"])
+        self.assertTrue(requires["stow"])
+        self.assertEqual(plan["plan"]["notes"], ["note one", "note two"])
+
+
+# --------------------------------------------------------------------------
+# Token lifecycle
+# --------------------------------------------------------------------------
+
+
+class SetupTokenTests(SetupTestBase):
+    def _plan_file(self) -> Path:
+        return self.state / "setup-plan.json"
+
+    def test_token_fresh_accepted(self) -> None:
+        self.env.clone_dotfiles()
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        self.assertIn("backup", result)
+
+    def test_missing_token_rejected(self) -> None:
+        result = self.apply("deadbeef")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "The setup plan changed. Review it again.")
+
+    def test_stale_token_rejected(self) -> None:
+        self.env.clone_dotfiles()
+        plan = self.plan()
+        stored = json.loads(self._plan_file().read_text(encoding="utf-8"))
+        stored["created"] = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(
+            timespec="seconds"
+        )
+        self._plan_file().write_text(json.dumps(stored), encoding="utf-8")
+        result = self.apply(plan["token"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "The setup plan changed. Review it again.")
+
+    def test_mismatched_plan_rejected(self) -> None:
+        self.env.clone_dotfiles()
+        plan = self.plan()
+        recipe_path = self.dotfiles / ".stow-sync" / "setup.json"
+        recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+        recipe["notes"].append("changed after review")
+        recipe_path.write_text(json.dumps(recipe, indent=2), encoding="utf-8")
+        result = self.apply(plan["token"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "The setup plan changed. Review it again.")
+
+    def test_tampered_canonical_rejected(self) -> None:
+        self.env.clone_dotfiles()
+        plan = self.plan()
+        stored = json.loads(self._plan_file().read_text(encoding="utf-8"))
+        stored["canonical"] = stored["canonical"].replace("version", "verison", 1)
+        self._plan_file().write_text(json.dumps(stored), encoding="utf-8")
+        result = self.apply(plan["token"])
+        self.assertFalse(result["ok"])
+
+
+# --------------------------------------------------------------------------
+# Apply
+# --------------------------------------------------------------------------
+
+
+class SetupApplyTests(SetupTestBase):
+    def test_private_repo_auth_failure_is_reported_and_link_still_runs(self) -> None:
+        self.env.clone_dotfiles()
+        real_run_git = ss.run_git
+
+        def fake_run_git(repo, args, *rest, **kwargs):
+            if args and args[0] == "clone":
+                return subprocess.CompletedProcess(
+                    args,
+                    128,
+                    b"",
+                    b"fatal: could not read Username for 'https://github.com': "
+                    b"terminal prompts disabled",
+                )
+            return real_run_git(repo, args, *rest, **kwargs)
+
+        plan = self.plan()
+        self.assertTrue(plan["ok"], plan)
+        with patch.object(ss, "run_git", side_effect=fake_run_git):
+            result = self.apply(plan["token"])
+        self.assertTrue(result["ok"], result)
+        errors = {entry["path"]: entry["error"] for entry in result["clone_errors"]}
+        self.assertEqual(
+            errors["~/wallpapers"],
+            "The wallpapers repo is private. Run gh auth login and gh auth setup-git, "
+            "then try again.",
+        )
+        self.assertTrue(any(entry["package"] == "fish" for entry in result["applied"]))
+
+    def test_apply_happy_path_links_backs_up_and_preserves_modes(self) -> None:
+        self.env.clone_dotfiles()
+        os.chmod(self.home / ".config" / "fish" / "config.fish", 0o600)
+        os.chmod(self.home / ".config" / "ghostty" / "config", 0o640)
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+
+        fish = self.home / ".config" / "fish" / "config.fish"
+        self.assertTrue(fish.is_symlink())
+        self.assertEqual(os.path.realpath(fish), os.path.realpath(self.dotfiles / "fish" / ".config" / "fish" / "config.fish"))
+        config = self.home / ".config" / "stow-sync" / "config.json"
+        self.assertTrue(config.is_symlink())
+        self.assertTrue(result["config_reloaded"])
+
+        manifest_path = self.state / "setup-backups" / result["backup"] / "manifest.json"
+        self.assertTrue(manifest_path.is_file())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["moves"]), 4)
+        by_path = {move["path"]: move for move in manifest["moves"]}
+        backup_root = self.state / "setup-backups" / result["backup"] / "files"
+        fish_move = by_path["~/.config/fish/config.fish"]
+        fish_backup = backup_root / fish_move["backup"]
+        self.assertEqual(fish_backup.read_text(encoding="utf-8"), self.env.fish_default)
+        self.assertEqual(fish_backup.stat().st_mode & 0o777, 0o600)
+        ghostty_move = by_path["~/.config/ghostty/config"]
+        ghostty_backup = backup_root / ghostty_move["backup"]
+        self.assertEqual(ghostty_backup.read_text(encoding="utf-8"), self.env.ghostty_default)
+        self.assertEqual(ghostty_backup.stat().st_mode & 0o777, 0o640)
+
+    def test_apply_with_one_failing_package_rolls_it_back(self) -> None:
+        self.env.clone_dotfiles()
+        real_stow = ss.stow_real
+
+        def fake_stow(repo_dir, target_dir, package, timeout=30):
+            if package == "ghostty":
+                return subprocess.CompletedProcess(["stow"], 1, b"", b"stow: simulated failure")
+            return real_stow(repo_dir, target_dir, package, timeout)
+
+        plan = self.plan()
+        with patch.object(ss, "stow_real", side_effect=fake_stow):
+            result = self.apply(plan["token"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([entry["package"] for entry in result["failed"]], ["ghostty"])
+        ghostty = self.home / ".config" / "ghostty" / "config"
+        self.assertFalse(ghostty.is_symlink())
+        self.assertEqual(ghostty.read_text(encoding="utf-8"), self.env.ghostty_default)
+        fish = self.home / ".config" / "fish" / "config.fish"
+        self.assertTrue(fish.is_symlink())
+
+    def test_apply_enables_services_via_fake_systemctl(self) -> None:
+        self.env.clone_dotfiles()
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([entry["unit"] for entry in result["services"]], ["ai-tools-check.timer"])
+        self.assertTrue(all(entry["ok"] for entry in result["services"]))
+        log = self.env.systemctl_log.read_text(encoding="utf-8")
+        self.assertIn("--user daemon-reload", log)
+        self.assertIn("--user enable --now ai-tools-check.timer", log)
+
+    def test_post_default_selection_runs_only_defaults(self) -> None:
+        self.env.clone_dotfiles()
+        self.env.install_script("hello", "#!/bin/sh\nexit 0\n")
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([entry["id"] for entry in result["post"]], ["hello"])
+        self.assertTrue(result["post"][0]["ok"])
+
+    def test_post_override_and_timeout_are_reported(self) -> None:
+        self.env.clone_dotfiles()
+        self.env.install_script("slow", "#!/bin/sh\nsleep 5\n")
+        result = self.plan_and_apply(["--post", "slow"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([entry["id"] for entry in result["post"]], ["slow"])
+        self.assertFalse(result["post"][0]["ok"])
+        self.assertIn("timed out", result["post"][0]["error"])
+
+    def test_second_plan_is_idempotent(self) -> None:
+        self.env.clone_dotfiles()
+        self.env.install_script("hello", "#!/bin/sh\nexit 0\n")
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        second = self.plan()
+        summary = second["plan"]["summary"]
+        self.assertEqual(summary["repos_to_clone"], 0)
+        self.assertEqual(summary["files_to_backup"], 0)
+        self.assertEqual(summary["packages_to_link"], 0)
+        self.assertTrue(summary["nothing_to_do"])
+        self.assertTrue(all(entry["status"] in ("already",) for entry in second["plan"]["link"]))
+
+
+# --------------------------------------------------------------------------
+# Undo and backups
+# --------------------------------------------------------------------------
+
+
+class SetupUndoTests(SetupTestBase):
+    def _apply(self) -> dict:
+        self.env.clone_dotfiles()
+        os.chmod(self.home / ".config" / "fish" / "config.fish", 0o600)
+        return self.plan_and_apply()
+
+    def test_undo_restores_byte_identical_originals_and_modes(self) -> None:
+        result = self._apply()
+        undo = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertTrue(undo["ok"], undo)
+        self.assertEqual(undo["errors"], [])
+        fish = self.home / ".config" / "fish" / "config.fish"
+        self.assertFalse(fish.is_symlink())
+        self.assertEqual(fish.read_text(encoding="utf-8"), self.env.fish_default)
+        self.assertEqual(fish.stat().st_mode & 0o777, 0o600)
+        nvim = self.home / ".config" / "nvim" / "init.lua"
+        self.assertEqual(nvim.read_text(encoding="utf-8"), self.env.nvim_default)
+
+    def test_undo_refuses_a_destination_that_changed(self) -> None:
+        result = self._apply()
+        fish = self.home / ".config" / "fish" / "config.fish"
+        os.unlink(fish)
+        write(fish, "tampered\n")
+        undo = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertTrue(undo["ok"], undo)
+        self.assertIn("fish", [entry["package"] for entry in undo["refused"]])
+        self.assertEqual(fish.read_text(encoding="utf-8"), "tampered\n")
+        self.assertTrue(any("~/.config/fish/config.fish" == entry["path"] for entry in undo["errors"]))
+
+    def test_crash_mid_apply_is_undoable(self) -> None:
+        self.env.clone_dotfiles()
+        plan = self.plan()
+        real_move = ss._setup_perform_move
+        calls = {"count": 0}
+
+        def crashing_move(src, dst):
+            calls["count"] += 1
+            if calls["count"] > 2:
+                raise RuntimeError("simulated crash")
+            return real_move(src, dst)
+
+        with patch.object(ss, "_setup_perform_move", side_effect=crashing_move):
+            with self.assertRaises(RuntimeError):
+                self.apply(plan["token"])
+
+        backups = list((self.state / "setup-backups").iterdir())
+        self.assertEqual(len(backups), 1)
+        manifest_path = backups[0] / "manifest.json"
+        self.assertTrue(manifest_path.is_file())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(manifest["moves"]), 2)
+
+        undo = ss.dispatch(["setup-undo", "--backup", backups[0].name], None, str(self.state))
+        self.assertTrue(undo["ok"], undo)
+        self.assertEqual(
+            (self.home / ".config" / "fish" / "config.fish").read_text(encoding="utf-8"),
+            self.env.fish_default,
+        )
+        self.assertEqual(
+            (self.home / ".config" / "ghostty" / "config").read_text(encoding="utf-8"),
+            self.env.ghostty_default,
+        )
+        self.assertEqual(
+            (self.home / ".config" / "nvim" / "init.lua").read_text(encoding="utf-8"),
+            self.env.nvim_default,
+        )
+
+    def test_setup_backups_lists_counts(self) -> None:
+        result = self._apply()
+        listing = ss.dispatch(["setup-backups"], None, str(self.state))
+        self.assertTrue(listing["ok"], listing)
+        self.assertEqual(len(listing["backups"]), 1)
+        entry = listing["backups"][0]
+        self.assertEqual(entry["id"], result["backup"])
+        self.assertEqual(entry["counts"]["moves"], 4)
+        self.assertEqual(entry["counts"]["packages"], 7)
 
 
 if __name__ == "__main__":
