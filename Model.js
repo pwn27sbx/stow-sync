@@ -812,6 +812,24 @@ function pluralUnit(count, singular, pluralForm) {
 
 // Top-of-panel state: one glyph, one plain sentence and one hint line.
 // `now` is the panel's current "HH:MM" used only when no fetch time exists.
+// --- bar icon overlays (Unit 7) ------------------------------------------
+// At most one status dot plus the up/down chevrons: the dot is `urgent` when
+// anything needs attention (conflict/diverged/operation/stow conflict/missing),
+// else `accent` when there are local changes or new configs, else none. `up`
+// marks commits to upload (ahead), `down` commits to fetch (behind).
+// `opts.blocked` (a commit stopped by the secret scan) forces the urgent dot.
+function barIconState(data, opts) {
+  var d = data || {}
+  var o = opts || {}
+  var urgent = o.blocked === true || attentionFor(d) !== null
+  var pending = changeTotals(d).count > 0 || newCandidateCount(d) > 0
+  return {
+    dot: urgent ? "urgent" : (pending ? "accent" : "none"),
+    up: flowTotals(d, "ahead").count > 0,
+    down: flowTotals(d, "behind").count > 0
+  }
+}
+
 function heroState(data, now) {
   var d = data || {}
   var attention = attentionFor(d)

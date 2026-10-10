@@ -1313,3 +1313,38 @@ test("shortRemote trims scheme, host and .git for the lane chip", () => {
   assert.equal(Model.shortRemote(null), "")
   assert.equal(Model.shortRemote("single"), "single")
 })
+
+// --- Unit 7: bar icon overlays -------------------------------------------
+
+function iconRepo(state, extra) {
+  return Object.assign({ exists: true, path: "~/.dotfiles", state: state, packages: [] }, extra || {})
+}
+
+test("barIconState: clean has no overlay and no chevrons", () => {
+  same(Model.barIconState({ repos: [iconRepo("clean")], candidates: [] }), { dot: "none", up: false, down: false })
+  same(Model.barIconState(null), { dot: "none", up: false, down: false })
+  same(Model.barIconState({}), { dot: "none", up: false, down: false })
+})
+
+test("barIconState: changes or new configs give an accent dot", () => {
+  const withChange = { repos: [iconRepo("dirty", { changes: [{ path: "fish/x", package: "fish" }] })], candidates: [] }
+  assert.equal(Model.barIconState(withChange).dot, "accent")
+  const withNew = { repos: [iconRepo("clean")], candidates: [{ path: "~/.config/x", known: false }] }
+  assert.equal(Model.barIconState(withNew).dot, "accent")
+})
+
+test("barIconState: attention wins with an urgent dot", () => {
+  assert.equal(Model.barIconState({ repos: [iconRepo("diverged")], candidates: [] }).dot, "urgent")
+  assert.equal(Model.barIconState({ repos: [iconRepo("operation", { operation: "rebase" })], candidates: [] }).dot, "urgent")
+  assert.equal(Model.barIconState({ repos: [iconRepo("clean", { packages: [{ name: "fish", health: "conflicts" }] })], candidates: [] }).dot, "urgent")
+  // urgent beats accent even with pending changes
+  assert.equal(Model.barIconState({ repos: [iconRepo("diverged", { changes: [{ path: "a", package: "a" }] })], candidates: [] }).dot, "urgent")
+  // a secret-scan block forces the urgent dot
+  assert.equal(Model.barIconState({ repos: [iconRepo("clean")], candidates: [] }, { blocked: true }).dot, "urgent")
+})
+
+test("barIconState: ahead/behind give the up/down chevrons", () => {
+  same(Model.barIconState({ repos: [iconRepo("ahead", { ahead: 2 })], candidates: [] }), { dot: "none", up: true, down: false })
+  same(Model.barIconState({ repos: [iconRepo("behind", { behind: 3 })], candidates: [] }), { dot: "none", up: false, down: true })
+  same(Model.barIconState({ repos: [iconRepo("diverged", { ahead: 1, behind: 1 })], candidates: [] }), { dot: "urgent", up: true, down: true })
+})
