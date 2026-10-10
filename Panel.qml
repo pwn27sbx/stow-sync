@@ -60,7 +60,7 @@ Panel {
   readonly property string stateText: root.hero.title + (root.busy ? "  \u00b7  updating" : "")
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
-  readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"
+  readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"; readonly property int contentInset: Style.space(12)
   readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData)
   property bool helpOpen: false
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5)
@@ -272,13 +272,12 @@ Panel {
       onCloseRequested: root.handleEscape()
       onTabRequested: function(direction) { if (root.overlayMode === "") root.switchTab(direction >= 0 ? 1 : -1) }
       onTextKey: function(text) { if (root.overlayMode === "") root.handleTextKey(text) }
-
       ColumnLayout { id: contentColumn
         anchors.fill: parent
         spacing: Style.spacing.sm
-
         Header {
           Layout.fillWidth: true
+          Layout.leftMargin: root.contentInset; Layout.rightMargin: root.contentInset
           version: root.version
           stateTone: root.hero.tone
           busy: root.busy
@@ -296,6 +295,7 @@ Panel {
 
         SegmentedTabs {
           Layout.fillWidth: true
+          Layout.leftMargin: root.contentInset; Layout.rightMargin: root.contentInset
           tabs: root.tabs
           current: root.activeTab
           motion: root.motionOn
@@ -314,7 +314,7 @@ Panel {
 
           RepoSection {
             id: overviewTab
-            width: Math.max(0, flick.width - Style.space(12))
+            x: root.contentInset; width: Math.max(0, flick.width - root.contentInset * 2)
             tab: root.activeTab
             statusData: root.statusData
             version: root.version
