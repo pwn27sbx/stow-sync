@@ -3160,6 +3160,13 @@ class SetupTestBase(unittest.TestCase):
         self.assertTrue(plan["ok"], plan)
         return self.apply(plan["token"], extra)
 
+    def connect(self) -> dict:
+        result = ss.dispatch(
+            ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+        )
+        self.assertTrue(result["ok"], result)
+        return result
+
     def link_entry(self, plan: dict, package: str) -> dict:
         for entry in plan["plan"]["link"]:
             if entry["package"] == package:
@@ -3335,6 +3342,42 @@ class SetupConnectTests(SetupTestBase):
         self.assertIsNone(result["recipe"])
         self.assertIn(".stow-sync/setup.json", result["hint"])
 
+    def test_connect_clones_every_recipe_repo(self) -> None:
+        result = ss.dispatch(
+            ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertTrue((self.dotfiles / ".stow-sync" / "setup.json").is_file())
+        self.assertTrue((self.home / "wallpapers").is_dir())
+        by_path = {entry["path"]: entry for entry in result["repos"]}
+        self.assertTrue(by_path["~/.dotfiles"]["cloned"])
+        self.assertTrue(by_path["~/wallpapers"]["cloned"])
+
+    def test_connect_reports_private_repo_auth_failure(self) -> None:
+        real_run_git = ss.run_git
+
+        def fake_run_git(repo, args, *rest, **kwargs):
+            if args and args[0] == "clone" and any("wallpapers" in str(a) for a in args):
+                return subprocess.CompletedProcess(
+                    args,
+                    128,
+                    b"",
+                    b"fatal: could not read Username for 'https://github.com': "
+                    b"terminal prompts disabled",
+                )
+            return real_run_git(repo, args, *rest, **kwargs)
+
+        with patch.object(ss, "run_git", side_effect=fake_run_git):
+            result = ss.dispatch(
+                ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+            )
+        self.assertTrue(result["ok"], result)
+        self.assertTrue((self.dotfiles / ".stow-sync" / "setup.json").is_file())
+        self.assertFalse((self.home / "wallpapers").exists())
+        by_path = {entry["path"]: entry for entry in result["repos"]}
+        self.assertIn("private", by_path["~/wallpapers"]["error"])
+        self.assertIn("gh auth login", by_path["~/wallpapers"]["error"])
+
 
 # --------------------------------------------------------------------------
 # Plan classification
@@ -3399,6 +3442,15 @@ class SetupPlanTests(SetupTestBase):
         plan = self.plan()
         self.assertEqual([entry["path"] for entry in plan["plan"]["clone"]], ["~/wallpapers"])
         self.assertNotIn("walls", [entry["package"] for entry in plan["plan"]["link"]])
+
+    def test_plan_lists_walls_package_after_connect(self) -> None:
+        # Connect clones every recipe repo, so the plan sees and reviews walls.
+        self.connect()
+        plan = self.plan()
+        walls = self.link_entry(plan, "walls")
+        self.assertEqual(walls["status"], "new")
+        self.assertEqual(plan["plan"]["summary"]["repos_to_clone"], 0)
+        self.assertEqual([entry["path"] for entry in plan["plan"]["clone"]], [])
 
     def test_plan_lists_recipe_services_requires_and_notes(self) -> None:
         self.env.clone_dotfiles()
@@ -3469,36 +3521,24 @@ class SetupTokenTests(SetupTestBase):
 
 
 class SetupApplyTests(SetupTestBase):
-    def test_private_repo_auth_failure_is_reported_and_link_still_runs(self) -> None:
+    def test_apply_reports_a_missing_repo_and_never_links_unreviewed(self) -> None:
+        # Only dotfiles is on disk: the plan lists wallpapers as a clone step
+        # and has no "walls" link, so apply must neither clone nor link it.
         self.env.clone_dotfiles()
-        real_run_git = ss.run_git
-
-        def fake_run_git(repo, args, *rest, **kwargs):
-            if args and args[0] == "clone":
-                return subprocess.CompletedProcess(
-                    args,
-                    128,
-                    b"",
-                    b"fatal: could not read Username for 'https://github.com': "
-                    b"terminal prompts disabled",
-                )
-            return real_run_git(repo, args, *rest, **kwargs)
-
         plan = self.plan()
-        self.assertTrue(plan["ok"], plan)
-        with patch.object(ss, "run_git", side_effect=fake_run_git):
-            result = self.apply(plan["token"])
+        self.assertEqual([entry["path"] for entry in plan["plan"]["clone"]], ["~/wallpapers"])
+        self.assertNotIn("walls", [entry["package"] for entry in plan["plan"]["link"]])
+        result = self.apply(plan["token"])
         self.assertTrue(result["ok"], result)
-        errors = {entry["path"]: entry["error"] for entry in result["clone_errors"]}
-        self.assertEqual(
-            errors["~/wallpapers"],
-            "The wallpapers repo is private. Run gh auth login and gh auth setup-git, "
-            "then try again.",
-        )
-        self.assertTrue(any(entry["package"] == "fish" for entry in result["applied"]))
+        skipped = {entry["path"]: entry for entry in result["skipped"] if "path" in entry}
+        self.assertEqual(skipped["~/wallpapers"]["reason"], "Run Connect again")
+        self.assertFalse((self.home / "wallpapers").exists())
+        self.assertFalse((self.home / ".config" / "walls").exists())
+        self.assertNotIn("walls", [entry["package"] for entry in result["applied"]])
+        self.assertIn("fish", [entry["package"] for entry in result["applied"]])
 
     def test_apply_happy_path_links_backs_up_and_preserves_modes(self) -> None:
-        self.env.clone_dotfiles()
+        self.connect()
         os.chmod(self.home / ".config" / "fish" / "config.fish", 0o600)
         os.chmod(self.home / ".config" / "ghostty" / "config", 0o640)
         result = self.plan_and_apply()
@@ -3527,7 +3567,7 @@ class SetupApplyTests(SetupTestBase):
         self.assertEqual(ghostty_backup.stat().st_mode & 0o777, 0o640)
 
     def test_apply_with_one_failing_package_rolls_it_back(self) -> None:
-        self.env.clone_dotfiles()
+        self.connect()
         real_stow = ss.stow_real
 
         def fake_stow(repo_dir, target_dir, package, timeout=30):
@@ -3547,7 +3587,7 @@ class SetupApplyTests(SetupTestBase):
         self.assertTrue(fish.is_symlink())
 
     def test_apply_enables_services_via_fake_systemctl(self) -> None:
-        self.env.clone_dotfiles()
+        self.connect()
         result = self.plan_and_apply()
         self.assertTrue(result["ok"], result)
         self.assertEqual([entry["unit"] for entry in result["services"]], ["ai-tools-check.timer"])
@@ -3557,7 +3597,7 @@ class SetupApplyTests(SetupTestBase):
         self.assertIn("--user enable --now ai-tools-check.timer", log)
 
     def test_post_default_selection_runs_only_defaults(self) -> None:
-        self.env.clone_dotfiles()
+        self.connect()
         self.env.install_script("hello", "#!/bin/sh\nexit 0\n")
         result = self.plan_and_apply()
         self.assertTrue(result["ok"], result)
@@ -3565,7 +3605,7 @@ class SetupApplyTests(SetupTestBase):
         self.assertTrue(result["post"][0]["ok"])
 
     def test_post_override_and_timeout_are_reported(self) -> None:
-        self.env.clone_dotfiles()
+        self.connect()
         self.env.install_script("slow", "#!/bin/sh\nsleep 5\n")
         result = self.plan_and_apply(["--post", "slow"])
         self.assertTrue(result["ok"], result)
@@ -3574,7 +3614,7 @@ class SetupApplyTests(SetupTestBase):
         self.assertIn("timed out", result["post"][0]["error"])
 
     def test_second_plan_is_idempotent(self) -> None:
-        self.env.clone_dotfiles()
+        self.connect()
         self.env.install_script("hello", "#!/bin/sh\nexit 0\n")
         result = self.plan_and_apply()
         self.assertTrue(result["ok"], result)
@@ -3594,7 +3634,7 @@ class SetupApplyTests(SetupTestBase):
 
 class SetupUndoTests(SetupTestBase):
     def _apply(self) -> dict:
-        self.env.clone_dotfiles()
+        self.connect()
         os.chmod(self.home / ".config" / "fish" / "config.fish", 0o600)
         return self.plan_and_apply()
 
@@ -3668,6 +3708,34 @@ class SetupUndoTests(SetupTestBase):
         self.assertEqual(entry["id"], result["backup"])
         self.assertEqual(entry["counts"]["moves"], 4)
         self.assertEqual(entry["counts"]["packages"], 7)
+
+
+class SetupPerformMoveTests(unittest.TestCase):
+    def test_refuses_an_existing_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "src"
+            dst = root / "dst"
+            write(src, "src\n")
+            write(dst, "dst\n")
+            with self.assertRaises(ss.CommandError) as ctx:
+                ss._setup_perform_move(str(src), str(dst))
+            message = str(ctx.exception)
+            self.assertIn(str(src), message)
+            self.assertIn(str(dst), message)
+            self.assertEqual(src.read_text(encoding="utf-8"), "src\n")
+            self.assertEqual(dst.read_text(encoding="utf-8"), "dst\n")
+
+    def test_refuses_a_cross_filesystem_move(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "src"
+            dst = root / "dst"
+            write(src, "src\n")
+            with patch.object(ss.os, "replace", side_effect=OSError(errno.EXDEV, "cross-device")):
+                with self.assertRaises(ss.CommandError) as ctx:
+                    ss._setup_perform_move(str(src), str(dst))
+            self.assertIn("filesystem", str(ctx.exception))
 
 
 if __name__ == "__main__":

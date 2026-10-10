@@ -2774,12 +2774,59 @@ def _clone_failure_text(path: str, url: str, private: bool, result: Any) -> str:
     return "Clone failed: " + text
 
 
+def _setup_repo_result(
+    path: str,
+    url: str,
+    private: bool,
+    cloned: bool = False,
+    already: bool = False,
+    error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "path": to_tilde(path),
+        "url": url,
+        "private": private,
+        "cloned": cloned,
+        "already": already,
+        "error": error,
+    }
+
+
+def _setup_clone_repo(repo_path: str, url: str, private: bool) -> dict[str, Any]:
+    """Clone one repo if missing; report its result (never raises for a clone)."""
+    if os.path.isdir(repo_path) and _is_git_repo(repo_path):
+        return _setup_repo_result(repo_path, url, private, already=True)
+    if os.path.exists(repo_path):
+        return _setup_repo_result(
+            repo_path,
+            url,
+            private,
+            error="path exists but is not a git repository: " + to_tilde(repo_path),
+        )
+    parent = os.path.dirname(repo_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    result = run_git(None, ["clone", url, repo_path], timeout=300)
+    if result.returncode != 0:
+        return _setup_repo_result(
+            repo_path, url, private, error=_clone_failure_text(repo_path, url, private, result)
+        )
+    return _setup_repo_result(repo_path, url, private, cloned=True)
+
+
 def cmd_setup_connect(
     args: list[str],
     config_path: str | None = None,
     state_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Clone the dotfiles repo if missing and report its setup recipe."""
+    """Clone the dotfiles repo and every other recipe repo (README 8a.1).
+
+    Cloning is non-destructive and idempotent: the dotfiles repo is cloned
+    first from ``--url``/``--path``, then every other repo in its recipe is
+    cloned in ``order`` so ``setup-plan`` always sees the full tree. Each repo
+    gets its own result (including the private-repo auth message); one failed
+    repo does not abort the others.
+    """
     url = opt_value(args, "--url")
     if not _setup_str(url):
         raise CommandError("missing --url")
@@ -2823,14 +2870,28 @@ def cmd_setup_connect(
                 recipe = json.load(handle)
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": "recipe is not valid JSON: " + _shorten(str(exc))}
+        recipe = validate_setup_recipe(recipe)
     else:
         hint = "No setup recipe found. Add " + to_tilde(recipe_path) + " to the repository."
+
+    repos: list[dict[str, Any]] = [
+        _setup_repo_result(path, url, False, cloned=cloned, already=already)
+    ]
+    if recipe is not None:
+        target_norm = os.path.normpath(path)
+        for repo in sorted(recipe["repos"], key=lambda item: item["order"]):
+            repo_path = expand_path(repo["path"])
+            if os.path.normpath(repo_path) == target_norm:
+                continue
+            repos.append(_setup_clone_repo(repo_path, repo["url"], repo["private"]))
+
     result = {
         "ok": True,
         "already": already,
         "cloned": cloned,
         "path": to_tilde(path),
         "recipe": recipe,
+        "repos": repos,
     }
     if hint:
         result["hint"] = hint
@@ -3090,15 +3151,28 @@ def _path_type_info(path: str) -> dict[str, Any]:
 
 
 def _setup_perform_move(src: str, dst: str) -> None:
-    """Move ``src`` to ``dst`` on the same filesystem, preserving type/mode."""
+    """Move ``src`` onto ``dst`` on the same filesystem, preserving type/mode.
+
+    Refuses when ``dst`` already exists: a ``shutil.move`` fallback would place
+    the source *inside* an existing destination directory, so a backup would
+    land at a nested wrong path and undo could not find it. A cross-filesystem
+    move is refused too — the backup folder must live on the same filesystem as
+    ``$HOME`` (README section 8a apply).
+    """
+    if os.path.lexists(dst):
+        raise CommandError(
+            "refusing to overwrite an existing path: " + dst + " (moving " + src + ")"
+        )
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     try:
         os.replace(src, dst)
     except OSError as exc:
-        if exc.errno == errno.ENOTEMPTY or os.path.isdir(src):
-            shutil.move(src, dst)
-        else:
-            raise
+        if exc.errno == errno.EXDEV:
+            raise CommandError(
+                "cannot move across filesystems (backups must live on the same "
+                "filesystem as $HOME): " + src + " -> " + dst
+            )
+        raise
 
 
 def _setup_backup_one(
@@ -3286,83 +3360,37 @@ def cmd_setup_apply(
     }
     _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
 
-    cloned: list[str] = []
-    clone_errors: list[dict[str, Any]] = []
-    cloned_repos: set[str] = set()
+    # Apply never clones: a repo must already be on disk from Connect, so the
+    # reviewed plan is the only thing that runs. A repo still missing at apply
+    # time is reported and left untouched (README section 8a apply).
+    skipped: list[dict[str, Any]] = []
     for entry in plan.get("clone", []):
-        path = expand_path(entry["path"])
-        if os.path.isdir(path):
-            continue
-        os.makedirs(os.path.dirname(path) or home, exist_ok=True)
-        result = run_git(None, ["clone", entry["url"], path], timeout=300)
-        if result.returncode != 0:
-            clone_errors.append(
-                {
-                    "path": entry["path"],
-                    "error": _clone_failure_text(path, entry["url"], entry.get("private", False), result),
-                }
-            )
-            continue
-        cloned.append(entry["path"])
-        cloned_repos.add(entry["path"])
-
-    # The reviewed plan could not preview packages of repos that did not exist
-    # yet. After a successful clone, derive their packages so one apply is
-    # complete (README 8a.3). Only clean "new" packages are applied here;
-    # conflicts/blocked packages are reported so the owner reviews the plan
-    # again before anything is forced.
-    extra_links: list[dict[str, Any]] = []
-    if cloned_repos:
-        skip_packages = set(recipe["skip_packages"])
-        for repo in sorted(recipe["repos"], key=lambda item: item["order"]):
-            repo_path = expand_path(repo["path"])
-            if to_tilde(repo_path) not in cloned_repos:
-                continue
-            if repo["packages"] == "auto":
-                packages = detect_packages(repo_path)
-            else:
-                packages = list(repo["packages"])
-            for package in packages:
-                if package in skip_packages:
-                    continue
-                classified = classify_setup_package(repo_path, home, package)
-                extra_links.append(
-                    {
-                        "repo": to_tilde(repo_path),
-                        "package": package,
-                        "status": classified["status"],
-                        "links": classified["links"],
-                        "conflicts": classified["conflicts"],
-                        "source": "post-clone",
-                    }
-                )
+        skipped.append(
+            {
+                "path": entry["path"],
+                "url": entry.get("url"),
+                "status": "repo-missing",
+                "reason": "Run Connect again",
+            }
+        )
 
     applied: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    for link in plan.get("link", []) + extra_links:
+    for link in plan.get("link", []):
         repo_path = expand_path(link["repo"])
         target_dir = home
         if link["status"] == "already":
             skipped.append({"repo": link["repo"], "package": link["package"], "status": "already"})
             continue
-        if link["status"] == "blocked" or (
-            link.get("source") == "post-clone" and link["status"] == "conflicts"
-        ):
-            reason = (
-                "detected after cloning; review the plan again"
-                if link.get("source") == "post-clone"
-                else None
+        if link["status"] == "blocked":
+            skipped.append(
+                {
+                    "repo": link["repo"],
+                    "package": link["package"],
+                    "status": link["status"],
+                    "conflicts": link["conflicts"],
+                }
             )
-            entry = {
-                "repo": link["repo"],
-                "package": link["package"],
-                "status": link["status"],
-                "conflicts": link["conflicts"],
-            }
-            if reason:
-                entry["reason"] = reason
-            skipped.append(entry)
             continue
         pkg_moves: list[dict[str, Any]] = []
         for conflict in link.get("conflicts", []):
@@ -3446,8 +3474,6 @@ def cmd_setup_apply(
     return {
         "ok": True,
         "backup": backup_id,
-        "cloned": cloned,
-        "clone_errors": clone_errors,
         "applied": applied,
         "failed": failed,
         "skipped": skipped,
