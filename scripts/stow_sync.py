@@ -3097,6 +3097,27 @@ def cmd_setup_plan(
     state_dir: str | None = None,
 ) -> dict[str, Any]:
     """Build the setup plan and store its 10-minute token (README 8.1/8a)."""
+    fixture = opt_value(args, "--fixture")
+    if _setup_str(fixture):
+        # Hidden setupFixture setting (README 8b live check): read a recorded
+        # plan, never write a token and never apply.
+        try:
+            with open(expand_path(fixture), "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError) as exc:
+            raise CommandError("fixture read failed: " + _shorten(str(exc)))
+        if not isinstance(data, dict):
+            raise CommandError("fixture is not a plan object")
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        return {
+            "ok": True,
+            "token": "fixture",
+            "created": None,
+            "recipe": None,
+            "plan": data,
+            "summary": summary,
+            "fixture": True,
+        }
     recipe_arg = opt_value(args, "--recipe")
     recipe_path = expand_path(recipe_arg) if recipe_arg else _default_recipe_path()
     recipe = load_setup_recipe_file(recipe_path)

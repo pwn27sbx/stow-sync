@@ -17,6 +17,7 @@ Item {
   property bool refreshEnabled: true
   property string message: ""
   property bool isError: false
+  property bool showSetup: false
   property color foreground: Color.foreground
 
   signal refreshClicked()
@@ -24,6 +25,7 @@ Item {
   signal closeClicked()
   signal dismissed()
   signal helpToggled()
+  signal setupClicked()
 
   function toneColor() {
     if (root.stateTone === "urgent") return Color.urgent
@@ -83,6 +85,20 @@ Item {
       }
 
       Item { Layout.fillWidth: true }
+
+      Button {
+        Layout.alignment: Qt.AlignVCenter
+        Layout.preferredWidth: Style.space(32)
+        Layout.preferredHeight: Style.space(32)
+        horizontalPadding: 0
+        verticalPadding: 0
+        visible: root.showSetup
+        iconText: "\uf109"
+        tooltipText: "Set up this machine"
+        fontSize: Style.font.caption
+        enabled: !root.busy
+        onClicked: root.setupClicked()
+      }
 
       Button {
         Layout.alignment: Qt.AlignVCenter

@@ -3461,6 +3461,37 @@ class SetupPlanTests(SetupTestBase):
         self.assertTrue(requires["stow"])
         self.assertEqual(plan["plan"]["notes"], ["note one", "note two"])
 
+    def test_plan_fixture_is_read_only(self) -> None:
+        # The hidden setupFixture setting makes the backend read a recorded plan
+        # (README 8b): read-only, never writes a token and never applies.
+        plan = {
+            "version": 1,
+            "clone": [],
+            "link": [
+                {
+                    "repo": "~/.dotfiles",
+                    "package": "fish",
+                    "status": "new",
+                    "links": [],
+                    "conflicts": [],
+                    "files_to_backup": 0,
+                }
+            ],
+            "services": [],
+            "requires": [],
+            "post": [],
+            "notes": ["n"],
+            "summary": {"packages_to_link": 1},
+        }
+        fixture = self.env.root / "fixture.json"
+        fixture.write_text(json.dumps(plan), encoding="utf-8")
+        result = ss.dispatch(["setup-plan", "--fixture", str(fixture)], None, str(self.state))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["token"], "fixture")
+        self.assertTrue(result["fixture"])
+        self.assertEqual(result["plan"]["link"][0]["package"], "fish")
+        self.assertFalse((self.state / "setup-plan.json").exists())
+
 
 # --------------------------------------------------------------------------
 # Token lifecycle

@@ -106,6 +106,28 @@ shows up as a candidate until you adopt or ignore it. That is intended.
 | `refresh_minutes` | number | How often the panel re-runs `status`. |
 | `notify_after_hours` | number | `0` disables desktop notifications. `N > 0` sends one `notify-send` when a repo has had pending items continuously for at least `N` hours, at most once per repo per calendar day. The continuous-pending clock is stored in `notify.json`; a repo that becomes clean clears its entry. |
 
+### "Set up this machine" (opt-in)
+
+On a fresh Omarchy install Stow Sync can clone every Stow repo, link every
+package and back up anything in the way. It is **off by default**: the header
+button, the Overview banner and the wizard only appear when you enable it. Add
+the setting to this plugin's `shell.json` layout entry:
+
+```json
+{ "id": "pwnsxb.stow-sync", "machineSetup": true }
+```
+
+then `omarchy restart shell`. The wizard has four steps (Connect, Review,
+Apply, Report). Connect clones the dotfiles repo, reads its recipe and clones
+every other repo the recipe lists; a private repo without credentials is
+reported with the exact `gh auth login` / `gh auth setup-git` commands to run.
+Review always shows what will be downloaded, linked and moved to backup before
+anything changes, and every apply can be undone from the Report step.
+
+The recipe lives in the dotfiles repo at `.stow-sync/setup.json` — its schema
+is documented in `docs/setup-recipe.example.json`. Backups are kept in
+`~/.local/state/stow-sync/setup-backups/<id>/` with a manifest.
+
 ## Safety model
 
 Stow Sync is intentionally read-only by default and asks before it changes

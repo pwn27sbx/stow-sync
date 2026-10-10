@@ -33,6 +33,7 @@ Panel {
   property string errorText: ""; property string resultText: ""
   property bool started: false; property double nowMs: Date.now()
   property string busyVerb: ""; property string overlayMode: ""
+  property bool setupOpen: false
   property string confirmKind: ""; property var confirmPayload: ({})
   // Publish card and cumulative batch state (publish / upload / update).
   property string publishMessage: ""; property var publishLines: []
@@ -60,6 +61,7 @@ Panel {
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
   readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"
+  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData)
   property bool helpOpen: false
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5)
   readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
@@ -88,36 +90,18 @@ Panel {
   function selectAll() { var next = {}; for (var i = 0; i < root.changeRows.length; i++) next[root.changeRows[i].key] = true; root.checkedPaths = next }
   function clearSelection() { var next = {}; for (var i = 0; i < root.changeRows.length; i++) next[root.changeRows[i].key] = false; root.checkedPaths = next }
   function selectRepoCycle() {
-    var repos = []
-    for (var g = 0; g < root.changeView.groups.length; g++) repos.push(String(root.changeView.groups[g].repo))
-    if (repos.length === 0) return
-    var repo = repos[root.repoCycleIndex % repos.length]
-    root.repoCycleIndex = (root.repoCycleIndex + 1) % repos.length
-    var next = {}
-    for (var i = 0; i < root.changeRows.length; i++) next[root.changeRows[i].key] = String(root.changeRows[i].repo) === repo
-    root.checkedPaths = next
-    root.setResult("Selected " + Model.repoDisplayName(repo), false)
+    var s = Model.selectRepoCycle(root.changeView, root.changeRows, root.repoCycleIndex)
+    root.repoCycleIndex = s.index; root.checkedPaths = s.checked
+    if (s.message !== "") root.setResult(s.message, false)
   }
   function toggleHidden(row) {
     if (!row) return
-    var next = []
-    var removed = false
-    for (var i = 0; i < root.hiddenPaths.length; i++) {
-      if (String(root.hiddenPaths[i]) === String(row.path)) { removed = true; continue }
-      next.push(root.hiddenPaths[i])
-    }
-    if (!removed) next.push(String(row.path))
-    root.hiddenPaths = next
-    if (!removed) root.setChecked(row.key, false)
+    var h = Model.toggleHiddenPath(root.hiddenPaths, row)
+    root.hiddenPaths = h.paths
+    if (!h.removed) root.setChecked(row.key, false)
   }
   function focusedChange() { for (var i = 0; i < root.changeRows.length; i++) if (root.changeRows[i].key === root.focusedKey) return root.changeRows[i]; return null }
-  function moveCursor(dy) {
-    if (root.changeRows.length === 0) return
-    var index = 0
-    for (var i = 0; i < root.changeRows.length; i++) if (root.changeRows[i].key === root.focusedKey) index = i
-    index = Math.max(0, Math.min(root.changeRows.length - 1, index + dy))
-    root.focusedKey = root.changeRows[index].key
-  }
+  function moveCursor(dy) { root.focusedKey = Model.nextCursor(root.changeRows, root.focusedKey, dy) }
   function openConfirm(kind, payload) { root.confirmKind = kind; root.confirmPayload = payload || {}; root.overlayMode = "confirm" }
   function requestUpdate() {
     if (Model.flowTotals(root.statusData, "behind").count > 0) {
@@ -179,6 +163,7 @@ Panel {
   }
   function openDiff(repo, path) { root.diffTitle = "Diff \u2014 " + path; root.diffBody = ""; root.diffTruncated = false; runner.runAction("diff", ["diff", "--repo", repo, "--path", path]) }
   function applyAction(tag, payload) {
+    if (String(tag).indexOf("setup-") === 0) { setupWizard.handleResult(tag, payload); return }
     var outcome = Model.actionOutcome(tag, payload)
     if (outcome.kind === "diff") { root.diffBody = outcome.body; root.diffTruncated = outcome.truncated; root.overlayMode = "diff"; return }
     if (outcome.kind === "suggest") { if (root.overlayMode === "publish") root.publishMessage = outcome.message; return }
@@ -210,6 +195,7 @@ Panel {
     root.finishBatch(root.batchError !== "" ? root.batchError : text, root.batchError !== ""); root.refresh()
   }
   function applyFailure(tag, message) {
+    if (String(tag).indexOf("setup-") === 0) { setupWizard.handleFailure(tag, message); return }
     var outcome = Model.failureOutcome(tag, message)
     if (outcome.kind === "ignore") return
     if (outcome.kind === "status-error") { root.setResult(outcome.error, true); return }
@@ -234,16 +220,20 @@ Panel {
     else if (kind === "update") root.requestUpdate()
   }
   function editConfig() { Util.execArgv(["xdg-open", root.configPath]) }
+  function openSetup() { root.overlayMode = ""; root.setupOpen = true }
   function overlayCancel() { if (!root.busy) root.overlayMode = "" }
   function handleEscape() {
+    if (root.setupOpen) { setupWizard.back(); return }
     if (root.helpOpen) { root.helpOpen = false; return }
     if (root.overlayMode !== "") root.overlayCancel(); else root.close()
   }
   function activateCursor() {
+    if (root.setupOpen) { setupWizard.primary(); return }
     if (root.overlayMode === "diff") { root.overlayMode = ""; return }
     if (root.activeTab === 1) { var row = root.focusedChange(); if (row) root.openDiff(String(row.repo), String(row.path)) }
   }
   function handleTextKey(text) {
+    if (root.setupOpen) return
     if (text >= "1" && text <= "3") root.switchTabTo(parseInt(text) - 1)
     else if (text === "r") root.refreshWithFetch()
     else if (text === "p") { if (root.changeCount > 0) root.openPublish(""); else root.primaryClicked() }
@@ -271,9 +261,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: overlay.contentActiveFocus || overlay.contentPopupOpen
+      blocked: overlay.contentActiveFocus || overlay.contentPopupOpen || setupWizard.contentActiveFocus
       onMoveRequested: function(dx, dy) {
-        if (root.overlayMode !== "") return
+        if (root.overlayMode !== "" || root.setupOpen) return
         if (dx !== 0) root.switchTab(dx > 0 ? 1 : -1)
         else if (root.activeTab === 1) root.moveCursor(dy)
         else flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, flick.contentY + dy * Style.space(28)))
@@ -295,11 +285,13 @@ Panel {
           refreshEnabled: !root.busy
           message: root.feedbackText
           isError: root.feedbackError
+          showSetup: root.setupOn
           onRefreshClicked: root.refreshWithFetch()
           onEditClicked: root.editConfig()
           onCloseClicked: root.close()
           onDismissed: root.dismissError()
           onHelpToggled: root.helpOpen = !root.helpOpen
+          onSetupClicked: root.openSetup()
         }
 
         SegmentedTabs {
@@ -333,6 +325,7 @@ Panel {
             hiddenPaths: root.hiddenPaths
             showHidden: root.showHidden
             showExisting: root.showExisting
+            setupNeeded: root.setupNeeded
             focusedKey: root.focusedKey
             packages: root.packages
             onReviewRequested: root.switchTabTo(1)
@@ -347,14 +340,13 @@ Panel {
             onClearSelectionRequested: root.clearSelection()
             onShowHiddenToggled: root.showHidden = !root.showHidden
             onShowExistingToggled: root.showExisting = !root.showExisting
+            onSetupRequested: root.openSetup()
             onChangeToggled: function(key, value) { root.setChecked(key, value) }
             onChangeHovered: function(key) { root.focusedKey = key }
             onDiffRequested: function(repo, path) { root.openDiff(repo, path) }
           }
         }
-
       }
-
       HelpOverlay {
         anchors.fill: parent
         motion: root.motionOn
@@ -394,6 +386,14 @@ Panel {
       onAdoptPackageEdited: function(text) { root.adoptPackage = text }
       onAdoptSuggestionClicked: function(value) { root.adoptPackage = value }
       onAdoptAccepted: root.adoptConfirmed()
+    }
+    SetupWizard {
+      id: setupWizard
+      anchors.fill: parent
+      opened: root.setupOpen; settings: root.settings; statusData: root.statusData
+      busy: root.busy; motion: root.motionOn; foreground: Color.foreground
+      onRequested: function(tag, args) { runner.runAction(tag, args) }
+      onClosed: root.setupOpen = false
     }
   }
 }

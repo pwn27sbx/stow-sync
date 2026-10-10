@@ -1348,3 +1348,181 @@ test("barIconState: ahead/behind give the up/down chevrons", () => {
   same(Model.barIconState({ repos: [iconRepo("behind", { behind: 3 })], candidates: [] }), { dot: "none", up: false, down: true })
   same(Model.barIconState({ repos: [iconRepo("diverged", { ahead: 1, behind: 1 })], candidates: [] }), { dot: "urgent", up: true, down: true })
 })
+
+// --- Unit 8b: "Set up this machine" view model ---------------------------
+
+function setupPlan(overrides) {
+  return Object.assign({
+    version: 1,
+    clone: [],
+    link: [],
+    services: [],
+    requires: [],
+    post: [],
+    notes: [],
+    summary: {}
+  }, overrides || {})
+}
+
+test("setupVisible: only when machineSetup is truthy", () => {
+  assert.equal(Model.setupVisible(null, null), false)
+  assert.equal(Model.setupVisible({}, null), false)
+  assert.equal(Model.setupVisible({ machineSetup: false }, null), false)
+  assert.equal(Model.setupVisible({ machineSetup: "false" }, null), false)
+  assert.equal(Model.setupVisible({ machineSetup: true }, null), true)
+  assert.equal(Model.setupVisible({ machineSetup: "true" }, null), true)
+})
+
+test("anyRepoMissing: true when a configured repo is absent", () => {
+  assert.equal(Model.anyRepoMissing(null), false)
+  assert.equal(Model.anyRepoMissing({ repos: [] }), false)
+  assert.equal(Model.anyRepoMissing({ repos: [{ exists: true }, { exists: true }] }), false)
+  assert.equal(Model.anyRepoMissing({ repos: [{ exists: true }, { exists: false }] }), true)
+})
+
+test("setupPrefillUrl: uses the dotfiles remote when present", () => {
+  assert.equal(Model.setupPrefillUrl(null), "")
+  assert.equal(Model.setupPrefillUrl({ repos: [{ path: "~/.dotfiles", remote_url: "" }] }), "")
+  assert.equal(Model.setupPrefillUrl({ repos: [{ path: "~/.dotfiles", remote_url: "git@github.com:me/dotfiles.git" }] }), "git@github.com:me/dotfiles.git")
+  assert.equal(Model.setupPrefillUrl({ repos: [{ path: "~/wallpapers", remote_url: "x" }] }), "")
+})
+
+test("setupConnectRows: one row per repo with error tone", () => {
+  same(Model.setupConnectRows(null), [])
+  const ok = Model.setupConnectRows({
+    ok: true,
+    repos: [
+      { path: "~/.dotfiles", cloned: true, already: false, error: null },
+      { path: "~/wallpapers", cloned: false, already: false, error: "The wallpapers repo is private. Run gh auth login and gh auth setup-git, then try again." }
+    ]
+  })
+  assert.equal(ok.length, 2)
+  assert.equal(ok[0].label, "~/.dotfiles")
+  assert.equal(ok[0].detail, "Cloned")
+  assert.equal(ok[0].tone, "accent")
+  assert.equal(ok[1].label, "~/wallpapers")
+  assert.equal(ok[1].tone, "urgent")
+  assert.ok(ok[1].detail.indexOf("private") !== -1)
+  const failed = Model.setupConnectRows({ ok: false, error: "boom" })
+  assert.equal(failed.length, 1)
+  assert.equal(failed[0].tone, "urgent")
+  assert.equal(failed[0].detail, "boom")
+})
+
+test("setupPlanGroups: full plan produces every ordered group", () => {
+  const plan = setupPlan({
+    clone: [{ path: "~/wallpapers", private: true }],
+    link: [
+      { repo: "~/.dotfiles", package: "fish", status: "conflicts", links: [], files_to_backup: 1, conflicts: [{ target: "~/.config/fish/config.fish", kind: "identical" }] },
+      { repo: "~/.dotfiles", package: "ghostty", status: "conflicts", links: [], files_to_backup: 1, conflicts: [{ target: "~/.config/ghostty/config", kind: "different" }] },
+      { repo: "~/wallpapers", package: "walls", status: "new", links: [{ target: "~/.config/walls/w.png" }], files_to_backup: 0, conflicts: [] },
+      { repo: "~/.dotfiles", package: "omarchy", status: "already", links: [], files_to_backup: 0, conflicts: [] },
+      { repo: "~/.dotfiles", package: "app", status: "blocked", links: [], files_to_backup: 0, conflicts: [{ target: "~/.config/app/conf", kind: "blocked", reason: "target is a symlink not owned by stow" }] }
+    ],
+    requires: [{ name: "git", found: true }, { name: "gowall", found: false }],
+    post: [{ id: "wallpaper-tint", label: "Recolor wallpapers", default: true, timeout_s: 900 }],
+    notes: ["Restore ~/.config/hypr with config-sync."]
+  })
+  const groups = Model.setupPlanGroups(plan)
+  same(groups.map(function(g) { return g.key }), ["download", "link", "backup", "skipped", "missing", "after", "notes"])
+  const byKey = {}
+  groups.forEach(function(g) { byKey[g.key] = g })
+  assert.equal(byKey.download.title, "Will download")
+  assert.equal(byKey.download.items[0].label, "~/wallpapers")
+  assert.equal(byKey.download.items[0].detail, "private")
+  assert.equal(byKey.link.count, 3) // fish, ghostty, walls (not already, not blocked)
+  assert.equal(byKey.backup.items.length, 2)
+  assert.equal(byKey.backup.items[0].detail, "identical")
+  assert.equal(byKey.backup.items[1].detail, "different")
+  assert.equal(byKey.skipped.tone, "urgent")
+  assert.equal(byKey.skipped.items[0].label, "~/.dotfiles · app")
+  assert.equal(byKey.missing.items[0].label, "gowall")
+  assert.equal(byKey.after.items[0].label, "Recolor wallpapers")
+  assert.equal(byKey.after.items[0].default, true)
+  assert.equal(byKey.notes.items[0].label, "Restore ~/.config/hypr with config-sync.")
+  // empty plan -> no groups
+  same(Model.setupPlanGroups(setupPlan({})), [])
+  same(Model.setupPlanGroups(null), [])
+})
+
+test("setupPrimaryLabel: names exactly what will happen", () => {
+  const p = function(link, backup, clone) {
+    return setupPlan({ clone: Array(clone || 0).fill({ path: "~/x" }), link: link, requires: [], post: [], notes: [] })
+  }
+  const links = function(n, files) {
+    const out = []
+    for (let i = 0; i < n; i++) out.push({ repo: "~/.dotfiles", package: "p" + i, status: "new", links: [], conflicts: [], files_to_backup: i === 0 ? files : 0 })
+    return out
+  }
+  assert.equal(Model.setupPrimaryLabel(p(links(2, 6), 6, 0)), "Set up · link 2 packages, back up 6 files")
+  assert.equal(Model.setupPrimaryLabel(p(links(1, 1), 1, 0)), "Set up · link 1 package, back up 1 file")
+  assert.equal(Model.setupPrimaryLabel(p([], 0, 2)), "Set up · download 2 repositories")
+  assert.equal(Model.setupPrimaryLabel(p(links(3, 0), 0, 1)), "Set up · download 1 repository, link 3 packages")
+  assert.equal(Model.setupPrimaryLabel(setupPlan({})), "Nothing to set up")
+  const blocked = setupPlan({ link: [{ repo: "~/.dotfiles", package: "app", status: "blocked", links: [], conflicts: [{ kind: "blocked", reason: "x" }], files_to_backup: 0 }] })
+  assert.equal(Model.setupPrimaryLabel(blocked), "Set up · review 1 blocked package")
+})
+
+test("setupStepState: done and failed rows from apply results", () => {
+  same(Model.setupStepState(null), [])
+  const rows = Model.setupStepState({
+    applied: [{ repo: "~/.dotfiles", package: "fish", status: "applied", files_backed_up: 1 }, { repo: "~/wallpapers", package: "walls", status: "applied", files_backed_up: 0 }],
+    failed: [{ repo: "~/.dotfiles", package: "ghostty", error: "stow: simulated failure" }],
+    skipped: [{ path: "~/x", status: "repo-missing", reason: "Run Connect again" }],
+    services: [{ unit: "ai-tools-check.timer", ok: true }],
+    post: [{ id: "wallpaper-tint", ok: false, error: "post command timed out after 900s" }]
+  })
+  const byLabel = {}
+  rows.forEach(function(r) { byLabel[r.label] = r })
+  assert.equal(byLabel["~/.dotfiles · fish"].status, "done")
+  assert.equal(byLabel["~/.dotfiles · ghostty"].status, "failed")
+  assert.equal(byLabel["~/.dotfiles · ghostty"].detail, "stow: simulated failure")
+  assert.equal(byLabel["~/x"].status, "failed")
+  assert.equal(byLabel["~/x"].detail, "Run Connect again")
+  assert.equal(byLabel["ai-tools-check.timer"].status, "done")
+  assert.equal(byLabel["wallpaper-tint"].status, "failed")
+})
+
+test("setupReport: counts, backup id and failure lines", () => {
+  same(Model.setupReport(null), { backup: "", ok: false, appliedCount: 0, failedCount: 0, skippedCount: 0, lines: [] })
+  const report = Model.setupReport({
+    ok: true, backup: "20261010T010807Z",
+    applied: [{ repo: "~/.dotfiles", package: "fish" }, { repo: "~/wallpapers", package: "walls" }],
+    failed: [{ repo: "~/.dotfiles", package: "ghostty", error: "stow: boom" }],
+    skipped: [{ path: "~/x", status: "repo-missing", reason: "Run Connect again" }],
+    services: [{ unit: "t.timer", ok: false, error: "no such unit" }],
+    post: [{ id: "p", ok: true, error: null }]
+  })
+  assert.equal(report.backup, "20261010T010807Z")
+  assert.equal(report.appliedCount, 2)
+  assert.equal(report.failedCount, 1)
+  assert.equal(report.skippedCount, 1)
+  assert.ok(report.lines.some(function(l) { return l.tone === "urgent" && l.detail === "stow: boom" }))
+  assert.ok(report.lines.some(function(l) { return l.tone === "urgent" && l.detail === "no such unit" }))
+})
+
+test("selectRepoCycle / toggleHiddenPath / nextCursor: pure panel helpers", () => {
+  const view = { groups: [{ repo: "~/.dotfiles" }, { repo: "~/wallpapers" }] }
+  const rows = [
+    { key: "a", repo: "~/.dotfiles" },
+    { key: "b", repo: "~/wallpapers" }
+  ]
+  const first = Model.selectRepoCycle(view, rows, 0)
+  assert.equal(first.index, 1)
+  assert.equal(first.checked.a, true)
+  assert.equal(first.checked.b, false)
+  assert.ok(first.message.indexOf("dotfiles") !== -1)
+  assert.equal(Model.selectRepoCycle({ groups: [] }, rows, 0).message, "")
+
+  const added = Model.toggleHiddenPath(["x"], { path: "y" })
+  same(added.paths, ["x", "y"])
+  assert.equal(added.removed, false)
+  const removed = Model.toggleHiddenPath(["x", "y"], { path: "x" })
+  same(removed.paths, ["y"])
+  assert.equal(removed.removed, true)
+
+  assert.equal(Model.nextCursor(rows, "a", 1), "b")
+  assert.equal(Model.nextCursor(rows, "b", 5), "b")
+  assert.equal(Model.nextCursor(rows, "a", -3), "a")
+  assert.equal(Model.nextCursor([], "a", 1), "a")
+})

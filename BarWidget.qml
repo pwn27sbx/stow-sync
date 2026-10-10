@@ -24,6 +24,7 @@ BarWidget {
 
   readonly property var statusData: panelItem && "statusData" in panelItem ? panelItem.statusData : null
   readonly property bool busy: panelItem && panelItem.busy === true
+  readonly property bool setupAvailable: Model.setupVisible(root.settings, root.statusData)
   readonly property var iconState: Model.barIconState(statusData)
   readonly property string tooltipText: "Stow Sync — " + Model.heroState(statusData).title
 
@@ -51,6 +52,14 @@ BarWidget {
 
   function refreshWithFetch() {
     if (panelItem && typeof panelItem.refreshWithFetch === "function") panelItem.refreshWithFetch()
+  }
+
+  // Open the panel and the "Set up this machine" wizard. No-op unless the
+  // machineSetup setting is on, so the feature stays invisible when disabled.
+  function openSetupWizard() {
+    if (!root.setupAvailable) return
+    root.open()
+    if (panelItem && typeof panelItem.openSetup === "function") panelItem.openSetup()
   }
 
   function injectPanel() {
@@ -91,6 +100,7 @@ BarWidget {
     function hide(): void { root.close() }
     function toggle(): void { root.togglePanel() }
     function refresh(): void { root.refreshWithFetch() }
+    function setup(): void { root.openSetupWizard() }
   }
 
   // The drawn bridge glyph. Everything is sized off the icon canvas so it stays

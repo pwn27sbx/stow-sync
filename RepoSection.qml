@@ -16,7 +16,7 @@ Column {
   property string version: ""; property string now: ""
   property bool busy: false; property bool motion: true
   property var checkedPaths: ({}); property var hiddenPaths: []
-  property bool showHidden: false; property bool showExisting: false
+  property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false
   property string focusedKey: ""; property var packages: []
   property color foreground: Color.foreground
   signal reviewRequested(); signal publishRequested(); signal updateRequested()
@@ -24,7 +24,7 @@ Column {
   signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
   signal copyRequested(string value)
   signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
-  signal showHiddenToggled(); signal showExistingToggled()
+  signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested()
   signal changeToggled(string key, bool value); signal changeHovered(string key)
   signal diffRequested(string repo, string path)
   property var expandedGroups: ({}); property var expandedRepos: ({}); property var expandedPackages: ({})
@@ -63,6 +63,9 @@ Column {
       busy: root.busy
       motion: root.motion
       foreground: root.foreground
+    }
+    SetupBanner {
+      width: parent.width; visible: root.setupNeeded; foreground: root.foreground; onSetupRequested: root.setupRequested()
     }
     BorderSurface {
       width: parent.width

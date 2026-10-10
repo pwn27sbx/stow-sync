@@ -1755,3 +1755,216 @@ function tweenValue(from, to, t) {
   var eased = 1 - Math.pow(1 - clamped, 3)
   return Math.round(from + (to - from) * eased)
 }
+
+// --- "Set up this machine" view model (Unit 8b) ---------------------------
+// Pure helpers behind SetupWizard.qml. The backend contract lives in
+// scripts/stow_sync.py (README section 8a); nothing here mutates anything.
+
+// The whole feature is opt-in: it exists only when the machineSetup setting is
+// on (README section 8.1). `status` is reserved for future gating.
+function setupVisible(settings, status) {
+  var s = settings || {}
+  return s.machineSetup === true || s.machineSetup === "true"
+}
+
+// True when any configured repo is absent on disk; drives the Overview banner.
+function anyRepoMissing(status) {
+  var repos = (status && status.repos) || []
+  for (var i = 0; i < repos.length; i++) if (repos[i].exists === false) return true
+  return false
+}
+
+// Prefill the Connect URL from the dotfiles repo's remote when it is present.
+function setupPrefillUrl(status) {
+  var repos = (status && status.repos) || []
+  for (var i = 0; i < repos.length; i++) {
+    var path = String(repos[i].path || "")
+    if (/\.dotfiles$/.test(path) && repos[i].remote_url) return String(repos[i].remote_url)
+  }
+  return ""
+}
+
+// Connect step rows: one per repo, with the auth error as an urgent detail.
+function setupConnectRows(result) {
+  if (!result) return []
+  if (result.ok === false) {
+    return [{ label: "", detail: String(result.error || "Connection failed"), tone: "urgent" }]
+  }
+  var rows = []
+  var repos = result.repos || []
+  for (var i = 0; i < repos.length; i++) {
+    var r = repos[i]
+    var detail = r.error ? String(r.error) : (r.cloned ? "Cloned" : (r.already ? "Already cloned" : ""))
+    rows.push({ label: String(r.path || ""), detail: detail, tone: r.error ? "urgent" : (r.cloned ? "accent" : "muted") })
+  }
+  if (rows.length === 0) rows.push({ label: "", detail: String(result.hint || ""), tone: "muted" })
+  return rows
+}
+
+// Review step groups, in reading order, empty groups omitted.
+function setupPlanGroups(plan) {
+  var p = plan || {}
+  var groups = []
+  var clone = (p.clone || []).slice()
+  if (clone.length > 0) {
+    var downloadItems = []
+    for (var c = 0; c < clone.length; c++) {
+      downloadItems.push({ label: String(clone[c].path || ""), detail: clone[c].private ? "private" : "", tone: "muted" })
+    }
+    groups.push({ key: "download", title: "Will download", subtitle: "Repositories cloned from GitHub", tone: "accent", count: clone.length, unit: "repositories", items: downloadItems })
+  }
+  var links = p.link || []
+  var linkItems = []
+  var backupItems = []
+  var skippedItems = []
+  for (var i = 0; i < links.length; i++) {
+    var l = links[i]
+    var status = String(l.status || "")
+    if (status === "already") continue
+    if (status === "blocked") {
+      var blockedConflict = (l.conflicts && l.conflicts[0]) || {}
+      skippedItems.push({ label: String(l.repo || "") + " \u00b7 " + String(l.package || ""), detail: String(blockedConflict.reason || blockedConflict.message || "blocked"), tone: "urgent" })
+      continue
+    }
+    var files = (l.links && l.links.length) || num(l.files_to_backup, 0)
+    linkItems.push({ label: String(l.repo || "") + " \u00b7 " + String(l.package || ""), detail: pluralCount(files, "file"), tone: "muted" })
+    var conflicts = l.conflicts || []
+    for (var k = 0; k < conflicts.length; k++) {
+      var cf = conflicts[k]
+      if (cf.kind === "blocked") continue
+      backupItems.push({ label: String(cf.target || ""), detail: String(cf.kind || ""), tone: cf.kind === "different" ? "accent" : "muted" })
+    }
+  }
+  if (linkItems.length > 0) groups.push({ key: "link", title: "Will link", subtitle: "Stow packages", tone: "accent", count: linkItems.length, unit: "packages", items: linkItems })
+  if (backupItems.length > 0) groups.push({ key: "backup", title: "Will move to backup", subtitle: "Existing files kept in the backup folder", tone: "accent", count: backupItems.length, unit: "files", items: backupItems })
+  if (skippedItems.length > 0) groups.push({ key: "skipped", title: "Skipped", subtitle: "Nothing is forced", tone: "urgent", count: skippedItems.length, unit: "packages", items: skippedItems })
+  var missing = []
+  var requires = p.requires || []
+  for (var r = 0; r < requires.length; r++) {
+    if (requires[r].found === false) missing.push({ label: String(requires[r].name || ""), detail: "not installed", tone: "urgent" })
+  }
+  if (missing.length > 0) groups.push({ key: "missing", title: "Missing tools", subtitle: "Reported, never installed", tone: "urgent", count: missing.length, unit: "tools", items: missing })
+  var posts = p.post || []
+  if (posts.length > 0) {
+    var afterItems = []
+    for (var q = 0; q < posts.length; q++) afterItems.push({ id: String(posts[q].id || ""), label: String(posts[q].label || posts[q].id || ""), detail: "", tone: "muted", default: posts[q].default === true })
+    groups.push({ key: "after", title: "Afterwards", subtitle: "Optional steps", tone: "muted", count: afterItems.length, unit: "steps", items: afterItems })
+  }
+  var notes = p.notes || []
+  if (notes.length > 0) {
+    var noteItems = []
+    for (var n = 0; n < notes.length; n++) noteItems.push({ label: String(notes[n]), detail: "", tone: "muted" })
+    groups.push({ key: "notes", title: "Still to do by hand", subtitle: "", tone: "muted", count: noteItems.length, unit: "", items: noteItems })
+  }
+  return groups
+}
+
+// One sentence naming exactly what Set up will do (README 8b Review).
+function setupPrimaryLabel(plan) {
+  var p = plan || {}
+  var clone = (p.clone || []).length
+  var links = p.link || []
+  var toLink = 0
+  var files = 0
+  var blocked = 0
+  for (var i = 0; i < links.length; i++) {
+    var status = String(links[i].status || "")
+    if (status === "blocked") { blocked++; continue }
+    if (status === "already") continue
+    toLink++
+    files += num(links[i].files_to_backup, 0)
+  }
+  var parts = []
+  if (clone > 0) parts.push("download " + pluralCount(clone, "repository", "repositories"))
+  if (toLink > 0) parts.push("link " + pluralCount(toLink, "package"))
+  if (files > 0) parts.push("back up " + pluralCount(files, "file"))
+  if (parts.length === 0 && blocked > 0) parts.push("review " + pluralCount(blocked, "blocked package"))
+  if (parts.length === 0) return "Nothing to set up"
+  return "Set up \u00b7 " + parts.join(", ")
+}
+
+// Apply step progress rows derived from the apply response.
+function setupStepState(results) {
+  if (!results) return []
+  var rows = []
+  var applied = results.applied || []
+  for (var i = 0; i < applied.length; i++) {
+    rows.push({ label: String(applied[i].repo || "") + " \u00b7 " + String(applied[i].package || ""), status: "done", detail: "" })
+  }
+  var failed = results.failed || []
+  for (var f = 0; f < failed.length; f++) {
+    rows.push({ label: String(failed[f].repo || "") + " \u00b7 " + String(failed[f].package || ""), status: "failed", detail: String(failed[f].error || "failed") })
+  }
+  var skipped = results.skipped || []
+  for (var s = 0; s < skipped.length; s++) {
+    var sk = skipped[s]
+    if (sk.status === "already") rows.push({ label: String(sk.repo || "") + " \u00b7 " + String(sk.package || ""), status: "done", detail: "already linked" })
+    else if (sk.status === "repo-missing") rows.push({ label: String(sk.path || ""), status: "failed", detail: String(sk.reason || "repo missing") })
+  }
+  var services = results.services || []
+  for (var v = 0; v < services.length; v++) rows.push({ label: String(services[v].unit || ""), status: services[v].ok ? "done" : "failed", detail: String(services[v].error || "") })
+  var posts = results.post || []
+  for (var q = 0; q < posts.length; q++) rows.push({ label: String(posts[q].id || ""), status: posts[q].ok ? "done" : "failed", detail: String(posts[q].error || "") })
+  return rows
+}
+
+// Report step summary: counts, the backup id and one line per problem.
+function setupReport(results) {
+  if (!results) return { backup: "", ok: false, appliedCount: 0, failedCount: 0, skippedCount: 0, lines: [] }
+  var applied = results.applied || []
+  var failed = results.failed || []
+  var skipped = results.skipped || []
+  var lines = []
+  if (applied.length > 0) lines.push({ label: pluralCount(applied.length, "package") + " linked", detail: "", tone: "muted" })
+  for (var f = 0; f < failed.length; f++) lines.push({ label: String(failed[f].repo || "") + " \u00b7 " + String(failed[f].package || ""), detail: String(failed[f].error || "failed"), tone: "urgent" })
+  for (var s = 0; s < skipped.length; s++) {
+    if (skipped[s].status === "repo-missing") lines.push({ label: String(skipped[s].path || ""), detail: String(skipped[s].reason || ""), tone: "urgent" })
+  }
+  var services = results.services || []
+  for (var v = 0; v < services.length; v++) if (!services[v].ok) lines.push({ label: String(services[v].unit || ""), detail: String(services[v].error || ""), tone: "urgent" })
+  var posts = results.post || []
+  for (var q = 0; q < posts.length; q++) if (!posts[q].ok) lines.push({ label: String(posts[q].id || ""), detail: String(posts[q].error || ""), tone: "urgent" })
+  return {
+    backup: String(results.backup || ""),
+    ok: results.ok === true,
+    appliedCount: applied.length,
+    failedCount: failed.length,
+    skippedCount: skipped.length,
+    lines: lines
+  }
+}
+
+// --- Panel selection/cursor helpers (kept pure, moved out of Panel.qml) ----
+// Cycle the checked set to one repo; returns the next cycle index.
+function selectRepoCycle(changeView, rows, index) {
+  var groups = (changeView && changeView.groups) || []
+  var repos = []
+  for (var g = 0; g < groups.length; g++) repos.push(String(groups[g].repo))
+  if (repos.length === 0) return { index: num(index, 0), checked: {}, message: "" }
+  var repo = repos[num(index, 0) % repos.length]
+  var next = {}
+  for (var i = 0; i < rows.length; i++) next[rows[i].key] = String(rows[i].repo) === repo
+  return { index: (num(index, 0) + 1) % repos.length, checked: next, message: "Selected " + repoDisplayName(repo) }
+}
+
+// Toggle one path in the hidden list; returns the next list and whether it was removed.
+function toggleHiddenPath(hiddenPaths, row) {
+  var list = hiddenPaths || []
+  var next = []
+  var removed = false
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i]) === String(row.path)) { removed = true; continue }
+    next.push(list[i])
+  }
+  if (!removed) next.push(String(row.path))
+  return { paths: next, removed: removed }
+}
+
+// Move the cursor by `dy` rows and return the new focused key.
+function nextCursor(rows, focusedKey, dy) {
+  if (!rows || rows.length === 0) return focusedKey
+  var index = 0
+  for (var i = 0; i < rows.length; i++) if (rows[i].key === focusedKey) index = i
+  index = Math.max(0, Math.min(rows.length - 1, index + num(dy, 0)))
+  return rows[index].key
+}
