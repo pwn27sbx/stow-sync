@@ -1367,15 +1367,24 @@ test("barIconState: ahead/behind give the up/down chevrons", () => {
 })
 
 test("barIconGlyph: swap-horizontal-bold idle, autorenew busy", () => {
-  assert.equal(Model.barIconGlyph(false), "\uF0BCD")
-  assert.equal(Model.barIconGlyph(true), "\uF006A")
-  assert.equal(Model.barIconGlyph(undefined), "\uF0BCD")
+  assert.equal(Model.barIconGlyph(false), "\u{F0BCD}")
+  assert.equal(Model.barIconGlyph(true), "\u{F006A}")
+  assert.equal(Model.barIconGlyph(undefined), "\u{F0BCD}")
+})
+
+test("bar glyphs are single supplementary-plane code points (no 4-digit escape split)", () => {
+  for (const g of [Model.barIconGlyph(false), Model.barIconGlyph(true),
+                   Model.barArrowGlyph({ up: true }), Model.barArrowGlyph({ down: true })]) {
+    assert.equal(Array.from(g).length, 1)
+    assert.ok(g.codePointAt(0) >= 0xF0000)
+  }
+  assert.equal(Model.barIconGlyph(false).codePointAt(0), 0xF0BCD)
 })
 
 test("barArrowGlyph: up wins, then down, else nothing", () => {
-  assert.equal(Model.barArrowGlyph({ up: true, down: false }), "\uF005D")
-  assert.equal(Model.barArrowGlyph({ up: false, down: true }), "\uF0045")
-  assert.equal(Model.barArrowGlyph({ up: true, down: true }), "\uF005D")
+  assert.equal(Model.barArrowGlyph({ up: true, down: false }), "\u{F005D}")
+  assert.equal(Model.barArrowGlyph({ up: false, down: true }), "\u{F0045}")
+  assert.equal(Model.barArrowGlyph({ up: true, down: true }), "\u{F005D}")
   assert.equal(Model.barArrowGlyph({ up: false, down: false }), "")
   assert.equal(Model.barArrowGlyph(null), "")
 })
