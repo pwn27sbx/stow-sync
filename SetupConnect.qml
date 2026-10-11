@@ -26,6 +26,7 @@ Column {
 
   signal repoPicked(string url)
   signal urlEdited(string text)
+  signal urlFocusChanged(bool focused)
   signal repoRetryRequested()
   signal checkAgainRequested()
 
@@ -176,6 +177,7 @@ Column {
     foreground: root.foreground
     onRepoPicked: function(url) { root.repoPicked(url) }
     onUrlEdited: function(text) { root.urlEdited(text) }
+    onUrlFocusChanged: function(focused) { root.urlFocusChanged(focused) }
   }
 
   Column {

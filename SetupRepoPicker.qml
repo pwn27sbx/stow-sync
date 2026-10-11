@@ -21,6 +21,7 @@ Column {
 
   signal repoPicked(string url)
   signal urlEdited(string text)
+  signal urlFocusChanged(bool focused)
 
   readonly property var groups: Model.setupCandidateRows(root.candidates)
   readonly property var filteredOthers: Model.setupFilterRows(root.groups.others, filterField.text)
@@ -157,5 +158,8 @@ Column {
     placeholderText: "https://github.com/<you>/dotfiles.git"
     foreground: root.foreground
     onTextEdited: root.urlEdited(text)
+    // Report the real field focus so the panel never eats keystrokes while the
+    // user types a URL (README 12c fix).
+    onActiveFocusChanged: root.urlFocusChanged(activeFocus)
   }
 }

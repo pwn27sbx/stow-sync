@@ -35,7 +35,10 @@ Item {
   signal closed()
   signal undoConfirmRequested(string backup, string sentence)
 
-  readonly property bool contentActiveFocus: false
+  // True while the user types in the Connect URL field, so the panel's key
+  // catcher never eats keystrokes (README 12c fix). Set by the picker.
+  property bool urlFocused: false
+  readonly property bool contentActiveFocus: root.urlFocused
   readonly property var backups: flow.backups
   readonly property bool reviewActive: flow.mode === "wizard" && flow.step === 2
 
@@ -246,6 +249,7 @@ Item {
       onCheckAgainRequested: flow.runCheck()
       onRepoPicked: function(url) { flow.url = url; flow.selectedUrl = url }
       onUrlEdited: function(text) { flow.url = text }
+      onUrlFocusChanged: function(focused) { root.urlFocused = focused }
       onRepoRetryRequested: flow.retryRepos()
       onGroupToggled: function(key) { flow.toggleGroupKey(key) }
     }

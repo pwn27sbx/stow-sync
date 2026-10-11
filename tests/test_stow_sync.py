@@ -4611,6 +4611,31 @@ class SetupGroupHeaderSourceTests(unittest.TestCase):
             self.assertIn("SetupGroupHeader {", source)
 
 
+class SetupWizardFocusTests(unittest.TestCase):
+    """Regression: while the URL field is focused the panel must not eat keys
+    (README 12c fix)."""
+
+    def test_url_field_focus_reaches_the_panel_gate(self) -> None:
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        picker = (ROOT / "SetupRepoPicker.qml").read_text(encoding="utf-8")
+        connect = (ROOT / "SetupConnect.qml").read_text(encoding="utf-8")
+        step = (ROOT / "SetupStep.qml").read_text(encoding="utf-8")
+        # The picker reports the real field focus...
+        self.assertIn("onActiveFocusChanged", picker)
+        self.assertIn("urlFocusChanged", picker)
+        # ...threaded through SetupConnect and SetupStep...
+        self.assertIn("urlFocusChanged", connect)
+        self.assertIn("urlFocusChanged", step)
+        # ...into the panel gate, which is no longer hard-coded false.
+        self.assertIn("contentActiveFocus: root.urlFocused", wizard)
+        self.assertNotIn("contentActiveFocus: false", wizard)
+
+    def test_stepper_draws_connector_lines(self) -> None:
+        stepper = (ROOT / "SetupStepper.qml").read_text(encoding="utf-8")
+        self.assertIn("connectorLeft", stepper)
+        self.assertIn("connectorRight", stepper)
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""
