@@ -20,12 +20,13 @@ QtObject {
   property string url: ""
   property var prereqs: null
   property bool checking: false
-  property var repoPicker: []
+  property var candidates: null
   property bool repoLoading: false
   property string repoError: ""
   property var connectEntries: []
   property var cloneQueue: []
   property bool connectRunning: false
+  property bool connectAuthError: false
   property var plan: null
   property string planToken: ""
   property bool planLoading: false
@@ -52,10 +53,11 @@ QtObject {
     flow.url = Model.setupPrefillUrl(flow.statusData)
     flow.prereqs = null
     flow.checking = false
-    flow.repoPicker = []
+    flow.candidates = null
     flow.connectEntries = []
     flow.cloneQueue = []
     flow.connectRunning = false
+    flow.connectAuthError = false
     flow.plan = null
     flow.planToken = ""
     flow.planLoading = false
@@ -75,21 +77,10 @@ QtObject {
 
   function openBackups() { flow.mode = "backups"; flow.errorText = "" }
 
-  function selectedPostIds() {
-    var ids = []
-    var post = (flow.plan && flow.plan.post) || []
-    for (var i = 0; i < post.length; i++) {
-      var id = String(post[i].id || "")
-      var checked = flow.postChecked[id] !== undefined ? flow.postChecked[id] === true : post[i].default === true
-      if (checked) ids.push(id)
-    }
-    return ids
-  }
-
   function runCheck() { flow.checking = true; flow.errorText = ""; flow.requested("setup-prereqs", ["setup-prereqs", "--url", flow.url]) }
-  function fetchRepos() { flow.repoLoading = true; flow.repoError = ""; flow.requested("setup-repos", ["setup-repos"]) }
+  function fetchRepos() { flow.repoLoading = true; flow.repoError = ""; flow.requested("setup-candidates", ["setup-candidates"]) }
   function retryRepos() { flow.fetchRepos() }
-  function goConnect() { flow.step = 1; if (flow.repoPicker.length === 0) flow.fetchRepos() }
+  function goConnect() { flow.step = 1; if (flow.candidates === null) flow.fetchRepos() }
 
   function reviewGroups() { return Model.setupPlanGroups(flow.plan) }
 
@@ -105,17 +96,18 @@ QtObject {
     flow.errorText = ""
     // Replace the picker with the checklist at once: the dotfiles clone runs
     // first, the other repos appear once setup-connect returns the recipe.
-    flow.connectEntries = [{ path: "~/.dotfiles", state: "cloning", error: "" }]
+    flow.connectEntries = [{ path: "~/.dotfiles", state: "cloning", error: "", authError: false }]
     flow.cloneQueue = []
+    flow.connectAuthError = false
     flow.connectRunning = true
     flow.requested("setup-connect", ["setup-connect", "--url", flow.url])
   }
 
-  function setEntryState(path, state, error) {
+  function setEntryState(path, state, error, authError) {
     var next = []
     for (var i = 0; i < flow.connectEntries.length; i++) {
       var e = flow.connectEntries[i]
-      if (String(e.path) === String(path)) next.push({ path: e.path, state: state, error: error })
+      if (String(e.path) === String(path)) next.push({ path: e.path, state: state, error: error, authError: authError === true })
       else next.push(e)
     }
     flow.connectEntries = next
@@ -126,7 +118,7 @@ QtObject {
     var entry = flow.cloneQueue[0]
     flow.cloneQueue = flow.cloneQueue.slice(1)
     flow.connectRunning = true
-    flow.setEntryState(entry.path, "cloning", "")
+    flow.setEntryState(entry.path, "cloning", "", false)
     flow.requested("setup-clone", ["setup-clone", "--path", entry.path])
   }
 
@@ -153,7 +145,7 @@ QtObject {
     flow.step = 3
     flow.applying = true
     flow.errorText = ""
-    flow.requested("setup-apply", ["setup-apply", "--token", flow.planToken, "--post", flow.selectedPostIds().join(",")])
+    flow.requested("setup-apply", ["setup-apply", "--token", flow.planToken, "--post", Model.setupSelectedPostIds(flow.plan, flow.postChecked).join(",")])
   }
 
   function requestUndo(backupId) {
@@ -212,15 +204,17 @@ QtObject {
       flow.prereqs = payload
       return
     }
-    if (tag === "setup-repos") {
+    if (tag === "setup-candidates") {
       flow.repoLoading = false
       if (payload && payload.ok === true) {
-        flow.repoPicker = Model.setupRepoPickerRows(payload.repos)
+        flow.candidates = payload
         flow.repoError = ""
+        if (flow.url === "") {
+          var first = Model.setupCandidateFirstUrl(payload)
+          if (first !== "") { flow.url = first; flow.selectedUrl = first }
+        }
       } else {
-    flow.repoPicker = []
-    flow.repoLoading = false
-    flow.repoError = ""
+        flow.candidates = null
         flow.repoError = String((payload && payload.error) || "Could not load your GitHub repos.")
       }
       return
@@ -231,8 +225,16 @@ QtObject {
       return
     }
     if (tag === "setup-connect") {
-      if (!payload || payload.ok === false) { flow.connectRunning = false; flow.errorText = String(payload && payload.error || "Connect failed."); return }
-      var entries = [{ path: String(payload.path || ""), state: String(payload.state || ""), error: payload.error ? String(payload.error) : "" }]
+      if (!payload || payload.ok === false) {
+        flow.connectRunning = false
+        flow.errorText = String(payload && payload.error || "Connect failed.")
+        if (payload && payload.auth_error === true) {
+          flow.connectAuthError = true
+          flow.connectEntries = []
+        }
+        return
+      }
+      var entries = [{ path: String(payload.path || ""), state: String(payload.state || ""), error: payload.error ? String(payload.error) : "", authError: payload.auth_error === true }]
       var queue = []
       var repos = payload.repos || []
       for (var i = 0; i < repos.length; i++) {
@@ -249,7 +251,8 @@ QtObject {
       var path = payload && payload.path ? String(payload.path) : ""
       var state = (!payload || payload.ok === false) ? "error" : String(payload.state || "error")
       var error = payload && payload.error ? String(payload.error) : ""
-      flow.setEntryState(path, state, error)
+      flow.setEntryState(path, state, error, !!(payload && payload.auth_error))
+      if (payload && payload.auth_error === true) flow.connectAuthError = true
       flow.runNextClone()
       return
     }
@@ -289,7 +292,7 @@ QtObject {
     flow.checking = false
     flow.planLoading = false
     flow.connectRunning = false
-    if (tag === "setup-repos") { flow.repoLoading = false; flow.repoError = String(message || "Could not load your GitHub repos.") }
+    if (tag === "setup-candidates") { flow.repoLoading = false; flow.repoError = String(message || "Could not load your GitHub repos.") }
     flow.errorText = String(message || "The helper failed.")
   }
 }

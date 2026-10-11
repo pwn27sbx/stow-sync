@@ -53,6 +53,7 @@ Item {
     else if (request.tag === "commit") seconds = 30
     else if (request.tag === "setup-prereqs") seconds = 60
     else if (request.tag === "setup-repos") seconds = 70
+    else if (request.tag === "setup-candidates") seconds = 40
     else if (request.tag === "setup-connect") seconds = 600
     else if (request.tag === "setup-clone") seconds = 900
     else if (request.tag === "setup-plan") seconds = 120

@@ -1836,29 +1836,6 @@ function setupValidUrl(url) {
   return /\.git$/i.test(s)
 }
 
-// gh repo picker rows, likely dotfiles repos first (README 10b.4/finding 11).
-function setupRepoPickerRows(repos) {
-  var list = (repos || []).slice()
-  list.sort(function(a, b) {
-    var al = /dotfiles/i.test(String(a && a.name)) ? 0 : 1
-    var bl = /dotfiles/i.test(String(b && b.name)) ? 0 : 1
-    if (al !== bl) return al - bl
-    return String(a && a.name) < String(b && b.name) ? -1 : (String(a && a.name) > String(b && b.name) ? 1 : 0)
-  })
-  var rows = []
-  for (var i = 0; i < list.length; i++) {
-    var r = list[i] || {}
-    rows.push({
-      key: String(r.url || ""),
-      label: String(r.name || ""),
-      detail: r.private === true ? "private" : "",
-      value: String(r.url || ""),
-      likely: /dotfiles/i.test(String(r.name || ""))
-    })
-  }
-  return rows
-}
-
 // Connect checklist rows: waiting / cloning / cloned / ready / error per repo
 // (README 10b.4/finding 13). The wizard feeds entries in clone order.
 function setupConnectRows(entries) {
@@ -1874,9 +1851,105 @@ function setupConnectRows(entries) {
     else if (state === "ready") { detail = "Ready"; status = "done"; tone = "accent" }
     else if (state === "cloning") { detail = "Cloning\u2026"; status = "running"; tone = "muted" }
     else if (state === "error") { detail = String(e.error || "Clone failed"); status = "failed"; tone = "urgent" }
-    rows.push({ label: String(e.path || ""), detail: detail, status: status, tone: tone })
+    rows.push({ label: String(e.path || ""), detail: detail, status: status, tone: tone, authError: e.authError === true })
   }
   return rows
+}
+
+// The GitHub login line for the Check step (README 11c.3): the gh-auth check's
+// detail ("signed in as X" / "not signed in"), or empty when gh is absent.
+function setupLoginDetail(prereqs) {
+  var checks = (prereqs && prereqs.checks) || []
+  for (var i = 0; i < checks.length; i++) {
+    if (String(checks[i] && checks[i].id) === "gh-auth") return String(checks[i].detail || "")
+  }
+  return ""
+}
+
+// The auth-failure fix shown in the Connect step (README 11c.3): non-null when
+// a connect/clone entry failed because GitHub login is missing, or when the
+// whole connect command failed on auth (`commandFailed`).
+function setupAuthFix(entries, commandFailed) {
+  if (commandFailed === true) {
+    return { command: "gh auth login, then gh auth setup-git", detail: "" }
+  }
+  var list = entries || []
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].authError === true) {
+      return {
+        command: "gh auth login, then gh auth setup-git",
+        detail: String(list[i].error || "GitHub login is needed to download this repo.")
+      }
+    }
+  }
+  return null
+}
+
+// Candidate picker rows (README 11c.2). `data` is the setup-candidates result:
+// definitive repos first (preselected in the view), then likely ones; every
+// other repo goes behind "Show all repos".
+function setupCandidateRows(data) {
+  var d = data || {}
+  function rowsFor(list, tier) {
+    var rows = []
+    var items = list || []
+    for (var i = 0; i < items.length; i++) {
+      var r = items[i] || {}
+      var detail = String(r.detail || "")
+      if (r.private === true) detail = detail === "" ? "private" : detail + " \u00b7 private"
+      rows.push({
+        key: String(r.url || ""),
+        label: String(r.name || ""),
+        detail: detail,
+        value: String(r.url || ""),
+        likely: tier !== "other",
+        tier: tier,
+        hint: r.hint === true,
+        private: r.private === true
+      })
+    }
+    return rows
+  }
+  return {
+    definitive: rowsFor(d.definitive, "definitive"),
+    likely: rowsFor(d.likely, "likely"),
+    others: rowsFor(d.others, "other")
+  }
+}
+
+// The URL to prefill from the first definitive repo, or "" (README 11c.2).
+function setupCandidateFirstUrl(data) {
+  var definitive = (data && data.definitive) || []
+  if (definitive.length === 0) return ""
+  return String((definitive[0] && definitive[0].url) || "")
+}
+
+// Case-insensitive filter for the "Show all repos" list.
+function setupFilterRows(rows, query) {
+  var text = String(query === undefined || query === null ? "" : query).trim().toLowerCase()
+  var list = rows || []
+  if (text === "") return list.slice()
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var label = String((list[i] && list[i].label) || "").toLowerCase()
+    var value = String((list[i] && list[i].value) || "").toLowerCase()
+    if (label.indexOf(text) !== -1 || value.indexOf(text) !== -1) out.push(list[i])
+  }
+  return out
+}
+
+// The post-step ids the wizard will run: an explicit toggle wins, otherwise the
+// recipe default (README 10b.5). Used by the Review step and setup-apply.
+function setupSelectedPostIds(plan, checked) {
+  var state = checked || {}
+  var post = (plan && plan.post) || []
+  var ids = []
+  for (var i = 0; i < post.length; i++) {
+    var id = String(post[i].id || "")
+    var on = state[id] !== undefined ? state[id] === true : post[i].default === true
+    if (on) ids.push(id)
+  }
+  return ids
 }
 
 // Prerequisite rows for the Check step (README 10b.3). Labels are plain words;

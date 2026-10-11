@@ -194,12 +194,13 @@ Item {
       step: flow.step
       prereqs: flow.prereqs
       checking: flow.checking
-      repoPicker: flow.repoPicker
+      candidates: flow.candidates
       selectedUrl: flow.selectedUrl
       repoLoading: flow.repoLoading
       repoError: flow.repoError
       connectEntries: flow.connectEntries
       connectRunning: flow.connectRunning
+      connectAuthError: flow.connectAuthError
       plan: flow.plan
       planLoading: flow.planLoading
       expanded: flow.groupsExpanded

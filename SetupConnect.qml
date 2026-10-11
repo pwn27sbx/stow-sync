@@ -5,27 +5,30 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Connect step body (README 11a.3 / 11b.2/11b.4): the gh repo picker, the
-// "loading your repos" state with a retry, the live clone progress bar and the
-// per-repo result checklist.
+// Connect step body (README 11a.3 / 11b.2/11b.4 / 11c.2/11c.3): the candidate
+// repo picker, the "loading your repos" state with a retry, the live clone
+// progress bar, the per-repo result checklist and the GitHub auth fix.
 Column {
   id: root
 
-  property var repoPicker: []
+  property var candidates: null
   property string selectedUrl: ""
   property bool repoLoading: false
   property string repoError: ""
   property var connectEntries: []
   property bool connectRunning: false
   property var clone: null
+  property string loginDetail: ""
+  property var authFix: null
   property bool motion: true
   property color foreground: Color.foreground
 
   signal repoPicked(string url)
   signal repoRetryRequested()
+  signal checkAgainRequested()
 
   readonly property var connectRows: Model.setupConnectRows(root.connectEntries)
-  readonly property bool showPicker: root.repoPicker.length > 0 && !root.repoLoading && root.repoError === "" && !root.connectRunning && root.connectEntries.length === 0
+  readonly property bool showPicker: root.candidates !== null && !root.repoLoading && root.repoError === "" && !root.connectRunning && root.connectEntries.length === 0
 
   width: parent ? parent.width : 0
   spacing: Style.spacing.lg
@@ -65,7 +68,7 @@ Column {
 
   Column {
     width: parent.width
-    visible: root.repoError !== "" && root.repoPicker.length === 0 && !root.connectRunning
+    visible: root.repoError !== "" && root.candidates === null && !root.connectRunning
     spacing: Style.spacing.sm
 
     Text {
@@ -110,37 +113,58 @@ Column {
     }
   }
 
-  Column {
+  SetupRepoPicker {
     width: parent.width
     visible: root.showPicker
-    spacing: Style.spacing.xs
+    candidates: root.candidates
+    selectedUrl: root.selectedUrl
+    foreground: root.foreground
+    onRepoPicked: function(url) { root.repoPicked(url) }
+  }
+
+  Column {
+    width: parent.width
+    visible: root.authFix !== null
+    spacing: Style.spacing.sm
 
     Text {
       width: parent.width
       textFormat: Text.PlainText
-      text: "Your GitHub repos"
+      text: "GitHub login needed to download a private repo"
+      color: Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      font.bold: true
+    }
+
+    Text {
+      width: parent.width
+      textFormat: Text.PlainText
+      text: root.loginDetail !== "" ? root.loginDetail : String(root.authFix ? root.authFix.detail : "")
       color: Util.alpha(root.foreground, 0.72)
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
     }
 
-    Flow {
+    TextEdit {
       width: parent.width
-      spacing: Style.spacing.xs
+      Layout.preferredHeight: implicitHeight
+      text: String(root.authFix ? root.authFix.command : "")
+      color: Color.accent
+      font.family: "monospace"
+      font.pixelSize: Style.font.caption
+      readOnly: true
+      selectByMouse: true
+      wrapMode: TextEdit.NoWrap
+      clip: true
+    }
 
-      Repeater {
-        model: root.repoPicker
-
-        Button {
-          required property var modelData
-          text: String(modelData.label || "") + (modelData.likely ? " \u2605" : "") + (String(modelData.detail || "") !== "" ? " \u00b7 " + String(modelData.detail) : "")
-          fontSize: Style.font.caption
-          selected: String(modelData.value || "") === root.selectedUrl
-          horizontalPadding: Style.space(6)
-          verticalPadding: Style.space(3)
-          onClicked: root.repoPicked(String(modelData.value || ""))
-        }
-      }
+    Button {
+      text: "Check again"
+      iconText: "\uf021"
+      fontSize: Style.font.caption
+      onClicked: root.checkAgainRequested()
     }
   }
 

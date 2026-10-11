@@ -1447,13 +1447,16 @@ test("setupConnectRows: waiting/cloning/cloned/ready/error checklist", () => {
     { path: "~/.dotfiles", state: "cloned" },
     { path: "~/wallpapers", state: "cloning" },
     { path: "~/third", state: "waiting" },
-    { path: "~/bad", state: "error", error: "The wallpapers repo is private." }
+    { path: "~/bad", state: "error", error: "The wallpapers repo is private." },
+    { path: "~/auth", state: "error", error: "GitHub login is needed.", authError: true }
   ])
-  same(rows.map(function(r) { return r.status }), ["done", "running", "waiting", "failed"])
+  same(rows.map(function(r) { return r.status }), ["done", "running", "waiting", "failed", "failed"])
   assert.equal(rows[0].detail, "Cloned")
   assert.equal(rows[1].detail, "Cloning\u2026")
   assert.equal(rows[3].detail, "The wallpapers repo is private.")
   assert.equal(rows[3].tone, "urgent")
+  assert.equal(rows[3].authError, false)
+  assert.equal(rows[4].authError, true)
 })
 
 test("setupValidUrl: github URL or a .git suffix", () => {
@@ -1464,20 +1467,6 @@ test("setupValidUrl: github URL or a .git suffix", () => {
   assert.equal(Model.setupValidUrl("https://github.com/me/dotfiles"), true)
   assert.equal(Model.setupValidUrl("git@github.com:me/dotfiles.git"), true)
   assert.equal(Model.setupValidUrl("/tmp/whatever.git"), true)
-})
-
-test("setupRepoPickerRows: likely dotfiles first", () => {
-  same(Model.setupRepoPickerRows(null), [])
-  const rows = Model.setupRepoPickerRows([
-    { name: "wallpapers", url: "u1", private: true },
-    { name: "dotfiles", url: "u2", private: false },
-    { name: "app", url: "u3", private: false }
-  ])
-  assert.equal(rows.length, 3)
-  assert.equal(rows[0].value, "u2")
-  assert.equal(rows[0].likely, true)
-  assert.equal(rows[1].value, "u3")
-  assert.equal(rows[2].detail, "private")
 })
 
 test("setupPrereqRows: labelled checks with fixes", () => {
@@ -1501,6 +1490,81 @@ test("setupPrereqRows: labelled checks with fixes", () => {
   assert.equal(byId.gh.label, "GitHub CLI")
   assert.equal(byId["gh-auth"].label, "GitHub login")
   assert.equal(byId["gh-auth"].fix, "gh auth login, then gh auth setup-git")
+})
+
+test("setupLoginDetail: the GitHub login row detail, or empty", () => {
+  assert.equal(Model.setupLoginDetail(null), "")
+  assert.equal(Model.setupLoginDetail({ checks: [] }), "")
+  assert.equal(Model.setupLoginDetail({
+    checks: [
+      { id: "gh", ok: true, detail: "found" },
+      { id: "gh-auth", ok: true, detail: "signed in as me" }
+    ]
+  }), "signed in as me")
+  assert.equal(Model.setupLoginDetail({
+    checks: [{ id: "gh-auth", ok: false, detail: "not signed in" }]
+  }), "not signed in")
+})
+
+test("setupAuthFix: needs gh auth when a connect entry failed on auth", () => {
+  assert.equal(Model.setupAuthFix(null), null)
+  assert.equal(Model.setupAuthFix([]), null)
+  assert.equal(Model.setupAuthFix([{ path: "~/.dotfiles", state: "error" }]), null)
+  assert.equal(Model.setupAuthFix([{ path: "~/.dotfiles", state: "ready" }]), null)
+  const fix = Model.setupAuthFix([
+    { path: "~/.dotfiles", state: "error", authError: true, error: "GitHub login is needed to clone dotfiles." }
+  ])
+  assert.equal(fix.command, "gh auth login, then gh auth setup-git")
+  assert.ok(fix.detail.indexOf("GitHub login") !== -1)
+  const commandFix = Model.setupAuthFix([], true)
+  assert.equal(commandFix.command, "gh auth login, then gh auth setup-git")
+})
+
+test("setupCandidateRows: groups by tier, stars definitive and likely", () => {
+  same(Model.setupCandidateRows(null), { definitive: [], likely: [], others: [] })
+  const groups = Model.setupCandidateRows({
+    definitive: [{ name: "dotfiles", url: "u1", private: false, detail: "setup recipe", hint: true }],
+    likely: [{ name: "myconf", url: "u2", private: true, detail: "stow-like", hint: false }],
+    others: [{ name: "portfolio", url: "u3", private: false, detail: "", hint: false }]
+  })
+  assert.equal(groups.definitive[0].value, "u1")
+  assert.equal(groups.definitive[0].likely, true)
+  assert.equal(groups.definitive[0].tier, "definitive")
+  assert.equal(groups.likely[0].detail, "stow-like \u00b7 private")
+  assert.equal(groups.likely[0].likely, true)
+  assert.equal(groups.others[0].value, "u3")
+  assert.equal(groups.others[0].likely, false)
+  assert.equal(groups.others[0].tier, "other")
+})
+
+test("setupCandidateFirstUrl: first definitive repo fills the URL", () => {
+  assert.equal(Model.setupCandidateFirstUrl(null), "")
+  assert.equal(Model.setupCandidateFirstUrl({ definitive: [] }), "")
+  assert.equal(Model.setupCandidateFirstUrl({ definitive: [{ url: "u1" }] }), "u1")
+})
+
+test("setupFilterRows: case-insensitive match on label and url", () => {
+  const rows = [
+    { label: "myconf", value: "https://github.com/me/myconf" },
+    { label: "notes", value: "https://github.com/me/notes" }
+  ]
+  assert.equal(Model.setupFilterRows(rows, "").length, 2)
+  assert.equal(Model.setupFilterRows(rows, "conf").length, 1)
+  assert.equal(Model.setupFilterRows(rows, "NOTES")[0].label, "notes")
+  assert.equal(Model.setupFilterRows(rows, "github.com/me").length, 2)
+  assert.equal(Model.setupFilterRows(rows, "zzz").length, 0)
+})
+
+test("setupSelectedPostIds: defaults, overrides and explicit off", () => {
+  const plan = { post: [
+    { id: "a", default: true },
+    { id: "b", default: false },
+    { id: "c", default: true }
+  ] }
+  same(Model.setupSelectedPostIds(plan, {}), ["a", "c"])
+  same(Model.setupSelectedPostIds(plan, { b: true }), ["a", "b", "c"])
+  same(Model.setupSelectedPostIds(plan, { a: false }), ["c"])
+  same(Model.setupSelectedPostIds(null, null), [])
 })
 
 test("setupPrereqReady: only when ok_to_connect", () => {

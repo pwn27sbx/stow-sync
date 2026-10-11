@@ -2955,6 +2955,45 @@ def valid_setup_recipe() -> dict:
     return json.loads(SETUP_EXAMPLE.read_text(encoding="utf-8"))
 
 
+# A scriptable ``gh`` stub for the candidate-detection tests (README 11c.1):
+# routes are a list of {"match": [tokens], "exit": N, "stdout"/"stderr": ...,
+# "sleep": seconds} and the first route whose tokens are all substrings of the
+# joined argv wins. No test ever reaches the real GitHub API.
+_GH_ROUTER = '''#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "gh_routes.json"), "r", encoding="utf-8") as handle:
+    spec = json.load(handle)
+joined = " ".join(sys.argv[1:])
+for route in spec.get("routes", []):
+    if all(token in joined for token in route.get("match", [])):
+        delay = float(route.get("sleep", 0.0))
+        if delay:
+            time.sleep(delay)
+        if route.get("stdout"):
+            sys.stdout.write(route["stdout"])
+        if route.get("stderr"):
+            sys.stderr.write(route["stderr"])
+        sys.exit(int(route.get("exit", 0)))
+sys.stderr.write("gh: no fake route for: " + joined + "\\n")
+sys.exit(1)
+'''
+
+
+def gh_missing_patch():
+    """Patch ``shutil.which`` so only ``gh`` looks absent (README 11c.3)."""
+    real = ss.shutil.which
+
+    def which(cmd, *args, **kwargs):
+        return None if cmd == "gh" else real(cmd, *args, **kwargs)
+
+    return patch.object(ss.shutil, "which", side_effect=which)
+
+
 class FreshOmarchyHome:
     """Temp HOME that simulates a fresh Omarchy install plus two remotes.
 
@@ -3033,6 +3072,16 @@ class FreshOmarchyHome:
         script = self.fakebin / "gh"
         write(script, "#!/bin/sh\ncat <<'STOW_SYNC_GH_EOF'\n" + output + "\nSTOW_SYNC_GH_EOF\nexit " + str(exit_code) + "\n")
         os.chmod(script, 0o755)
+        return script
+
+    def install_fake_gh_routes(self, routes: list[dict]) -> Path:
+        """Install a scriptable ``gh`` stub for the candidate-detection tests."""
+        script = self.fakebin / "gh"
+        write(script, _GH_ROUTER)
+        os.chmod(script, 0o755)
+        (self.fakebin / "gh_routes.json").write_text(
+            json.dumps({"routes": routes}), encoding="utf-8"
+        )
         return script
 
     def install_fake_stow_wrapper(self, log: Path) -> Path:
@@ -3454,6 +3503,57 @@ class SetupConnectTests(SetupTestBase):
         self.assertEqual(clone["state"], "error")
         self.assertIn("private", clone["error"])
         self.assertIn("gh auth login", clone["error"])
+
+    def test_connect_auth_failure_marks_auth_error(self) -> None:
+        # Finding 29: the dotfiles clone failing on auth must carry auth_error so
+        # the Connect step can show the fix and "Check again".
+        real_run_bounded = ss.run_bounded
+
+        def fake_run_bounded(argv, timeout, *rest, **kwargs):
+            if any("clone" in str(a) for a in argv) and any(
+                "dotfiles.git" in str(a) for a in argv
+            ):
+                return subprocess.CompletedProcess(
+                    argv,
+                    128,
+                    b"",
+                    b"fatal: could not read Username for 'https://github.com': "
+                    b"terminal prompts disabled",
+                )
+            return real_run_bounded(argv, timeout, *rest, **kwargs)
+
+        with patch.object(ss, "run_bounded", side_effect=fake_run_bounded):
+            result = ss.dispatch(
+                ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
+            )
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["auth_error"])
+        self.assertIn("gh auth login", result["error"])
+
+    def test_clone_auth_failure_marks_auth_error(self) -> None:
+        self.env.clone_dotfiles()
+        real_run_bounded = ss.run_bounded
+
+        def fake_run_bounded(argv, timeout, *rest, **kwargs):
+            if any("clone" in str(a) for a in argv) and any(
+                "wallpapers" in str(a) for a in argv
+            ):
+                return subprocess.CompletedProcess(
+                    argv,
+                    128,
+                    b"",
+                    b"fatal: could not read Username for 'https://github.com': "
+                    b"terminal prompts disabled",
+                )
+            return real_run_bounded(argv, timeout, *rest, **kwargs)
+
+        with patch.object(ss, "run_bounded", side_effect=fake_run_bounded):
+            clone = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
+        self.assertTrue(clone["ok"], clone)
+        self.assertEqual(clone["state"], "error")
+        self.assertTrue(clone["auth_error"])
+        self.assertIn("gh auth login", clone["error"])
+
 
 
 # --------------------------------------------------------------------------
@@ -3895,13 +3995,47 @@ class SetupPrereqsTests(SetupTestBase):
         path.write_text("x", encoding="utf-8")
         return str(path)
 
+    def _gh_missing(self):
+        """Patch ``which`` so only ``gh`` looks absent (README 11c.3)."""
+        return gh_missing_patch()
+
     def test_all_present_and_no_github(self) -> None:
-        with patch.object(ss, "PACMAN_SYNC_DB", self._db()):
+        with self._gh_missing(), patch.object(ss, "PACMAN_SYNC_DB", self._db()):
             result = self.prereqs()
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["ok_to_connect"])
         self.assertFalse(result["needs_gh"])
         self.assertEqual({c["id"] for c in result["checks"]}, {"stow", "git", "pacman-db"})
+
+    def test_gh_login_row_present_when_gh_installed(self) -> None:
+        # Finding 29: with gh installed, Check must always show a GitHub login
+        # row even before any private repo is known; it never blocks by itself.
+        self.env.install_fake_gh_output(
+            "github.com\n  - Active account: true\n"
+            "  Logged in to github.com account tester (keyring)\n",
+            0,
+        )
+        with patch.object(ss, "PACMAN_SYNC_DB", self._db()):
+            result = self.prereqs()
+        self.assertFalse(result["needs_gh"])
+        self.assertIn("gh", [c["id"] for c in result["checks"]])
+        auth = self.check(result, "gh-auth")
+        self.assertTrue(auth["ok"])
+        self.assertEqual(auth["detail"], "signed in as tester")
+        self.assertTrue(result["ok_to_connect"])
+
+    def test_gh_login_row_not_signed_in_is_non_blocking(self) -> None:
+        self.env.install_fake_gh(1)
+        with patch.object(ss, "PACMAN_SYNC_DB", self._db()):
+            result = self.prereqs()
+        auth = self.check(result, "gh-auth")
+        self.assertFalse(auth["ok"])
+        self.assertEqual(auth["detail"], "not signed in")
+        self.assertIn("gh auth login", auth["fix"])
+        self.assertFalse(result["needs_gh"])
+        self.assertTrue(result["ok_to_connect"])
+        self.assertNotIn("gh-auth", result["blocking"])
+
 
     def test_missing_stow_and_git_block(self) -> None:
         with patch.object(ss.shutil, "which", return_value=None):
@@ -3957,7 +4091,8 @@ class SetupPrereqsTests(SetupTestBase):
         self.assertFalse(result["ok_to_connect"])
 
     def test_non_github_url_without_recipe_skips_gh(self) -> None:
-        result = self.prereqs(["--url", "/tmp/whatever.git"])
+        with self._gh_missing():
+            result = self.prereqs(["--url", "/tmp/whatever.git"])
         self.assertFalse(result["needs_gh"])
         self.assertNotIn("gh-auth", [c["id"] for c in result["checks"]])
 
@@ -4076,6 +4211,150 @@ class SetupReposTests(SetupTestBase):
         result = self.repos()
         self.assertFalse(result["ok"])
         self.assertIn("parse", result["error"])
+
+
+class SetupCandidatesTests(SetupTestBase):
+    CANDIDATE_REPO_LIST = json.dumps(
+        [
+            {
+                "name": "dotfiles",
+                "url": "https://github.com/me/dotfiles",
+                "isPrivate": False,
+                "description": "my dotfiles",
+                "repositoryTopics": [{"name": "dotfiles"}],
+            },
+            {
+                "name": "OldDotfiles",
+                "url": "https://github.com/me/OldDotfiles",
+                "isPrivate": False,
+                "description": "old backup",
+                "repositoryTopics": [],
+            },
+            {
+                "name": "myconf",
+                "url": "https://github.com/me/myconf",
+                "isPrivate": False,
+                "description": "",
+                "repositoryTopics": [],
+            },
+            {
+                "name": "zsh-dots",
+                "url": "https://github.com/me/zsh-dots",
+                "isPrivate": False,
+                "description": "",
+                "repositoryTopics": [],
+            },
+            {
+                "name": "portfolio",
+                "url": "https://github.com/me/portfolio",
+                "isPrivate": False,
+                "description": "a website",
+                "repositoryTopics": [],
+            },
+            {
+                "name": "notes",
+                "url": "https://github.com/me/notes",
+                "isPrivate": False,
+                "description": "",
+                "repositoryTopics": [],
+            },
+        ]
+    )
+
+    def routes(self, search: str | None = None) -> list[dict]:
+        routes: list[dict] = [
+            {"match": ["repo", "list"], "stdout": self.CANDIDATE_REPO_LIST, "exit": 0},
+        ]
+        if search is not None:
+            routes.append({"match": ["search", "code"], "stdout": search, "exit": 0})
+        else:
+            routes.append({"match": ["search", "code"], "exit": 1})
+        routes += [
+            {"match": ["contents/.stow-sync/setup.json", "dotfiles"], "stdout": "{}", "exit": 0},
+            {"match": ["contents/.stow-sync/setup.json"], "exit": 1},
+            {"match": ["contents", "myconf"], "stdout": '[{"name":".config","type":"dir"}]', "exit": 0},
+            {"match": ["contents", "zsh-dots"], "stdout": '[{"name":".zshrc","type":"file"}]', "exit": 0},
+            {
+                "match": ["contents", "OldDotfiles"],
+                "stdout": '[{"name":"README.md","type":"file"},{"name":"config","type":"dir"}]',
+                "exit": 0,
+            },
+            {
+                "match": ["contents", "portfolio"],
+                "stdout": '[{"name":"README.md","type":"file"},{"name":"src","type":"dir"}]',
+                "exit": 0,
+            },
+            {"match": ["contents", "notes"], "stdout": '[{"name":"README.md","type":"file"}]', "exit": 0},
+            {"match": ["auth", "status"], "stdout": "Logged in to github.com account me (keyring)\n", "exit": 0},
+        ]
+        return routes
+
+    def candidates(self) -> dict:
+        return ss.dispatch(["setup-candidates"], None, str(self.state))
+
+    def test_detection_groups_definitive_likely_and_others(self) -> None:
+        self.env.install_fake_gh_routes(self.routes())
+        result = self.candidates()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([r["name"] for r in result["definitive"]], ["dotfiles"])
+        self.assertEqual([r["name"] for r in result["likely"]], ["myconf", "zsh-dots"])
+        self.assertEqual(
+            [r["name"] for r in result["others"]], ["OldDotfiles", "portfolio", "notes"]
+        )
+        self.assertIn("took_ms", result)
+        self.assertFalse(result["partial"])
+        self.assertEqual(result["owner"], "me")
+        self.assertEqual(result["definitive"][0]["detail"], "setup recipe")
+        old = [r for r in result["others"] if r["name"] == "OldDotfiles"][0]
+        self.assertTrue(old["hint"])
+        self.assertEqual(old["detail"], "")
+        portfolio = [r for r in result["others"] if r["name"] == "portfolio"][0]
+        self.assertFalse(portfolio["hint"])
+
+    def test_definitive_from_code_search(self) -> None:
+        search = '[{"repository":{"nameWithOwner":"me/dotfiles","name":"dotfiles"}}]'
+        self.env.install_fake_gh_routes(self.routes(search=search))
+        result = self.candidates()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([r["name"] for r in result["definitive"]], ["dotfiles"])
+        self.assertNotIn("myconf", [r["name"] for r in result["definitive"]])
+
+    def test_missing_gh_reports_error(self) -> None:
+        with gh_missing_patch():
+            result = self.candidates()
+        self.assertFalse(result["ok"])
+        self.assertIn("not installed", result["error"])
+
+
+class RunWithDeadlineTests(unittest.TestCase):
+    def test_maps_all_items_when_fast(self) -> None:
+        results, pending = ss._run_with_deadline(
+            [1, 2, 3, 4, 5], lambda x: x * 2, time.monotonic() + 5, 4
+        )
+        self.assertEqual(dict(results), {1: 2, 2: 4, 3: 6, 4: 8, 5: 10})
+        self.assertEqual(pending, [])
+
+    def test_partial_results_when_deadline_is_missed(self) -> None:
+        def slow(x):
+            time.sleep(0.4)
+            return x
+
+        results, pending = ss._run_with_deadline(
+            list(range(8)), slow, time.monotonic() + 0.2, 2
+        )
+        self.assertEqual(results, {})
+        self.assertEqual(sorted(pending), list(range(8)))
+
+    def test_worker_exception_is_unknown_not_fatal(self) -> None:
+        def boom(x):
+            if x == 2:
+                raise RuntimeError("boom")
+            return x
+
+        results, pending = ss._run_with_deadline([1, 2, 3], boom, time.monotonic() + 5, 4)
+        self.assertEqual(results[1], 1)
+        self.assertIsNone(results[2])
+        self.assertEqual(results[3], 3)
 
 
 class SetupFixtureHookTests(SetupTestBase):

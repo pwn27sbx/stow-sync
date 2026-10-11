@@ -13,6 +13,7 @@ everything so a failure never leaks a traceback to the panel.
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import errno
 import fnmatch
@@ -2562,6 +2563,20 @@ SETUP_PLAN_ERROR = "The setup plan changed. Review it again."
 PACMAN_SYNC_DB = "/var/lib/pacman/sync/core.db"
 SETUP_GH_FIX = "gh auth login, then gh auth setup-git"
 
+# Candidate detection (README 11c.1): a read-only probe of the user's GitHub
+# repos. The definitive check (does `.stow-sync/setup.json` exist?) runs at
+# concurrency 4 under a wall-clock deadline so a large account still answers
+# fast, with partial results and no blocking.
+CANDIDATES_DEADLINE_SECONDS = 10.0
+CANDIDATES_CONCURRENCY = 4
+CANDIDATES_API_TIMEOUT = 5.0
+CANDIDATES_REPO_LIMIT = 100
+# Dotfiles that are never a Stow-package shape signal on their own.
+_SETUP_DOTFILE_NOISE = frozenset(
+    {".git", ".gitignore", ".gitattributes", ".gitmodules", ".github", ".editorconfig", ".gitkeep"}
+)
+_SETUP_HINT_WORDS = ("dotfiles", "dotfile", "dots", "config", "stow")
+
 _SETUP_TOP_KEYS = frozenset(
     {"version", "repos", "skip_packages", "services", "requires", "post", "notes"}
 )
@@ -2773,30 +2788,50 @@ _AUTH_FAILURE_MARKERS = (
 )
 
 
+def _is_auth_failure(text: str) -> bool:
+    """True when git's failure text points at a missing GitHub login."""
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
+
+
 def _clone_failure_text(path: str, url: str, private: bool, result: Any) -> str:
     """Map a clone failure to a short, human message (README section 8a.2)."""
     text = _short_error(result)
-    lowered = text.lower()
-    if private and any(marker in lowered for marker in _AUTH_FAILURE_MARKERS):
-        basename = os.path.basename(os.path.normpath(path))
-        name = basename.lstrip(".") or basename
+    basename = os.path.basename(os.path.normpath(path))
+    name = basename.lstrip(".") or basename
+    if _is_auth_failure(text):
+        if private:
+            return (
+                f"The {name} repo is private. Run gh auth login and gh auth setup-git, "
+                "then try again."
+            )
         return (
-            f"The {name} repo is private. Run gh auth login and gh auth setup-git, "
-            "then try again."
+            f"GitHub login is needed to clone {name}. Run gh auth login and "
+            "gh auth setup-git, then try again."
         )
     return "Clone failed: " + text
 
 
 def _setup_state_result(
-    path: str, url: str, private: bool, state: str, error: str | None = None
+    path: str,
+    url: str,
+    private: bool,
+    state: str,
+    error: str | None = None,
+    auth_error: bool = False,
 ) -> dict[str, Any]:
-    """One clone/verify result: ``state`` is ``cloned``, ``ready`` or ``error``."""
+    """One clone/verify result: ``state`` is ``cloned``, ``ready`` or ``error``.
+
+    ``auth_error`` is true when the failure was a missing GitHub login, so the
+    Connect step can show the fix and "Check again" (README 11c.3).
+    """
     return {
         "path": to_tilde(path),
         "url": url,
         "private": private,
         "state": state,
         "error": error,
+        "auth_error": auth_error,
     }
 
 
@@ -2856,7 +2891,12 @@ def _setup_repo_state(
         if state_dir and item:
             write_clone_progress(state_dir, item, progress, "failed")
         return _setup_state_result(
-            repo_path, url, private, "error", _clone_failure_text(repo_path, url, private, result)
+            repo_path,
+            url,
+            private,
+            "error",
+            _clone_failure_text(repo_path, url, private, result),
+            auth_error=_is_auth_failure(_short_error(result)),
         )
     if state_dir and item:
         write_clone_progress(state_dir, item, progress, "done")
@@ -2897,7 +2937,11 @@ def cmd_setup_connect(
         path, url, False, timeout=300, state_dir=resolve_state_dir(state_dir), item=to_tilde(path)
     )
     if dotfiles_state["state"] == "error":
-        return {"ok": False, "error": dotfiles_state["error"]}
+        return {
+            "ok": False,
+            "error": dotfiles_state["error"],
+            "auth_error": dotfiles_state.get("auth_error", False),
+        }
 
     recipe, hint = _setup_connect_recipe(path)
 
@@ -2965,6 +3009,49 @@ def _is_github_url(url: str) -> bool:
     )
 
 
+def _which(command: str) -> str | None:
+    """``shutil.which`` behind a seam so tests can hide one command."""
+    return shutil.which(command)
+
+
+def _gh_env() -> dict[str, str]:
+    """A gh/git environment with every interactive prompt disabled."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GH_PROMPT_DISABLED"] = "1"
+    env["NO_COLOR"] = "1"
+    return env
+
+
+_GH_ACCOUNT = re.compile(r"account\s+(?P<name>[A-Za-z0-9_.-]+)", re.IGNORECASE)
+
+
+def _parse_gh_account(text: str) -> str | None:
+    """The GitHub login from ``gh auth status`` output, or ``None``."""
+    match = _GH_ACCOUNT.search(text or "")
+    return match.group("name") if match else None
+
+
+def _gh_auth_status() -> tuple[bool, str | None, str]:
+    """Return ``(signed_in, account, detail)`` from ``gh auth status``.
+
+    Never raises: a missing ``gh``, a timeout or a logged-out session is a
+    plain "not signed in" result (README 11c.3).
+    """
+    try:
+        result = run_bounded(["gh", "auth", "status"], 15, env=_gh_env())
+    except subprocess.TimeoutExpired:
+        return False, None, "not signed in"
+    except OSError:
+        return False, None, "not signed in"
+    if result.returncode != 0:
+        return False, None, "not signed in"
+    account = _parse_gh_account(_decode(result.stdout) + "\n" + _decode(result.stderr))
+    if account:
+        return True, account, "signed in as " + account
+    return True, None, "signed in"
+
+
 def _setup_prereq_recipe(args: list[str]) -> dict[str, Any] | None:
     """The recipe to inspect for private repos, or ``None`` when unknown."""
     recipe_arg = opt_value(args, "--recipe")
@@ -2977,7 +3064,7 @@ def _setup_prereq_recipe(args: list[str]) -> dict[str, Any] | None:
 
 
 def _prereq_which(cid: str, command: str, fix: str) -> dict[str, Any]:
-    found = shutil.which(command)
+    found = _which(command)
     detail = ("found at " + found) if found else (command + " is not installed")
     return {"id": cid, "ok": found is not None, "detail": detail, "fix": fix}
 
@@ -2996,19 +3083,7 @@ def _prereq_pacman_db() -> dict[str, Any]:
 
 
 def _prereq_gh_auth() -> dict[str, Any]:
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GH_PROMPT_DISABLED"] = "1"
-    try:
-        result = run_bounded(["gh", "auth", "status"], 15, env=env)
-        ok = result.returncode == 0
-        detail = "GitHub CLI is authenticated" if ok else _short_error(result)
-    except subprocess.TimeoutExpired:
-        ok = False
-        detail = "gh auth status timed out"
-    except OSError as exc:
-        ok = False
-        detail = _shorten(str(exc))
+    ok, _account, detail = _gh_auth_status()
     return {"id": "gh-auth", "ok": ok, "detail": detail, "fix": SETUP_GH_FIX}
 
 
@@ -3036,7 +3111,9 @@ def cmd_setup_prereqs(
         _prereq_which("git", "git", "omarchy pkg add git"),
         _prereq_pacman_db(),
     ]
-    if needs_gh:
+    # Finding 29: when gh is installed, always show a non-blocking GitHub login
+    # row so a private repo is never discovered only after a failed clone.
+    if needs_gh or _which("gh") is not None:
         checks.append(_prereq_which("gh", "gh", "omarchy pkg add github-cli"))
         checks.append(_prereq_gh_auth())
 
@@ -3049,6 +3126,7 @@ def cmd_setup_prereqs(
     # The pacman database only blocks when a tool still has to be installed.
     if blocking and not by_id["pacman-db"]["ok"]:
         blocking.append("pacman-db")
+    # The login row blocks only when a private repo actually needs it.
     if needs_gh and not by_id["gh-auth"]["ok"]:
         blocking.append("gh-auth")
 
@@ -3072,11 +3150,9 @@ def cmd_setup_repos(
     (README 10b.4/finding 11). Missing ``gh``, a failed call or unparseable
     output returns ``ok: false`` with a short message.
     """
-    if shutil.which("gh") is None:
+    if _which("gh") is None:
         return {"ok": False, "error": "GitHub CLI (gh) is not installed."}
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GH_PROMPT_DISABLED"] = "1"
+    env = _gh_env()
     try:
         result = run_bounded(
             ["gh", "repo", "list", "--limit", "100", "--json", "name,url,isPrivate"],
@@ -3104,6 +3180,296 @@ def cmd_setup_repos(
                 continue
             repos.append({"name": name, "url": url, "private": item.get("isPrivate") is True})
     return {"ok": True, "repos": repos}
+
+
+def _gh_json(argv: list[str], timeout: float, env: dict[str, str] | None = None) -> tuple[Any, str | None]:
+    """Run gh and parse its JSON stdout; returns ``(data, error)``."""
+    try:
+        result = run_bounded(argv, timeout, env=env or _gh_env())
+    except subprocess.TimeoutExpired:
+        return None, "timed out"
+    except OSError as exc:
+        return None, _shorten(str(exc))
+    if result.returncode != 0:
+        return None, _short_error(result)
+    try:
+        return json.loads(_decode(result.stdout) or "null"), None
+    except ValueError:
+        return None, "could not parse gh output"
+
+
+def _setup_gh_repos(env: dict[str, str]) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """The user's repos with the fields candidate detection needs (README 11c.1)."""
+    data, error = _gh_json(
+        [
+            "gh",
+            "repo",
+            "list",
+            "--limit",
+            str(CANDIDATES_REPO_LIMIT),
+            "--json",
+            "name,url,isPrivate,description,repositoryTopics",
+        ],
+        60,
+        env,
+    )
+    if error is not None:
+        return None, error
+    repos: list[dict[str, Any]] = []
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            url = str(item.get("url") or "")
+            if name == "" or url == "":
+                continue
+            topics = item.get("repositoryTopics")
+            names: list[str] = []
+            if isinstance(topics, list):
+                for topic in topics:
+                    if isinstance(topic, dict) and topic.get("name"):
+                        names.append(str(topic["name"]))
+                    elif isinstance(topic, str):
+                        names.append(topic)
+            repos.append(
+                {
+                    "name": name,
+                    "url": url,
+                    "private": item.get("isPrivate") is True,
+                    "description": str(item.get("description") or ""),
+                    "topics": names,
+                }
+            )
+    return repos, None
+
+
+def _repo_owner(url: str) -> str:
+    """The owner segment of a GitHub repo URL, or an empty string."""
+    match = re.search(r"github\.com[/:](?P<owner>[^/\s]+)/", url or "")
+    return match.group("owner") if match else ""
+
+
+def _repo_hint(repo: dict[str, Any]) -> bool:
+    """Hint-only signal: the name, description or topics mention dotfiles."""
+    haystack = " ".join(
+        [str(repo.get("name") or ""), str(repo.get("description") or "")]
+        + [str(topic) for topic in (repo.get("topics") or [])]
+    ).lower()
+    return any(word in haystack for word in _SETUP_HINT_WORDS)
+
+
+def _repo_looks_like_stow(entries: Any) -> bool:
+    """Likely signal: a root ``contents`` listing with Stow-package shape."""
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "")
+        kind = str(entry.get("type") or "")
+        if name in (".config", ".local") and kind == "dir":
+            return True
+        if name.startswith(".") and name not in _SETUP_DOTFILE_NOISE and kind in ("file", "blob"):
+            return True
+    return False
+
+
+def _gh_search_recipe_repos(owner: str, env: dict[str, str], timeout: float) -> set[str] | None:
+    """Best-effort ``gh search code`` for repos with a recipe; ``None`` on failure."""
+    if owner == "":
+        return None
+    data, error = _gh_json(
+        [
+            "gh",
+            "search",
+            "code",
+            ".stow-sync/setup.json",
+            "--owner",
+            owner,
+            "--filename",
+            "setup.json",
+            "--json",
+            "repository",
+            "--limit",
+            "100",
+        ],
+        timeout,
+        env,
+    )
+    if error is not None or not isinstance(data, list):
+        return None
+    names: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        repo = item.get("repository")
+        if isinstance(repo, dict):
+            nwo = str(repo.get("nameWithOwner") or "")
+            if "/" in nwo:
+                names.add(nwo.split("/", 1)[1])
+            elif repo.get("name"):
+                names.add(str(repo["name"]))
+    return names
+
+
+def _gh_repo_has_recipe(owner: str, name: str, env: dict[str, str], timeout: float) -> bool | None:
+    """True/False for ``.stow-sync/setup.json`` presence, ``None`` when unknown."""
+    if owner == "":
+        return None
+    try:
+        result = run_bounded(
+            ["gh", "api", f"repos/{owner}/{name}/contents/.stow-sync/setup.json"],
+            timeout,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return result.returncode == 0
+
+
+def _gh_repo_root_entries(owner: str, name: str, env: dict[str, str], timeout: float) -> Any:
+    """The repo's root ``contents`` listing, or ``None`` when unknown."""
+    if owner == "":
+        return None
+    data, error = _gh_json(["gh", "api", f"repos/{owner}/{name}/contents"], timeout, env)
+    if error is not None:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def _run_with_deadline(
+    items: list[Any],
+    worker: Any,
+    deadline: float,
+    concurrency: int = CANDIDATES_CONCURRENCY,
+) -> tuple[dict[Any, Any], list[Any]]:
+    """Map ``worker`` over ``items`` with bounded concurrency and a deadline.
+
+    Returns ``(results, pending)``: ``results`` maps an item to the worker's
+    return value for every item that finished before ``deadline``; ``pending``
+    lists everything that did not (partial results, README 11c.1). A worker
+    exception becomes ``None`` for that item; the deadline is never exceeded.
+    """
+    results: dict[Any, Any] = {}
+    pending: list[Any] = []
+    if not items:
+        return results, pending
+    workers = max(1, int(concurrency))
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    try:
+        iterator = iter(items)
+        inflight: dict[concurrent.futures.Future[Any], Any] = {}
+
+        def top_up() -> None:
+            while len(inflight) < workers and time.monotonic() < deadline:
+                try:
+                    item = next(iterator)
+                except StopIteration:
+                    return
+                inflight[pool.submit(worker, item)] = item
+
+        top_up()
+        while inflight:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, _ = concurrent.futures.wait(
+                inflight, timeout=remaining, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            if not done:
+                break
+            for future in done:
+                item = inflight.pop(future)
+                try:
+                    results[item] = future.result()
+                except Exception:  # noqa: BLE001 - a failed probe is simply unknown
+                    results[item] = None
+            top_up()
+        for future in inflight:
+            future.cancel()
+        pending = list(inflight.values()) + list(iterator)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return results, pending
+
+
+def cmd_setup_candidates(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Read-only detection of the user's dotfiles-candidate repos (README 11c.1).
+
+    Groups the account's repos into ``definitive`` (contains
+    ``.stow-sync/setup.json``), ``likely`` (root has Stow-package shape) and
+    ``others``. Returns within ``CANDIDATES_DEADLINE_SECONDS`` with partial
+    results; ``hint`` flags name/description/topic matches.
+    """
+    if _which("gh") is None:
+        return {"ok": False, "error": "GitHub CLI (gh) is not installed."}
+    env = _gh_env()
+    started = time.monotonic()
+    repos, error = _setup_gh_repos(env)
+    if repos is None:
+        return {"ok": False, "error": error or "could not list your GitHub repos"}
+    owner = _repo_owner(repos[0]["url"]) if repos else ""
+    deadline = started + CANDIDATES_DEADLINE_SECONDS
+
+    definitive: set[str] = set()
+    search_timeout = max(0.5, min(CANDIDATES_API_TIMEOUT, deadline - time.monotonic()))
+    found = _gh_search_recipe_repos(owner, env, search_timeout)
+    if found:
+        definitive.update(repo["name"] for repo in repos if repo["name"] in found)
+
+    remaining = [repo for repo in repos if repo["name"] not in definitive]
+    recipe_results, recipe_pending = _run_with_deadline(
+        [(owner, repo["name"]) for repo in remaining],
+        lambda pair: _gh_repo_has_recipe(pair[0], pair[1], env, CANDIDATES_API_TIMEOUT),
+        deadline,
+    )
+    definitive.update(
+        name for (owner_name, name), value in recipe_results.items() if value is True
+    )
+
+    shape_targets = [repo for repo in remaining if repo["name"] not in definitive]
+    shape_results, shape_pending = _run_with_deadline(
+        [(owner, repo["name"]) for repo in shape_targets],
+        lambda pair: _gh_repo_root_entries(pair[0], pair[1], env, CANDIDATES_API_TIMEOUT),
+        deadline,
+    )
+    likely: set[str] = set()
+    for (_owner_name, name), entries in shape_results.items():
+        if _repo_looks_like_stow(entries):
+            likely.add(name)
+
+    def make_entry(repo: dict[str, Any], tier: str) -> dict[str, Any]:
+        return {
+            "name": repo["name"],
+            "url": repo["url"],
+            "private": bool(repo["private"]),
+            "hint": _repo_hint(repo),
+            "tier": tier,
+            "detail": {"definitive": "setup recipe", "likely": "stow-like"}.get(tier, ""),
+        }
+
+    return {
+        "ok": True,
+        "owner": owner,
+        "definitive": [make_entry(r, "definitive") for r in repos if r["name"] in definitive],
+        "likely": [
+            make_entry(r, "likely")
+            for r in repos
+            if r["name"] in likely and r["name"] not in definitive
+        ],
+        "others": [
+            make_entry(r, "other")
+            for r in repos
+            if r["name"] not in definitive and r["name"] not in likely
+        ],
+        "took_ms": int((time.monotonic() - started) * 1000),
+        "partial": bool(recipe_pending) or bool(shape_pending),
+    }
 
 
 def cmd_setup_fixture(
@@ -4143,6 +4509,7 @@ COMMANDS = {
     "version": cmd_version,
     "setup-prereqs": cmd_setup_prereqs,
     "setup-repos": cmd_setup_repos,
+    "setup-candidates": cmd_setup_candidates,
     "setup-fixture": cmd_setup_fixture,
     "setup-connect": cmd_setup_connect,
     "setup-clone": cmd_setup_clone,

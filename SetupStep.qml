@@ -13,12 +13,13 @@ Column {
   property int step: 0
   property var prereqs: null
   property bool checking: false
-  property var repoPicker: []
+  property var candidates: null
   property string selectedUrl: ""
   property bool repoLoading: false
   property string repoError: ""
   property var connectEntries: []
   property bool connectRunning: false
+  property bool connectAuthError: false
   property var plan: null
   property bool planLoading: false
   property var expanded: ({})
@@ -72,17 +73,20 @@ Column {
   SetupConnect {
     width: parent.width
     visible: root.step === 1
-    repoPicker: root.repoPicker
+    candidates: root.candidates
     selectedUrl: root.selectedUrl
+    loginDetail: Model.setupLoginDetail(root.prereqs)
     repoLoading: root.repoLoading
     repoError: root.repoError
     connectEntries: root.connectEntries
     connectRunning: root.connectRunning
+    authFix: Model.setupAuthFix(root.connectEntries, root.connectAuthError)
     clone: root.clone
     motion: root.motion
     foreground: root.foreground
     onRepoPicked: function(url) { root.repoPicked(url) }
     onRepoRetryRequested: root.repoRetryRequested()
+    onCheckAgainRequested: root.checkAgainRequested()
   }
 
   // ---- Step 2: Review --------------------------------------------------
