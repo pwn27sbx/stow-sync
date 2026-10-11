@@ -5,11 +5,11 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Bar slot for Stow Sync. The icon is a drawn bridge: two filled nodes (this PC
-// and GitHub) joined by a line. Overlays: a state dot top-right (accent when
-// there are changes/new configs, urgent when something needs attention), a tiny
-// up/down chevron when there are commits to upload/fetch, and a dot travelling
-// along the line only while a request is in flight. There is no numeric badge;
+// Bar slot for Stow Sync. The icon is one Nerd Font Material Design glyph:
+// md-folder_sync at rest, swapped for md-sync while a request is in flight.
+// Overlays: a 7 px state dot top-right (accent when there are changes/new
+// configs, urgent when something needs attention) and a tiny up/down arrow glyph
+// bottom-right when there are commits to upload/fetch. There is no numeric badge;
 // the number lives in the tooltip and the panel.
 BarWidget {
   id: root
@@ -26,6 +26,7 @@ BarWidget {
   readonly property bool busy: panelItem && panelItem.busy === true
   readonly property bool setupAvailable: Model.setupVisible(root.settings, root.statusData)
   readonly property var iconState: Model.barIconState(statusData)
+  readonly property string arrowGlyph: Model.barArrowGlyph(root.iconState)
   readonly property string tooltipText: "Stow Sync — " + Model.heroState(statusData, "", { machineSetup: root.setupAvailable }).title
 
   function tokenColor(token) {
@@ -118,131 +119,39 @@ BarWidget {
     function setup(): void { root.openSetupWizard() }
   }
 
-  // The drawn bridge glyph. Everything is sized off the icon canvas so it stays
-  // crisp in the bar slot.
-  Component {
-    id: bridgeGlyph
-
-    Item {
-      id: glyph
-      anchors.fill: parent
-
-      readonly property real slot: Math.min(width, height)
-      readonly property real nodeD: Math.max(2, Math.round(slot * 0.32))
-      readonly property real lineH: Math.max(1, Math.round(slot * 0.10))
-      readonly property real midY: Math.round(height / 2)
-      readonly property real leftCx: Math.round(width * 0.22)
-      readonly property real rightCx: Math.round(width * 0.78)
-      readonly property real chevronSize: Math.max(6, Math.round(slot * 0.44))
-      readonly property color dotColor: root.tokenColor(root.iconState.dot)
-
-      // Connecting line.
-      Rectangle {
-        x: parent.leftCx
-        y: parent.midY - Math.round(height / 2)
-        width: Math.max(1, parent.rightCx - parent.leftCx)
-        height: parent.lineH
-        color: button.foreground
-      }
-
-      // Left node: this PC.
-      Rectangle {
-        x: parent.leftCx - width / 2
-        y: parent.midY - height / 2
-        width: parent.nodeD
-        height: parent.nodeD
-        radius: width / 2
-        color: button.foreground
-      }
-
-      // Right node: GitHub.
-      Rectangle {
-        x: parent.rightCx - width / 2
-        y: parent.midY - height / 2
-        width: parent.nodeD
-        height: parent.nodeD
-        radius: width / 2
-        color: button.foreground
-      }
-
-      // Up chevron above the line: commits to upload.
-      Text {
-        visible: root.iconState.up
-        x: Math.round((width - implicitWidth) / 2)
-        y: Math.round(parent.midY - parent.lineH / 2 - height - Math.round(parent.slot * 0.08))
-        text: "\u2191"
-        color: button.foreground
-        font.family: Style.font.family
-        font.bold: true
-        font.pixelSize: parent.chevronSize
-      }
-
-      // Down chevron below the line: commits to fetch.
-      Text {
-        visible: root.iconState.down
-        x: Math.round((width - implicitWidth) / 2)
-        y: Math.round(parent.midY + parent.lineH / 2 + Math.round(parent.slot * 0.08))
-        text: "\u2193"
-        color: button.foreground
-        font.family: Style.font.family
-        font.bold: true
-        font.pixelSize: parent.chevronSize
-      }
-
-      // State dot top-right (urgent wins over accent). A 1 px ring in the bar
-      // background keeps it readable over any icon.
-      Rectangle {
-        visible: root.iconState.dot !== "none"
-        width: Math.max(4, Math.round(slot * 0.24))
-        height: width
-        radius: width / 2
-        anchors.right: parent.right
-        anchors.top: parent.top
-        color: parent.dotColor
-        border.width: 1
-        border.color: root.bar ? root.bar.background : Color.background
-      }
-
-      // Travelling dot: only while a request is in flight.
-      Rectangle {
-        id: travelDot
-        visible: root.busy
-        width: Math.max(4, Math.round(parent.slot * 0.22))
-        height: width
-        radius: width / 2
-        y: parent.midY - height / 2
-        color: Color.accent
-
-        SequentialAnimation on x {
-          running: root.busy
-          loops: Animation.Infinite
-          NumberAnimation {
-            from: glyph.leftCx
-            to: Math.max(glyph.leftCx, glyph.rightCx - travelDot.width)
-            duration: 600
-            easing.type: Easing.InOutSine
-          }
-          NumberAnimation {
-            from: Math.max(glyph.leftCx, glyph.rightCx - travelDot.width)
-            to: glyph.leftCx
-            duration: 600
-            easing.type: Easing.InOutSine
-          }
-        }
-      }
-    }
-  }
-
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
     active: root.opened
-    iconComponent: bridgeGlyph
+    text: Model.barIconGlyph(root.busy)
     tooltipText: root.tooltipText
     onPressed: function(which) {
       if (which === Qt.RightButton) root.refreshWithFetch()
       else root.togglePanel()
     }
+  }
+
+  // State dot top-right (urgent wins over accent). A 1 px ring in the bar
+  // background keeps it readable over any icon.
+  Rectangle {
+    visible: root.iconState.dot !== "none"
+    width: 7; height: 7; radius: 4
+    color: root.tokenColor(root.iconState.dot)
+    border.width: 1
+    border.color: root.bar ? root.bar.background : Color.background
+    anchors.right: parent.right; anchors.top: parent.top
+    anchors.rightMargin: 1; anchors.topMargin: 3
+  }
+
+  // Ahead/behind as a tiny arrow glyph overlay, bottom-right.
+  Text {
+    visible: root.arrowGlyph !== ""
+    text: root.arrowGlyph
+    color: button.foreground
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+    anchors.right: parent.right; anchors.bottom: parent.bottom
+    anchors.rightMargin: 1; anchors.bottomMargin: 1
   }
 }

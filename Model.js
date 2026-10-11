@@ -860,6 +860,27 @@ function barIconState(data, opts) {
   }
 }
 
+// Bar icon glyphs (README unit "bar icon redesign"): one Nerd Font Material Design
+// glyph, with a sync glyph while a request runs and a tiny up/down arrow overlay.
+var BAR_GLYPH_IDLE = "\uF0D0B" // md-folder_sync
+var BAR_GLYPH_BUSY = "\uF04E6" // md-sync
+var BAR_GLYPH_UP = "\uF005D"   // md-arrow_up
+var BAR_GLYPH_DOWN = "\uF0045" // md-arrow_down
+
+// The bar glyph: the sync glyph while busy, the folder-sync glyph otherwise.
+function barIconGlyph(busy) {
+  return busy === true ? BAR_GLYPH_BUSY : BAR_GLYPH_IDLE
+}
+
+// The bottom-right overlay glyph for barIconState()'s up/down flags. Ahead wins
+// over behind (a diverged repo already shows the urgent dot).
+function barArrowGlyph(state) {
+  var s = state || {}
+  if (s.up === true) return BAR_GLYPH_UP
+  if (s.down === true) return BAR_GLYPH_DOWN
+  return ""
+}
+
 // Top-of-panel state: one glyph, one plain sentence and one hint line.
 // `now` is the panel's current "HH:MM" used only when no fetch time exists.
 // `opts.machineSetup` (the opt-in switch) turns a fresh machine into a

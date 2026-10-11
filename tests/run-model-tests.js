@@ -1366,6 +1366,20 @@ test("barIconState: ahead/behind give the up/down chevrons", () => {
   same(Model.barIconState({ repos: [iconRepo("diverged", { ahead: 1, behind: 1 })], candidates: [] }), { dot: "urgent", up: true, down: true })
 })
 
+test("barIconGlyph: folder-sync idle, sync busy", () => {
+  assert.equal(Model.barIconGlyph(false), "\uF0D0B")
+  assert.equal(Model.barIconGlyph(true), "\uF04E6")
+  assert.equal(Model.barIconGlyph(undefined), "\uF0D0B")
+})
+
+test("barArrowGlyph: up wins, then down, else nothing", () => {
+  assert.equal(Model.barArrowGlyph({ up: true, down: false }), "\uF005D")
+  assert.equal(Model.barArrowGlyph({ up: false, down: true }), "\uF0045")
+  assert.equal(Model.barArrowGlyph({ up: true, down: true }), "\uF005D")
+  assert.equal(Model.barArrowGlyph({ up: false, down: false }), "")
+  assert.equal(Model.barArrowGlyph(null), "")
+})
+
 // --- Unit 8b: "Set up this machine" view model ---------------------------
 
 function setupPlan(overrides) {
