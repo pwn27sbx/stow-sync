@@ -41,8 +41,7 @@ Panel {
   readonly property var primary: Model.primaryAction(root.statusData)
   readonly property var tabs: ["Overview", "Changes", "Packages"]
   readonly property var changeView: Model.changesView(root.statusData, { hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting })
-  readonly property var changeRows: root.changeView.rows
-  readonly property var packages: Model.packageCards(root.statusData)
+  readonly property var changeRows: root.changeView.rows; readonly property var packages: Model.packageCards(root.statusData)
   readonly property int changeCount: Model.changeTotals(root.statusData).count
   readonly property bool busy: runner.busy
   readonly property string stateDirPath: String(root.setting("stateDir", "")) !== "" ? String(root.setting("stateDir", "")) : (Quickshell.env("HOME") + "/.local/state/stow-sync")
@@ -51,8 +50,7 @@ Panel {
   readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"; readonly property int contentInset: Style.space(12)
   readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property bool setupUndone: root.setupOn && Model.setupUndoneFromBackups(setupWizard.backups); readonly property bool setupNotSetUp: root.setupOn && (Model.allReposMissing(root.statusData) || root.setupUndone)
   property bool helpOpen: false
-  readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5)
-  readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
+  readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5); readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
   Runner {
     id: runner
     scriptPath: root.scriptPath

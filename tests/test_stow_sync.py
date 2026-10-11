@@ -4636,6 +4636,28 @@ class SetupWizardFocusTests(unittest.TestCase):
         self.assertIn("connectorRight", stepper)
 
 
+class SetupWizardSpacingTests(unittest.TestCase):
+    """Finding 63: the wizard header and the repo picker follow the 4/8/12/16
+    scale so the title, stepper and step content never feel cramped."""
+
+    def test_header_vertical_rhythm(self) -> None:
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        # Title -> stepper is 12; stepper block -> step content is 16.
+        self.assertIn("spacing: Style.space(12)", wizard)
+        self.assertIn("anchors.topMargin: Style.space(16)", wizard)
+
+    def test_stepper_dots_and_labels_are_spaced(self) -> None:
+        stepper = (ROOT / "SetupStepper.qml").read_text(encoding="utf-8")
+        self.assertIn("spacing: Style.space(8)", stepper)
+        self.assertNotIn("spacing: 2", stepper)
+
+    def test_repo_picker_section_gaps(self) -> None:
+        picker = (ROOT / "SetupRepoPicker.qml").read_text(encoding="utf-8")
+        # Both section columns ("Your setup repo" and "Looks like a dotfiles
+        # repo") use an 8px label -> card gap.
+        self.assertEqual(picker.count("spacing: Style.space(8)"), 2)
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""

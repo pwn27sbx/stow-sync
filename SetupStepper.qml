@@ -58,7 +58,7 @@ Row {
       Column {
         id: column
         anchors.horizontalCenter: parent.horizontalCenter
-        spacing: 2
+        spacing: Style.space(8) // dots -> labels (finding 63)
 
         Text {
           id: icon

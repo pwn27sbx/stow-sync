@@ -42,7 +42,7 @@ Column {
   Column {
     width: parent.width
     visible: root.groups.definitive.length > 0
-    spacing: Style.spacing.xs
+    spacing: Style.space(8) // section label -> card (finding 63)
 
     Text {
       width: parent.width
@@ -72,7 +72,7 @@ Column {
   Column {
     width: parent.width
     visible: root.groups.likely.length > 0
-    spacing: Style.spacing.xs
+    spacing: Style.space(8) // section label -> card (finding 63)
 
     Text {
       width: parent.width

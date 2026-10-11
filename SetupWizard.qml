@@ -118,7 +118,7 @@ Item {
           anchors.top: parent.top
           anchors.left: parent.left
           anchors.right: parent.right
-          spacing: Style.spacing.sm
+          spacing: Style.space(12) // title -> stepper (finding 63)
 
           Text {
             width: parent.width
@@ -163,7 +163,7 @@ Item {
         Flickable {
           id: bodyArea
           anchors.top: chrome.bottom
-          anchors.topMargin: Style.spacing.sm
+          anchors.topMargin: Style.space(16) // stepper block -> step content (finding 63)
           anchors.left: parent.left
           anchors.right: parent.right
           height: Math.max(Style.space(60), inner.height - chrome.height - buttonRow.height - Style.space(20))
