@@ -2150,6 +2150,139 @@ function setupUndoneFromBackups(backups) {
   return list[list.length - 1].undone === true
 }
 
+// --- Unit 12c: approved redesign helpers ----------------------------------
+
+// Stepper state for step `index` when the wizard is on `current` (README 12c).
+function setupWizardStepState(index, current) {
+  var i = num(index, 0)
+  var c = num(current, 0)
+  if (i < c) return "done"
+  if (i === c) return "current"
+  return "next"
+}
+
+// A real byte estimate as a short label (README 12c answer 2): "" when there is
+// no number, never an invented one.
+function setupSizeLabel(bytes) {
+  var n = num(bytes, 0)
+  if (!(n > 0)) return ""
+  var gb = n / (1024 * 1024 * 1024)
+  if (gb >= 1) return "~" + (Math.round(gb * 10) / 10) + " GB"
+  var mb = n / (1024 * 1024)
+  if (mb >= 1) return Math.round(mb) + " MB"
+  return Math.max(1, Math.round(n / 1024)) + " KB"
+}
+
+// Download-view cards (README 12c answer 2 / finding 53): one card per repo,
+// with the live percent from the current clone when it is this repo.
+function setupDownloadCards(entries, clone) {
+  var list = entries || []
+  var c = clone || null
+  var rows = []
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i] || {}
+    var state = String(e.state || "waiting")
+    var row = {
+      label: String(e.path || ""),
+      state: state,
+      percent: -1,
+      size: String(e.sizeLabel || ""),
+      detail: "",
+      tone: "muted"
+    }
+    if (state === "cloned" || state === "ready") { row.detail = "done"; row.tone = "accent" }
+    else if (state === "error") { row.detail = String(e.error || "failed"); row.tone = "urgent" }
+    else if (state === "cloning") {
+      if (c && String(c.item) === String(e.path)) {
+        row.percent = num(c.percent, -1)
+        row.detail = String(c.label || "Downloading\u2026")
+        if (String(c.size || "") !== "") row.size = String(c.size)
+      } else {
+        row.detail = "Downloading\u2026"
+      }
+    } else {
+      row.detail = "Waiting"
+    }
+    rows.push(row)
+  }
+  return rows
+}
+
+// The overall download line (README 12c finding 53).
+function setupDownloadSummary(entries) {
+  var list = entries || []
+  if (list.length === 0) return ""
+  var done = 0
+  for (var i = 0; i < list.length; i++) {
+    var s = String(list[i].state || "")
+    if (s === "cloned" || s === "ready") done++
+  }
+  if (done === list.length) return list.length === 1 ? "Repository downloaded" : "All " + list.length + " repos downloaded"
+  return "Downloading " + list.length + " repos \u00b7 " + done + " of " + list.length + " done"
+}
+
+// One plain sentence for the whole Review step (README 12c finding 54).
+function setupReviewSummary(plan) {
+  var p = plan || {}
+  var links = p.link || []
+  var toLink = 0
+  var files = 0
+  for (var i = 0; i < links.length; i++) {
+    var status = String(links[i].status || "")
+    if (status === "already" || status === "blocked") continue
+    toLink++
+    files += num(links[i].files_to_backup, 0)
+  }
+  var clone = (p.clone || []).length
+  var parts = []
+  if (clone > 0) parts.push("download " + pluralCount(clone, "repository", "repositories"))
+  if (toLink > 0) parts.push("link " + pluralCount(toLink, "package"))
+  if (files > 0) parts.push("keep a backup of " + pluralCount(files, "file"))
+  if (parts.length === 0) return "Nothing to set up."
+  return "Stow Sync will " + parts.join(", ") + ". Nothing is deleted, and you can undo it."
+}
+
+// Plain wording for a stow conflict kind (README 12c finding 54).
+function setupConflictWording(kind) {
+  if (kind === "identical") return "same as yours \u2192 replaced"
+  if (kind === "different") return "Omarchy's version \u2192 saved to backup, yours is used"
+  return String(kind || "")
+}
+
+// Backup files grouped by package (README 12c finding 54). Blocked conflicts
+// are reported elsewhere, so they are skipped here.
+function setupBackupByPackage(plan) {
+  var links = (plan && plan.link) || []
+  var groups = []
+  for (var i = 0; i < links.length; i++) {
+    var conflicts = links[i].conflicts || []
+    var files = []
+    for (var k = 0; k < conflicts.length; k++) {
+      if (conflicts[k].kind === "blocked") continue
+      files.push({
+        target: String(conflicts[k].target || ""),
+        kind: String(conflicts[k].kind || ""),
+        wording: setupConflictWording(conflicts[k].kind)
+      })
+    }
+    if (files.length > 0) {
+      groups.push({
+        repo: String(links[i].repo || ""),
+        package: String(links[i].package || ""),
+        count: files.length,
+        unit: pluralUnit(files.length, "file"),
+        files: files
+      })
+    }
+  }
+  return groups
+}
+
+// Explicit On/Off wording for a step toggle (README 12c finding 54).
+function setupToggleLabel(checked) {
+  return checked === true ? "On" : "Off"
+}
+
 // One Report step row (README 11d.3/12a findings 59): every recipe step is
 // listed, its state is `ran` / `skipped: <reason>` / `not selected`, and `sub`
 // carries the cleaned last output line to render under the step name. A step the

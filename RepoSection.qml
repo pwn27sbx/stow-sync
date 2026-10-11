@@ -120,6 +120,8 @@ Column {
         required property var modelData
         required property int index
         width: parent.width
+        // Hide the empty lanes on a machine that is not set up yet (finding 49).
+        visible: !root.notSetUp
         lane: Model.repoLaneSummary(modelData, root.now, { neutral: root.notSetUp })
         repo: modelData
         version: root.version

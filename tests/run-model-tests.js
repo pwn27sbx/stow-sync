@@ -1790,6 +1790,94 @@ test("setupUndoneFromBackups: true only when the newest backup is undone", () =>
   assert.equal(Model.setupUndoneFromBackups([{ id: "1", undone: false }, { id: "2", undone: true }]), true)
 })
 
+// --- Unit 12c: approved redesign helpers ---------------------------------
+
+test("setupWizardStepState: done / current / next for the stepper", () => {
+  assert.equal(Model.setupWizardStepState(0, 2), "done")
+  assert.equal(Model.setupWizardStepState(2, 2), "current")
+  assert.equal(Model.setupWizardStepState(3, 2), "next")
+  assert.equal(Model.setupWizardStepState(0, 0), "current")
+})
+
+test("setupSizeLabel: real byte estimates only, never invented", () => {
+  assert.equal(Model.setupSizeLabel(0), "")
+  assert.equal(Model.setupSizeLabel(-5), "")
+  assert.equal(Model.setupSizeLabel(3 * 1024 * 1024), "3 MB")
+  assert.equal(Model.setupSizeLabel(1024 * 1024 * 1024), "~1 GB")
+  assert.equal(Model.setupSizeLabel(500 * 1024), "500 KB")
+})
+
+test("setupDownloadCards: one card per repo with the live clone percent", () => {
+  same(Model.setupDownloadCards(null, null), [])
+  const cards = Model.setupDownloadCards([
+    { path: "~/.dotfiles", state: "cloned", sizeLabel: "3 MB" },
+    { path: "~/wallpapers", state: "cloning", sizeLabel: "~1 GB" }
+  ], { item: "~/wallpapers", percent: 45, size: "410 MB", label: "Downloading 45% \u00b7 410 MB" })
+  assert.equal(cards[0].detail, "done")
+  assert.equal(cards[0].size, "3 MB")
+  assert.equal(cards[0].tone, "accent")
+  assert.equal(cards[1].percent, 45)
+  assert.equal(cards[1].detail, "Downloading 45% \u00b7 410 MB")
+  assert.equal(cards[1].size, "410 MB")
+  const waiting = Model.setupDownloadCards([{ path: "~/x", state: "waiting" }], null)
+  assert.equal(waiting[0].detail, "Waiting")
+  const failed = Model.setupDownloadCards([{ path: "~/y", state: "error", error: "private" }], null)
+  assert.equal(failed[0].tone, "urgent")
+  assert.equal(failed[0].detail, "private")
+})
+
+test("setupDownloadSummary: overall line and success state", () => {
+  assert.equal(Model.setupDownloadSummary([]), "")
+  assert.equal(Model.setupDownloadSummary([{ state: "cloning" }, { state: "cloned" }]), "Downloading 2 repos \u00b7 1 of 2 done")
+  assert.equal(Model.setupDownloadSummary([{ state: "cloned" }, { state: "ready" }]), "All 2 repos downloaded")
+  assert.equal(Model.setupDownloadSummary([{ state: "cloned" }]), "Repository downloaded")
+})
+
+test("setupReviewSummary: one plain sentence for the whole step", () => {
+  const plan = {
+    clone: [{ path: "~/wallpapers" }],
+    link: [
+      { repo: "~/.dotfiles", package: "fish", status: "conflicts", files_to_backup: 1, conflicts: [] },
+      { repo: "~/.dotfiles", package: "omarchy", status: "already", files_to_backup: 0, conflicts: [] },
+      { repo: "~/.dotfiles", package: "app", status: "new", files_to_backup: 0, conflicts: [] }
+    ]
+  }
+  const text = Model.setupReviewSummary(plan)
+  assert.ok(text.indexOf("download 1 repository") !== -1, text)
+  assert.ok(text.indexOf("link 2 packages") !== -1, text)
+  assert.ok(text.indexOf("keep a backup of 1 file") !== -1, text)
+  assert.ok(text.indexOf("Nothing is deleted") !== -1, text)
+  assert.equal(Model.setupReviewSummary({}), "Nothing to set up.")
+})
+
+test("setupConflictWording: plain words for identical/different", () => {
+  assert.equal(Model.setupConflictWording("identical"), "same as yours \u2192 replaced")
+  assert.ok(Model.setupConflictWording("different").indexOf("saved to backup") !== -1)
+  assert.equal(Model.setupConflictWording(""), "")
+})
+
+test("setupBackupByPackage: files grouped by package, blocked skipped", () => {
+  const plan = { link: [
+    { repo: "~/.dotfiles", package: "nvim", conflicts: [
+      { target: "~/.config/nvim/init.lua", kind: "different" },
+      { target: "~/.config/nvim/lua/x.lua", kind: "identical" }
+    ] },
+    { repo: "~/.dotfiles", package: "app", conflicts: [{ target: "~/.config/app/conf", kind: "blocked" }] }
+  ] }
+  const groups = Model.setupBackupByPackage(plan)
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].package, "nvim")
+  assert.equal(groups[0].count, 2)
+  assert.equal(groups[0].unit, "files")
+  assert.equal(groups[0].files[0].wording, "Omarchy's version \u2192 saved to backup, yours is used")
+})
+
+test("setupToggleLabel: explicit On / Off wording", () => {
+  assert.equal(Model.setupToggleLabel(true), "On")
+  assert.equal(Model.setupToggleLabel(false), "Off")
+  assert.equal(Model.setupToggleLabel(undefined), "Off")
+})
+
 test("groupCountLabel: a count and a bare unit render once", () => {
   assert.equal(Model.groupCountLabel(6, "packages"), "6 packages")
   assert.equal(Model.groupCountLabel(1, "file"), "1 file")

@@ -21,6 +21,15 @@ Item {
   property color foreground: Color.foreground
   property string progressPath: ""
   property var applyProgress: null
+  // One fixed dialog height for every step (README 12c answer 1): the tallest
+  // body measured so far, never shrinking, capped to the screen.
+  property real measuredHeight: Style.space(520)
+
+  function measureBody() {
+    var content = chrome.height + buttonRow.height + Style.space(40)
+    if (body.item) content += body.item.implicitHeight
+    root.measuredHeight = Math.max(root.measuredHeight, content)
+  }
 
   signal requested(string tag, var args)
   signal closed()
@@ -73,6 +82,11 @@ Item {
     onUndoConfirmRequested: function(backup, sentence) { root.undoConfirmRequested(backup, sentence) }
   }
 
+  Connections {
+    target: flow
+    function onStepChanged() { Qt.callLater(root.measureBody) }
+  }
+
   Rectangle {
     anchors.fill: parent
     color: Util.alpha(Color.background, 0.72)
@@ -82,7 +96,7 @@ Item {
     BorderSurface {
       id: card
       width: Math.min(parent.width - Style.space(24), Style.space(560))
-      height: Math.min(parent.height - Style.space(16), Style.space(480))
+      height: Math.min(parent.height - Style.space(16), Math.max(Style.space(520), root.measuredHeight))
       anchors.centerIn: parent
       color: Color.popups.background
       borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
@@ -113,10 +127,19 @@ Item {
             font.bold: true
           }
 
+          SetupStepper {
+            width: parent.width
+            visible: flow.mode !== "backups"
+            steps: flow.stepNames
+            current: flow.step
+            foreground: root.foreground
+          }
+
           Text {
             width: parent.width
+            visible: flow.mode === "backups"
             textFormat: Text.PlainText
-            text: flow.stepLine
+            text: "Setup backups"
             color: Util.alpha(root.foreground, 0.72)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -161,6 +184,7 @@ Item {
             id: body
             width: bodyArea.width
             sourceComponent: flow.mode === "backups" ? backupsView : wizardView
+            onLoaded: Qt.callLater(root.measureBody)
           }
         }
 
