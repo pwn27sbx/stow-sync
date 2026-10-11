@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 // Report step body of the setup wizard (README 10b.6/finding 22). Grouped
 // results, the backup folder path (selectable, copyable), every post step with
