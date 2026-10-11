@@ -4750,6 +4750,17 @@ class SetupSmallFixesTests(unittest.TestCase):
         self.assertIn("clip: true", source[chrome:body])
 
 
+class SetupConnectRateTests(unittest.TestCase):
+    """Finding 67: the active download card shows a speed and ETA line computed
+    from two consecutive clone samples."""
+
+    def test_connect_computes_and_renders_the_rate(self) -> None:
+        connect = (ROOT / "SetupConnect.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.downloadRate(", connect)
+        self.assertIn("Model.setupDownloadCards(root.connectEntries, root.clone, root.rate)", connect)
+        self.assertIn("modelData.speed", connect)
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""

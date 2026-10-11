@@ -2240,9 +2240,29 @@ function formatBytesDecimal(bytes) {
   return Math.max(1, Math.round(n / 1000)) + " KB"
 }
 
+// Live download speed and ETA from two consecutive samples (finding 67).
+// Returns ok:false and empty text for anything unusable, so the UI hides the
+// line instead of showing a made-up number.
+function downloadRate(currentBytes, previousBytes, elapsedSeconds, totalBytes) {
+  var cur = Number(currentBytes)
+  var prev = Number(previousBytes)
+  var elapsed = Number(elapsedSeconds)
+  var total = Number(totalBytes)
+  if (!(isFinite(cur) && isFinite(prev) && isFinite(elapsed) && isFinite(total))) return { ok: false, speedText: "", etaText: "" }
+  if (!(elapsed > 0) || !(prev >= 0) || !(cur > prev)) return { ok: false, speedText: "", etaText: "" }
+  var speedBytes = (cur - prev) / elapsed
+  var speedText = formatBytesDecimal(speedBytes) + "/s"
+  var etaText = ""
+  if (total > cur && speedBytes > 0) {
+    var etaSeconds = (total - cur) / speedBytes
+    if (isFinite(etaSeconds)) etaText = etaSeconds >= 60 ? "about " + Math.round(etaSeconds / 60) + " min left" : "about " + Math.round(etaSeconds) + " s left"
+  }
+  return { ok: true, speedText: speedText, etaText: etaText }
+}
+
 // Download-view cards (README 12c answer 2 / finding 53): one card per repo,
 // with the live percent from the current clone when it is this repo.
-function setupDownloadCards(entries, clone) {
+function setupDownloadCards(entries, clone, rate) {
   var list = entries || []
   var c = clone || null
   var rows = []
@@ -2254,6 +2274,7 @@ function setupDownloadCards(entries, clone) {
       state: state,
       percent: -1,
       size: String(e.sizeLabel || ""),
+      speed: "",
       detail: "",
       tone: "muted"
     }
@@ -2266,6 +2287,8 @@ function setupDownloadCards(entries, clone) {
         // Prefer the parsed byte size in the one decimal system (finding 66).
         if (num(c.bytes, 0) > 0) row.size = formatBytesDecimal(c.bytes)
         else if (String(c.size || "") !== "") row.size = String(c.size)
+        // Speed + ETA on the active card, empty when unknown (finding 67).
+        if (rate && rate.ok === true) row.speed = rate.etaText !== "" ? (rate.speedText + " \u00b7 " + rate.etaText) : String(rate.speedText || "")
       } else {
         row.detail = "Downloading\u2026"
       }

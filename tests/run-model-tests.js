@@ -1899,6 +1899,39 @@ test("setupDownloadCards: one card per repo with the live clone percent", () => 
   assert.equal(withBytes[0].size, "430 MB")
 })
 
+test("downloadRate: unknown inputs hide the speed and ETA", () => {
+  same(Model.downloadRate(0, 0, 0, 100), { ok: false, speedText: "", etaText: "" })
+  same(Model.downloadRate(10, 20, 1, 100), { ok: false, speedText: "", etaText: "" })
+  same(Model.downloadRate(20, 10, 0, 100), { ok: false, speedText: "", etaText: "" })
+  same(Model.downloadRate(NaN, 10, 1, 100), { ok: false, speedText: "", etaText: "" })
+})
+
+test("downloadRate: a known delta yields a speed and an ETA", () => {
+  const r = Model.downloadRate(10 * 1000 * 1000, 0, 5, 40 * 1000 * 1000)
+  assert.equal(r.ok, true)
+  assert.equal(r.speedText, "2 MB/s")
+  assert.equal(r.etaText, "about 15 s left")
+  const minutes = Model.downloadRate(2 * 1000 * 1000, 0, 1, 602 * 1000 * 1000)
+  assert.equal(minutes.etaText, "about 5 min left")
+  // A completed transfer has no remaining time.
+  const done = Model.downloadRate(40 * 1000 * 1000, 20 * 1000 * 1000, 10, 40 * 1000 * 1000)
+  assert.equal(done.ok, true)
+  assert.equal(done.etaText, "")
+})
+
+test("setupDownloadCards: the active card carries the speed line", () => {
+  const rate = { ok: true, speedText: "2.1 MB/s", etaText: "about 6 min left" }
+  const cards = Model.setupDownloadCards(
+    [{ path: "~/wallpapers", state: "cloning" }],
+    { item: "~/wallpapers", percent: 45, bytes: 1000, size: "1 KB", label: "Downloading 45%" },
+    rate
+  )
+  assert.equal(cards[0].speed, "2.1 MB/s \u00b7 about 6 min left")
+  // No rate (or an unusable one) leaves the line empty so the UI hides it.
+  const none = Model.setupDownloadCards([{ path: "~/y", state: "cloning" }], null, null)
+  assert.equal(none[0].speed, "")
+})
+
 test("setupDownloadSummary: overall line and success state", () => {
   assert.equal(Model.setupDownloadSummary([]), "")
   assert.equal(Model.setupDownloadSummary([{ state: "cloning" }, { state: "cloned" }]), "Downloading 2 repos \u00b7 1 of 2 done")

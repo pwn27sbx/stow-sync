@@ -21,6 +21,9 @@ Column {
   // True while setup-prereqs runs, so "Check again" stays hidden (finding 62).
   property bool checking: false
   property var clone: null
+  // Live download speed/ETA for the active card (finding 67).
+  property var rate: null
+  property var sample: null
   property string loginDetail: ""
   property var authFix: null
   property bool motion: true
@@ -41,6 +44,30 @@ Column {
     if (tone === "urgent") return Color.urgent
     if (tone === "accent") return Color.accent
     return Util.alpha(root.foreground, 0.72)
+  }
+
+  // Recompute the speed/ETA from two consecutive clone samples (finding 67).
+  onCloneChanged: root.updateRate()
+
+  function totalBytesFor(path) {
+    for (var i = 0; i < root.connectEntries.length; i++) {
+      if (String(root.connectEntries[i].path) === String(path)) return Number(root.connectEntries[i].sizeBytes)
+    }
+    return NaN
+  }
+
+  function updateRate() {
+    var c = root.clone
+    if (!c || String(c.state || "") !== "cloning" || !(Number(c.bytes) > 0)) { root.rate = null; root.sample = null; return }
+    var now = Date.now()
+    var item = String(c.item || "")
+    var prev = root.sample
+    if (prev && String(prev.item) === item && now > prev.ms) {
+      root.rate = Model.downloadRate(Number(c.bytes), Number(prev.bytes), (now - prev.ms) / 1000, root.totalBytesFor(item))
+    } else {
+      root.rate = null
+    }
+    root.sample = { item: item, bytes: Number(c.bytes), ms: now }
   }
 
   Text {
@@ -94,7 +121,7 @@ Column {
     }
 
     Repeater {
-      model: Model.setupDownloadCards(root.connectEntries, root.clone)
+      model: Model.setupDownloadCards(root.connectEntries, root.clone, root.rate)
 
       Rectangle {
         required property var modelData
@@ -153,6 +180,17 @@ Column {
             active: modelData.state === "cloning"
             motion: root.motion
             foreground: root.foreground
+          }
+
+          Text {
+            width: parent.width
+            // Speed + ETA on the active card; hidden until it is known (finding 67).
+            visible: String(modelData.speed || "") !== ""
+            textFormat: Text.PlainText
+            text: String(modelData.speed || "")
+            color: Util.alpha(root.foreground, 0.72)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
 
           Text {
