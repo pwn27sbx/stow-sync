@@ -6,8 +6,8 @@ import qs.Ui
 import "Model.js" as Model
 
 // Bar slot for Stow Sync. The icon is one Nerd Font Material Design glyph:
-// md-folder_sync at rest, swapped for md-sync while a request is in flight.
-// Overlays: a 7 px state dot top-right (accent when there are changes/new
+// md-swap_horizontal_bold at rest, swapped for md-autorenew while a request is
+// in flight. Overlays: a 7 px state dot top-right (accent when there are changes/new
 // configs, urgent when something needs attention) and a tiny up/down arrow glyph
 // bottom-right when there are commits to upload/fetch. There is no numeric badge;
 // the number lives in the tooltip and the panel.

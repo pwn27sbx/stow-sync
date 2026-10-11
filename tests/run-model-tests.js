@@ -1366,10 +1366,10 @@ test("barIconState: ahead/behind give the up/down chevrons", () => {
   same(Model.barIconState({ repos: [iconRepo("diverged", { ahead: 1, behind: 1 })], candidates: [] }), { dot: "urgent", up: true, down: true })
 })
 
-test("barIconGlyph: folder-sync idle, sync busy", () => {
-  assert.equal(Model.barIconGlyph(false), "\uF0D0B")
-  assert.equal(Model.barIconGlyph(true), "\uF04E6")
-  assert.equal(Model.barIconGlyph(undefined), "\uF0D0B")
+test("barIconGlyph: swap-horizontal-bold idle, autorenew busy", () => {
+  assert.equal(Model.barIconGlyph(false), "\uF0BCD")
+  assert.equal(Model.barIconGlyph(true), "\uF006A")
+  assert.equal(Model.barIconGlyph(undefined), "\uF0BCD")
 })
 
 test("barArrowGlyph: up wins, then down, else nothing", () => {

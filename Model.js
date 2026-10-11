@@ -861,13 +861,13 @@ function barIconState(data, opts) {
 }
 
 // Bar icon glyphs (README unit "bar icon redesign"): one Nerd Font Material Design
-// glyph, with a sync glyph while a request runs and a tiny up/down arrow overlay.
-var BAR_GLYPH_IDLE = "\uF0D0B" // md-folder_sync
-var BAR_GLYPH_BUSY = "\uF04E6" // md-sync
+// glyph, with a refresh glyph while a request runs and a tiny up/down arrow overlay.
+var BAR_GLYPH_IDLE = "\uF0BCD" // md-swap_horizontal_bold (owner pick, candidate 3)
+var BAR_GLYPH_BUSY = "\uF006A" // md-autorenew (circular, clearly different from the idle arrows)
 var BAR_GLYPH_UP = "\uF005D"   // md-arrow_up
 var BAR_GLYPH_DOWN = "\uF0045" // md-arrow_down
 
-// The bar glyph: the sync glyph while busy, the folder-sync glyph otherwise.
+// The bar glyph: the refresh glyph while busy, the swap-arrows glyph otherwise.
 function barIconGlyph(busy) {
   return busy === true ? BAR_GLYPH_BUSY : BAR_GLYPH_IDLE
 }
