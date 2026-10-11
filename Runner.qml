@@ -13,6 +13,9 @@ Item {
 
   property string scriptPath: ""
   property var settings: ({})
+  // Set true only by BarWidget.injectPanel(); nothing starts before then, so a
+  // request never runs the helper with the default (real) config (README 11a fix).
+  property bool settingsReady: false
 
   // The payload parameter is `result`, not `data`: `data` is Item's default
   // property and a signal parameter of that name shadows it.
@@ -85,6 +88,8 @@ Item {
   }
 
   function pump() {
+    // Never start before settings are injected: queue everything until then.
+    if (!Model.runnerMayStart(root.settingsReady, root.queue.length > 0)) return
     // `current` is set for the whole life of a run and cleared in `finish`
     // (or the timeout); guarding on it too stops a stop event from starting
     // the next request before the current one has been handled.
@@ -96,11 +101,18 @@ Item {
     root.timedOut = false
     // Open the write channel before starting so the helper can read stdin.
     proc.stdinEnabled = true
-    proc.command = ["python3", "-u", root.scriptPath].concat(root.globalArgs()).concat(root.current.args)
+    var argv = ["python3", "-u", root.scriptPath].concat(root.globalArgs()).concat(root.current.args)
+    // The panel's own apply/undo is the real (non-test) path: opt in explicitly
+    // so the backend's real-HOME guard allows it (README 10.0).
+    if (root.current.tag === "setup-apply" || root.current.tag === "setup-undo")
+      argv = ["env", "STOW_SYNC_ALLOW_REAL_SETUP=1"].concat(argv)
+    proc.command = argv
     timeoutTimer.interval = root.timeoutFor(root.current)
     proc.running = true
     timeoutTimer.restart()
   }
+
+  onSettingsReadyChanged: if (root.settingsReady) root.pump()
 
   function finish() {
     timeoutTimer.stop()

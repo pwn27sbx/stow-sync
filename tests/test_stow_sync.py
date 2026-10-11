@@ -4149,6 +4149,51 @@ class SetupOverlayOrderTests(unittest.TestCase):
         )
 
 
+class SettingsReadyGateTests(unittest.TestCase):
+    """Regression for the real-config leak: the helper must never run before
+    BarWidget.injectPanel() has injected settings (README 11a fix)."""
+
+    def test_inject_panel_sets_settings_ready(self) -> None:
+        barwidget = (ROOT / "BarWidget.qml").read_text(encoding="utf-8")
+        self.assertIn("settingsReady", barwidget, "injectPanel must set settingsReady")
+
+    def test_on_opened_changed_does_not_start_anything(self) -> None:
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        line = next(l for l in panel.splitlines() if "onOpenedChanged" in l)
+        self.assertNotIn("ensureStarted", line)
+        self.assertNotIn("refresh", line)
+
+    def test_runner_gates_on_settings_ready(self) -> None:
+        runner = (ROOT / "Runner.qml").read_text(encoding="utf-8")
+        self.assertIn("settingsReady", runner)
+        self.assertIn("Model.runnerMayStart", runner)
+
+
+class SetupRealHomeRefusalTests(unittest.TestCase):
+    """The backend refuses mutating setup commands on the real HOME unless the
+    caller passes an explicit --state-dir or opts in (README 10.0 incident)."""
+
+    def test_apply_and_undo_refuse_without_state_dir_or_optin(self) -> None:
+        for argv in (["setup-apply", "--token", "x"], ["setup-undo", "--backup", "x"]):
+            result = ss.dispatch(argv, None, None)
+            self.assertFalse(result["ok"], argv)
+            self.assertIn("state-dir", result["error"])
+
+    def test_optin_env_allows_the_real_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"STOW_SYNC_ALLOW_REAL_SETUP": "1", "STOW_SYNC_STATE_DIR": tmp}
+        ):
+            result = ss.dispatch(["setup-apply", "--token", "x"], None, None)
+        self.assertFalse(result["ok"])
+        self.assertNotIn("state-dir", result.get("error", ""))
+
+    def test_explicit_state_dir_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ss.dispatch(["setup-apply", "--token", "x"], None, tmp)
+            self.assertFalse(result["ok"])
+            self.assertNotIn("state-dir", result.get("error", ""))
+
+
 class SetupPerformMoveTests(unittest.TestCase):
     def test_refuses_an_existing_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

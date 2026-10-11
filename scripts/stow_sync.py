@@ -3512,6 +3512,23 @@ def setup_progress_path(state_dir: str) -> str:
     return os.path.join(state_dir, SETUP_PROGRESS_FILENAME)
 
 
+def _refuse_real_setup(state_dir: str | None, command: str) -> dict[str, Any] | None:
+    """Refuse a mutating setup command on the real HOME unless opted in.
+
+    Defence in depth for incident 2026-10-10 (README 10.0): the panel passes an
+    explicit ``--state-dir`` (test or configured) or sets
+    ``STOW_SYNC_ALLOW_REAL_SETUP=1`` on its real request path. A stray call with
+    neither must never touch the real HOME.
+    """
+    if state_dir is None and os.environ.get("STOW_SYNC_ALLOW_REAL_SETUP") != "1":
+        return {
+            "ok": False,
+            "error": command
+            + " needs an explicit --state-dir (or STOW_SYNC_ALLOW_REAL_SETUP=1)",
+        }
+    return None
+
+
 def write_setup_progress(
     state_dir: str, phase: str, current: str, items: list[dict[str, Any]]
 ) -> None:
@@ -3650,6 +3667,9 @@ def cmd_setup_apply(
     state_dir: str | None = None,
 ) -> dict[str, Any]:
     """Apply a reviewed plan, backing up every conflict first (README 8a)."""
+    refusal = _refuse_real_setup(state_dir, "setup-apply")
+    if refusal is not None:
+        return refusal
     token_arg = opt_value(args, "--token")
     state = resolve_state_dir(state_dir)
     stored = _load_setup_plan(state)
@@ -3887,6 +3907,9 @@ def cmd_setup_undo(
     state_dir: str | None = None,
 ) -> dict[str, Any]:
     """Un-stow this apply's packages and restore every backup (README 8a)."""
+    refusal = _refuse_real_setup(state_dir, "setup-undo")
+    if refusal is not None:
+        return refusal
     backup_id = opt_value(args, "--backup")
     if not _setup_str(backup_id):
         raise CommandError("missing --backup")

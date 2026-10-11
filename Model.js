@@ -1133,6 +1133,14 @@ function updatePlan(data) {
 // Two status requests with the same `fetch` flag are the same refresh, so a
 // burst collapses into one; the existing request is always kept, so the queue
 // never loses its runnable status request (never collapses to zero).
+// The Runner must not start any request until BarWidget.injectPanel() has
+// injected settings; otherwise the helper runs with the real default
+// --config/--state-dir and touches the real HOME (README 11a fix). Requests
+// queue until then. Strict booleans: a stray truthy value never opens the gate.
+function runnerMayStart(settingsReady, hasPending) {
+  return settingsReady === true && hasPending === true
+}
+
 function enqueue(queue, request) {
   var pending = (queue || []).slice()
   if (!request) return pending

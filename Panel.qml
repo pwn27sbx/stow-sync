@@ -25,7 +25,7 @@ Panel {
   readonly property string configPath: String(root.setting("configPath", "")) !== "" ? String(root.setting("configPath", "")) : (Quickshell.env("HOME") + "/.config/stow-sync/config.json")
   property var statusData: null; property int activeTab: 0; property var checkedPaths: ({}); property var hiddenPaths: []
   property bool showHidden: false; property bool showExisting: false; property string focusedKey: ""; property int repoCycleIndex: 0
-  property string errorText: ""; property string resultText: ""; property bool started: false; property double nowMs: Date.now()
+  property string errorText: ""; property string resultText: ""; property bool started: false; property double nowMs: Date.now(); property bool settingsReady: false
   property string busyVerb: ""; property string overlayMode: ""; property bool setupOpen: false; property bool backupsFetched: false
   property string confirmKind: ""; property var confirmPayload: ({})
   // Publish card and cumulative batch state (publish / upload / update).
@@ -57,6 +57,7 @@ Panel {
     id: runner
     scriptPath: root.scriptPath
     settings: root.settings
+    settingsReady: root.settingsReady
     onStatusReady: function(result, fetch) { root.applyStatus(result) }
     onActionReady: function(tag, result) { root.applyAction(tag, result) }
     onFailed: function(tag, message) { root.applyFailure(tag, message) }
@@ -237,7 +238,7 @@ Panel {
     else if (text === "i") root.toggleHidden(root.focusedChange())
   }
 
-  onOpenedChanged: if (root.opened) { root.ensureStarted(); root.refresh(); Qt.callLater(function() { keyCatcher.forceActiveFocus() }) }
+  onOpenedChanged: if (root.opened) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   Timer { interval: 30000; running: true; repeat: true; onTriggered: root.nowMs = Date.now() }
   Timer { id: resultTimer; interval: 6000; repeat: false; onTriggered: root.resultText = "" }
   Timer { interval: root.refreshMinutes * 60000; running: true; repeat: true; onTriggered: if (!root.busy && root.overlayMode === "") root.refresh() }

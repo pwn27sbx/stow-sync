@@ -497,6 +497,16 @@ test("nextRequest shifts the front and reports an empty queue", () => {
   same(empty.queue, [])
 })
 
+test("runnerMayStart: only when settings are ready and a request is pending", () => {
+  assert.equal(Model.runnerMayStart(true, true), true)
+  assert.equal(Model.runnerMayStart(true, false), false)
+  assert.equal(Model.runnerMayStart(false, true), false)
+  assert.equal(Model.runnerMayStart(false, false), false)
+  // Only an explicit boolean true opens the gate (a stray truthy value does not).
+  assert.equal(Model.runnerMayStart("true", 1), false)
+  assert.equal(Model.runnerMayStart(undefined, true), false)
+})
+
 test("enqueue dedupes identical pending status requests but never to zero", () => {
   let queue = Model.enqueue([], statusRequest(false))
   assert.equal(queue.length, 1)

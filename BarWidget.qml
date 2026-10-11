@@ -62,23 +62,38 @@ BarWidget {
     if (panelItem && typeof panelItem.openSetup === "function") panelItem.openSetup()
   }
 
-  function injectPanel() {
+  // `openGate` is true only once the host has actually delivered this widget's
+  // settings. The bar host sets `bar` first and `settings` right after, so
+  // onBarChanged must never open the gate (README 11a fix). Only injectPanel
+  // sets settingsReady.
+  function injectPanel(openGate) {
     var target = panelItem
     if (!target) return
     if ("bar" in target) target.bar = root.bar
     if ("settings" in target) target.settings = root.settings
+    if ("settingsReady" in target && openGate === true) target.settingsReady = true
     if ("anchorItem" in target) target.anchorItem = button
     if ("hostWidget" in target) target.hostWidget = root
-    // Settings are set now; let the panel run its first refresh (it waits for
-    // this so it never runs the helper with the wrong config).
+    // Let the panel run its first refresh; it waits for the gate so it never
+    // runs the helper with the default (real) config.
     if (typeof target.ensureStarted === "function") target.ensureStarted()
   }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  onBarChanged: injectPanel()
-  onSettingsChanged: injectPanel()
+  onBarChanged: root.injectPanel(false)
+  onSettingsChanged: root.injectPanel(true)
+
+  // Safety net: if settings were delivered before the panel loaded (so
+  // onSettingsChanged fired with no panel yet), open the gate once after load.
+  Timer {
+    id: gateFallback
+    interval: 800
+    repeat: false
+    running: true
+    onTriggered: root.injectPanel(true)
+  }
 
   Loader {
     id: panelLoader
@@ -86,8 +101,8 @@ BarWidget {
     source: Qt.resolvedUrl("Panel.qml")
     visible: false
     onLoaded: {
-      root.injectPanel()
-      Qt.callLater(root.injectPanel)
+      root.injectPanel(false)
+      Qt.callLater(function() { root.injectPanel(false) })
     }
   }
 
