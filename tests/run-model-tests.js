@@ -1366,10 +1366,10 @@ test("barIconState: ahead/behind give the up/down chevrons", () => {
   same(Model.barIconState({ repos: [iconRepo("diverged", { ahead: 1, behind: 1 })], candidates: [] }), { dot: "urgent", up: true, down: true })
 })
 
-test("barIconGlyph: swap-horizontal-bold idle, autorenew busy", () => {
-  assert.equal(Model.barIconGlyph(false), "\u{F0BCD}")
+test("barIconGlyph: folder-sync idle, autorenew busy", () => {
+  assert.equal(Model.barIconGlyph(false), "\u{F0D0B}")
   assert.equal(Model.barIconGlyph(true), "\u{F006A}")
-  assert.equal(Model.barIconGlyph(undefined), "\u{F0BCD}")
+  assert.equal(Model.barIconGlyph(undefined), "\u{F0D0B}")
 })
 
 test("bar glyphs are single supplementary-plane code points (no 4-digit escape split)", () => {
@@ -1378,7 +1378,7 @@ test("bar glyphs are single supplementary-plane code points (no 4-digit escape s
     assert.equal(Array.from(g).length, 1)
     assert.ok(g.codePointAt(0) >= 0xF0000)
   }
-  assert.equal(Model.barIconGlyph(false).codePointAt(0), 0xF0BCD)
+  assert.equal(Model.barIconGlyph(false).codePointAt(0), 0xF0D0B)
 })
 
 test("barArrowGlyph: up wins, then down, else nothing", () => {
