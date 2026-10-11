@@ -18,6 +18,8 @@ Column {
   property string repoError: ""
   property var connectEntries: []
   property bool connectRunning: false
+  // True while setup-prereqs runs, so "Check again" stays hidden (finding 62).
+  property bool checking: false
   property var clone: null
   property string loginDetail: ""
   property var authFix: null
@@ -222,6 +224,8 @@ Column {
       text: "Check again"
       iconText: "\uf021"
       fontSize: Style.font.caption
+      // Hide while the current check is still running (finding 62).
+      visible: !root.checking
       onClicked: root.checkAgainRequested()
     }
   }

@@ -2193,15 +2193,51 @@ function setupWizardStepState(index, current) {
 }
 
 // A real byte estimate as a short label (README 12c answer 2): "" when there is
-// no number, never an invented one.
+// no number, never an invented one. Decimal units (KB/MB/GB = 1000) so every
+// size in the wizard uses one system (finding 66).
 function setupSizeLabel(bytes) {
   var n = num(bytes, 0)
   if (!(n > 0)) return ""
-  var gb = n / (1024 * 1024 * 1024)
+  var gb = n / 1e9
   if (gb >= 1) return "~" + (Math.round(gb * 10) / 10) + " GB"
-  var mb = n / (1024 * 1024)
+  var mb = n / 1e6
   if (mb >= 1) return Math.round(mb) + " MB"
-  return Math.max(1, Math.round(n / 1024)) + " KB"
+  return Math.max(1, Math.round(n / 1000)) + " KB"
+}
+
+// Parse a git progress size into bytes (finding 66): "410.20 MiB" and "944.81
+// KiB" are binary (*iB), plain "KB"/"MB"/"GB" are decimal, ""/garbage is 0.
+function parseSizeBytes(text) {
+  var s = String(text === undefined || text === null ? "" : text).trim()
+  if (s === "") return 0
+  var m = s.match(/^([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?i?B)$/i)
+  if (!m) return 0
+  var value = parseFloat(m[1])
+  if (!isFinite(value)) return 0
+  var factor = 1
+  switch (m[2].toLowerCase()) {
+    case "kib": factor = 1024; break
+    case "mib": factor = 1024 * 1024; break
+    case "gib": factor = 1024 * 1024 * 1024; break
+    case "tib": factor = 1024 * 1024 * 1024 * 1024; break
+    case "kb": factor = 1000; break
+    case "mb": factor = 1e6; break
+    case "gb": factor = 1e9; break
+    case "tb": factor = 1e12; break
+  }
+  return Math.round(value * factor)
+}
+
+// One decimal size label for the download cards (finding 66): "" when there is
+// nothing to show, else GB with one decimal, or a whole number of MB/KB.
+function formatBytesDecimal(bytes) {
+  var n = num(bytes, 0)
+  if (!(n > 0)) return ""
+  var gb = n / 1e9
+  if (gb >= 1) return (Math.round(gb * 10) / 10) + " GB"
+  var mb = n / 1e6
+  if (mb >= 1) return Math.round(mb) + " MB"
+  return Math.max(1, Math.round(n / 1000)) + " KB"
 }
 
 // Download-view cards (README 12c answer 2 / finding 53): one card per repo,
@@ -2227,7 +2263,9 @@ function setupDownloadCards(entries, clone) {
       if (c && String(c.item) === String(e.path)) {
         row.percent = num(c.percent, -1)
         row.detail = String(c.label || "Downloading\u2026")
-        if (String(c.size || "") !== "") row.size = String(c.size)
+        // Prefer the parsed byte size in the one decimal system (finding 66).
+        if (num(c.bytes, 0) > 0) row.size = formatBytesDecimal(c.bytes)
+        else if (String(c.size || "") !== "") row.size = String(c.size)
       } else {
         row.detail = "Downloading\u2026"
       }
@@ -2248,8 +2286,8 @@ function setupDownloadSummary(entries) {
     var s = String(list[i].state || "")
     if (s === "cloned" || s === "ready") done++
   }
-  if (done === list.length) return list.length === 1 ? "Repository downloaded" : "All " + list.length + " repos downloaded"
-  return "Downloading " + list.length + " repos \u00b7 " + done + " of " + list.length + " done"
+  if (done === list.length) return list.length === 1 ? "Repository downloaded" : "All " + pluralCount(list.length, "repo") + " downloaded"
+  return "Downloading " + pluralCount(list.length, "repo") + " \u00b7 " + done + " of " + list.length + " done"
 }
 
 // One plain sentence for the whole Review step (README 12c finding 54).
@@ -2485,12 +2523,15 @@ function setupCloneProgress(progress) {
   var hasPercent = p.percent !== null && p.percent !== undefined
   var percent = hasPercent ? Number(p.percent) : -1
   var size = String(p.size || "")
+  var bytes = parseSizeBytes(size)
+  var human = formatBytesDecimal(bytes)
   return {
     item: String(p.item || ""),
     percent: percent,
     size: size,
+    bytes: bytes,
     state: String(p.state || ""),
-    label: "Downloading " + (hasPercent ? percent + "%" : "\u2026") + (size !== "" ? " \u00b7 " + size : "")
+    label: "Downloading " + (hasPercent ? percent + "%" : "\u2026") + (human !== "" ? " \u00b7 " + human : "")
   }
 }
 

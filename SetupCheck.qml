@@ -109,6 +109,8 @@ Column {
     text: "Check again"
     iconText: "\uf021"
     fontSize: Style.font.caption
+    // Only offer "Check again" once the current check finished (finding 62).
+    visible: !root.checking
     enabled: !root.checking
     onClicked: root.resendRequested()
   }

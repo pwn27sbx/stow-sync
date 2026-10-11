@@ -106,7 +106,7 @@ Column {
 
     Button {
       text: (root.showAll ? "Hide other repos" : "Show all repos") + " (" + root.groups.others.length + ")"
-      iconText: root.showAll ? "\uf077" : "\uf078"
+      iconText: root.showAll ? "\uf078" : "\uf054"
       fontSize: Style.font.caption
       horizontalPadding: Style.space(6)
       verticalPadding: Style.space(3)
@@ -144,7 +144,7 @@ Column {
 
   Button {
     text: root.urlOpen ? "Hide the URL field" : "Use another repo URL"
-    iconText: root.urlOpen ? "\uf077" : "\uf078"
+    iconText: root.urlOpen ? "\uf078" : "\uf054"
     fontSize: Style.font.caption
     horizontalPadding: Style.space(6)
     verticalPadding: Style.space(3)

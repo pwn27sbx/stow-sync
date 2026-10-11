@@ -4720,6 +4720,36 @@ class SetupReviewRowsTests(unittest.TestCase):
         self.assertNotIn("id: postToggle", review)
 
 
+class SetupSmallFixesTests(unittest.TestCase):
+    """Findings 62, 64 and 75: Check again only after the check finishes, the
+    collapsed rows use a right chevron, and the confirm card bounds its text."""
+
+    def test_check_again_hides_while_checking(self) -> None:
+        check = (ROOT / "SetupCheck.qml").read_text(encoding="utf-8")
+        connect = (ROOT / "SetupConnect.qml").read_text(encoding="utf-8")
+        step = (ROOT / "SetupStep.qml").read_text(encoding="utf-8")
+        self.assertIn("visible: !root.checking", check)
+        self.assertIn("property bool checking: false", connect)
+        self.assertIn("visible: !root.checking", connect)
+        self.assertIn("checking: root.checking", step)
+
+    def test_collapsed_rows_use_a_right_chevron(self) -> None:
+        picker = (ROOT / "SetupRepoPicker.qml").read_text(encoding="utf-8")
+        # Collapsed is \uf054 (right), expanded is \uf078 (down), for both rows.
+        self.assertIn('iconText: root.showAll ? "\\uf078" : "\\uf054"', picker)
+        self.assertIn('iconText: root.urlOpen ? "\\uf078" : "\\uf054"', picker)
+
+    def test_confirm_card_chrome_clips_above_the_buttons(self) -> None:
+        source = (ROOT / "ConfirmCard.qml").read_text(encoding="utf-8")
+        self.assertIn(
+            "Math.min(implicitHeight, inner.height - buttonRow.height - Style.space(12))",
+            source,
+        )
+        chrome = source.index("id: chrome")
+        body = source.index("id: bodyArea")
+        self.assertIn("clip: true", source[chrome:body])
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""

@@ -1847,12 +1847,32 @@ test("setupWizardStepState: done / current / next for the stepper", () => {
   assert.equal(Model.setupWizardStepState(0, 0), "current")
 })
 
-test("setupSizeLabel: real byte estimates only, never invented", () => {
+test("setupSizeLabel: real decimal byte estimates only, never invented", () => {
   assert.equal(Model.setupSizeLabel(0), "")
   assert.equal(Model.setupSizeLabel(-5), "")
-  assert.equal(Model.setupSizeLabel(3 * 1024 * 1024), "3 MB")
-  assert.equal(Model.setupSizeLabel(1024 * 1024 * 1024), "~1 GB")
-  assert.equal(Model.setupSizeLabel(500 * 1024), "500 KB")
+  assert.equal(Model.setupSizeLabel(3e6), "3 MB")
+  assert.equal(Model.setupSizeLabel(1e9), "~1 GB")
+  assert.equal(Model.setupSizeLabel(500e3), "500 KB")
+})
+
+test("parseSizeBytes: git binary units and decimal units to bytes", () => {
+  assert.equal(Model.parseSizeBytes(""), 0)
+  assert.equal(Model.parseSizeBytes("garbage"), 0)
+  assert.equal(Model.parseSizeBytes("410.20 MiB"), Math.round(410.2 * 1024 * 1024))
+  assert.equal(Model.parseSizeBytes("944.81 KiB"), Math.round(944.81 * 1024))
+  assert.equal(Model.parseSizeBytes("1.2 GiB"), Math.round(1.2 * 1024 * 1024 * 1024))
+  assert.equal(Model.parseSizeBytes("34 MB"), 34 * 1000 * 1000)
+  assert.equal(Model.parseSizeBytes("955 GB"), 955 * 1000 * 1000 * 1000)
+})
+
+test("formatBytesDecimal: one decimal unit system for every size", () => {
+  assert.equal(Model.formatBytesDecimal(0), "")
+  assert.equal(Model.formatBytesDecimal(-1), "")
+  // git's binary "410.20 MiB" renders as one decimal number (finding 66).
+  assert.equal(Model.formatBytesDecimal(Model.parseSizeBytes("410.20 MiB")), "430 MB")
+  assert.equal(Model.formatBytesDecimal(34 * 1000 * 1000), "34 MB")
+  assert.equal(Model.formatBytesDecimal(1.2e9), "1.2 GB")
+  assert.equal(Model.formatBytesDecimal(500 * 1000), "500 KB")
 })
 
 test("setupDownloadCards: one card per repo with the live clone percent", () => {
@@ -1872,6 +1892,11 @@ test("setupDownloadCards: one card per repo with the live clone percent", () => 
   const failed = Model.setupDownloadCards([{ path: "~/y", state: "error", error: "private" }], null)
   assert.equal(failed[0].tone, "urgent")
   assert.equal(failed[0].detail, "private")
+  // A cloning card uses the decimal human size when bytes are known (finding 66).
+  const withBytes = Model.setupDownloadCards([{ path: "~/wallpapers", state: "cloning" }], {
+    item: "~/wallpapers", percent: 45, size: "410.20 MiB", bytes: Model.parseSizeBytes("410.20 MiB"), label: "Downloading 45% \u00b7 430 MB"
+  })
+  assert.equal(withBytes[0].size, "430 MB")
 })
 
 test("setupDownloadSummary: overall line and success state", () => {
@@ -1879,6 +1904,8 @@ test("setupDownloadSummary: overall line and success state", () => {
   assert.equal(Model.setupDownloadSummary([{ state: "cloning" }, { state: "cloned" }]), "Downloading 2 repos \u00b7 1 of 2 done")
   assert.equal(Model.setupDownloadSummary([{ state: "cloned" }, { state: "ready" }]), "All 2 repos downloaded")
   assert.equal(Model.setupDownloadSummary([{ state: "cloned" }]), "Repository downloaded")
+  // A single in-progress repo reads "1 repo", never "1 repos" (finding 65).
+  assert.equal(Model.setupDownloadSummary([{ state: "cloning" }]), "Downloading 1 repo \u00b7 0 of 1 done")
 })
 
 test("setupReviewSummary: one plain sentence for the whole step", () => {
@@ -2029,7 +2056,9 @@ test("setupCloneProgress: percent, size and an indeterminate fallback", () => {
   const p = Model.setupCloneProgress({ phase: "clone", item: "~/wallpapers", percent: 45, size: "410.20 MiB", state: "running" })
   assert.equal(p.item, "~/wallpapers")
   assert.equal(p.percent, 45)
-  assert.equal(p.label, "Downloading 45% \u00b7 410.20 MiB")
+  assert.equal(p.bytes, Model.parseSizeBytes("410.20 MiB"))
+  // git's binary size renders in the one decimal system (finding 66).
+  assert.equal(p.label, "Downloading 45% \u00b7 430 MB")
   const indet = Model.setupCloneProgress({ phase: "clone", item: "x", percent: null, size: "", state: "running" })
   assert.equal(indet.percent, -1)
   assert.equal(indet.label, "Downloading \u2026")

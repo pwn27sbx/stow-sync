@@ -110,6 +110,10 @@ Item {
           anchors.left: parent.left
           anchors.right: parent.right
           spacing: Style.spacing.sm
+          // Bound the id/text block above the button row so the backup id line
+          // never collides with the buttons (finding 75).
+          height: Math.min(implicitHeight, inner.height - buttonRow.height - Style.space(12))
+          clip: true
 
           Text {
             width: parent.width; visible: root.title !== ""; textFormat: Text.PlainText

@@ -95,6 +95,7 @@ Column {
     repoError: root.repoError
     connectEntries: root.connectEntries
     connectRunning: root.connectRunning
+    checking: root.checking
     authFix: Model.setupAuthFix(root.connectEntries, root.connectAuthError)
     clone: root.clone
     motion: root.motion
