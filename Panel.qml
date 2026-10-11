@@ -252,7 +252,9 @@ Panel {
     centerOnBar: true
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(560))
-    contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight, Style.space(580))
+    // While the wizard is open, reserve the fixed dialog height so the wizard
+    // never resizes between steps (README 12c finding 57).
+    contentHeight: panel.fittedContentHeight(root.setupOpen ? Style.space(560) : contentColumn.implicitHeight, Style.space(580))
 
     PanelKeyCatcher {
       id: keyCatcher
