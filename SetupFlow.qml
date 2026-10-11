@@ -40,7 +40,7 @@ QtObject {
   readonly property bool running: flow.applying || flow.connectRunning
   readonly property var stepNames: Model.setupWizardSteps
   readonly property var stepRows: Model.setupStepState(flow.applyResult)
-  readonly property var report: Model.setupReport(flow.applyResult, flow.plan)
+  readonly property var report: Model.setupReport(flow.applyResult, flow.plan, flow.undoResult !== null)
   readonly property string undoSentence: flow.applyResult !== null ? Model.setupUndoSentence(flow.applyResult) : ""
   readonly property string stepLine: flow.mode === "backups" ? "Setup backups"
     : ("Step " + (flow.step + 1) + " of " + flow.stepNames.length + " \u00b7 " + Model.setupStepName(flow.step))

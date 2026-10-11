@@ -1747,6 +1747,49 @@ test("setupReport: every post step is listed with ran/skipped/not selected", () 
   assert.equal(solo.sections.filter(function(s) { return s.key === "steps" })[0].items[0].label, "extra")
 })
 
+test("setupProgressPath: points at the progress file, not the state dir", () => {
+  assert.equal(Model.setupProgressPath("/state"), "/state/setup-progress.json")
+  assert.equal(Model.setupProgressPath("/state/"), "/state/setup-progress.json")
+  assert.equal(Model.setupProgressPath(""), "")
+  assert.equal(Model.setupProgressPath(null), "")
+})
+
+test("setupReport: an unavailable step reads skipped, never not-selected", () => {
+  const report = Model.setupReport(
+    { ok: true, post: [] },
+    { post: [
+      { id: "wallpaper-tint", label: "Recolor wallpapers", available: false, missing: ["gowall"] },
+      { id: "zen-sync", label: "Link Zen", available: true, missing: [] }
+    ] }
+  )
+  const steps = report.sections.filter(function(s) { return s.key === "steps" })[0]
+  same(steps.items.map(function(i) { return [i.label, i.state] }), [
+    ["Recolor wallpapers", "skipped: needs gowall"],
+    ["Link Zen", "not selected"]
+  ])
+})
+
+test("setupReport: undone marks every section undone", () => {
+  const report = Model.setupReport(
+    { ok: true, services: [{ unit: "t.timer", state: "enabled" }], post: [{ id: "a", state: "ran" }] },
+    { post: [{ id: "a", label: "A" }] },
+    true
+  )
+  assert.ok(report.sections.length > 0)
+  assert.ok(report.sections.every(function(s) { return s.undone === true }))
+  const live = Model.setupReport({ ok: true, services: [{ unit: "t.timer", state: "enabled" }] })
+  assert.ok(live.sections.every(function(s) { return s.undone !== true }))
+})
+
+test("setupUndoneFromBackups: true only when the newest backup is undone", () => {
+  assert.equal(Model.setupUndoneFromBackups(null), false)
+  assert.equal(Model.setupUndoneFromBackups([]), false)
+  assert.equal(Model.setupUndoneFromBackups([{ id: "1", undone: true }]), true)
+  // Backups are oldest-first: a newer non-undone backup means the machine is set up.
+  assert.equal(Model.setupUndoneFromBackups([{ id: "1", undone: true }, { id: "2", undone: false }]), false)
+  assert.equal(Model.setupUndoneFromBackups([{ id: "1", undone: false }, { id: "2", undone: true }]), true)
+})
+
 test("groupCountLabel: a count and a bare unit render once", () => {
   assert.equal(Model.groupCountLabel(6, "packages"), "6 packages")
   assert.equal(Model.groupCountLabel(1, "file"), "1 file")

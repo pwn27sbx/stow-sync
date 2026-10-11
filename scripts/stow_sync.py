@@ -559,17 +559,27 @@ def detect_packages(repo_path: str) -> list[str]:
     return packages
 
 
-def _drain_capped(pipe: Any, sink: list[bytes], max_output: int, overflow: threading.Event) -> None:
+def _drain_capped(
+    pipe: Any,
+    sink: list[bytes],
+    max_output: int,
+    overflow: threading.Event,
+    on_chunk: Any = None,
+) -> None:
     """Read a child pipe to EOF, keeping at most ``max_output`` bytes.
 
     Draining continues past the cap (discarding) so the child never blocks on
     a full pipe; the overflow flag lets the parent kill the process group.
+    ``on_chunk`` (optional) receives every raw chunk as it arrives, so a caller
+    can stream progress while the child still runs.
     """
     kept = 0
     total = 0
     try:
         while True:
-            chunk = pipe.read(65536)
+            # read1 returns as soon as any bytes are available; read(n) would
+            # block until n bytes or EOF, which would hide live progress.
+            chunk = pipe.read1(65536)
             if not chunk:
                 return
             total += len(chunk)
@@ -579,6 +589,11 @@ def _drain_capped(pipe: Any, sink: list[bytes], max_output: int, overflow: threa
                 kept += len(take)
             if total > max_output:
                 overflow.set()
+            if on_chunk is not None:
+                try:
+                    on_chunk(chunk)
+                except Exception:  # noqa: BLE001 - progress feedback is best-effort
+                    pass
     except (OSError, ValueError):
         pass
 
@@ -590,12 +605,14 @@ def run_bounded(
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     stdin: str | None = None,
+    on_stderr: Any = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a child in its own process group with capped output.
 
     On timeout the whole group is killed and ``subprocess.TimeoutExpired`` is
     raised. On output overflow the group is killed and the returned result's
-    stderr notes the truncation with a non-zero return code.
+    stderr notes the truncation with a non-zero return code. ``on_stderr``
+    (optional) receives every raw stderr chunk as it arrives, for live progress.
     """
     proc = subprocess.Popen(
         argv,
@@ -618,7 +635,7 @@ def run_bounded(
     err_chunks: list[bytes] = []
     readers = [
         threading.Thread(target=_drain_capped, args=(proc.stdout, out_chunks, max_output, overflow), daemon=True),
-        threading.Thread(target=_drain_capped, args=(proc.stderr, err_chunks, max_output, overflow), daemon=True),
+        threading.Thread(target=_drain_capped, args=(proc.stderr, err_chunks, max_output, overflow, on_stderr), daemon=True),
     ]
     for thread in readers:
         thread.start()
@@ -2571,10 +2588,10 @@ CANDIDATES_DEADLINE_SECONDS = 10.0
 CANDIDATES_CONCURRENCY = 4
 CANDIDATES_API_TIMEOUT = 5.0
 CANDIDATES_REPO_LIMIT = 100
-# Dotfiles that are never a Stow-package shape signal on their own.
-_SETUP_DOTFILE_NOISE = frozenset(
-    {".git", ".gitignore", ".gitattributes", ".gitmodules", ".github", ".editorconfig", ".gitkeep"}
-)
+# A Stow-package shape signal (README 12a/finding 50): shell/user dotfiles that
+# mark a real dotfiles repo. Generic project dotfiles (.gitignore, .eslintrc,
+# .prettierrc, .github/, .vscode/, .env*) never count.
+_SHELL_DOTFILES = frozenset({".zshrc", ".bashrc", ".gitconfig", ".tmux.conf", ".vimrc"})
 _SETUP_HINT_WORDS = ("dotfiles", "dotfile", "dots", "config", "stow")
 
 _SETUP_TOP_KEYS = frozenset(
@@ -2883,8 +2900,25 @@ def _setup_repo_state(
         os.makedirs(parent, exist_ok=True)
     if state_dir and item:
         write_clone_progress(state_dir, item, None, "running")
+    # Stream git's stderr so the panel sees a real percent while it clones
+    # (README 12a/finding 52); previously the percent was only parsed after the
+    # blocking clone finished.
+    on_stderr: Any = None
+    if state_dir and item:
+        tail = {"text": "", "percent": None}
+
+        def on_stderr(chunk: bytes) -> None:
+            tail["text"] = (tail["text"] + _decode(chunk))[-4096:]
+            found = parse_git_clone_progress(tail["text"])
+            if found is not None and found["percent"] != tail["percent"]:
+                tail["percent"] = found["percent"]
+                write_clone_progress(state_dir, item, found, "running")
+
     result = run_bounded(
-        build_git_argv(None, ["clone", "--progress", url, repo_path]), timeout, env=git_env()
+        build_git_argv(None, ["clone", "--progress", url, repo_path]),
+        timeout,
+        env=git_env(),
+        on_stderr=on_stderr,
     )
     progress = parse_git_clone_progress(_decode(result.stderr))
     if result.returncode != 0:
@@ -3259,18 +3293,25 @@ def _repo_hint(repo: dict[str, Any]) -> bool:
     return any(word in haystack for word in _SETUP_HINT_WORDS)
 
 
-def _repo_looks_like_stow(entries: Any) -> bool:
-    """Likely signal: a root ``contents`` listing with Stow-package shape."""
-    if not isinstance(entries, list):
+def _repo_looks_like_stow(paths: Any) -> bool:
+    """Likely signal from a repo tree: Stow-package shape (README 12a/finding 50).
+
+    True when a top-level folder holds ``.config/`` or ``.local/``, or a
+    shell/user dotfile sits at the root or inside a top-level folder. Generic
+    project dotfiles never count, so a web project like TRJS is not flagged.
+    """
+    if not isinstance(paths, list):
         return False
-    for entry in entries:
-        if not isinstance(entry, dict):
+    for path in paths:
+        text = str(path or "")
+        if text == "":
             continue
-        name = str(entry.get("name") or "")
-        kind = str(entry.get("type") or "")
-        if name in (".config", ".local") and kind == "dir":
+        parts = text.split("/")
+        if len(parts) >= 2 and not parts[0].startswith(".") and parts[1] in (".config", ".local"):
             return True
-        if name.startswith(".") and name not in _SETUP_DOTFILE_NOISE and kind in ("file", "blob"):
+        if len(parts) == 1 and text in _SHELL_DOTFILES:
+            return True
+        if len(parts) == 2 and not parts[0].startswith(".") and parts[1] in _SHELL_DOTFILES:
             return True
     return False
 
@@ -3328,14 +3369,24 @@ def _gh_repo_has_recipe(owner: str, name: str, env: dict[str, str], timeout: flo
     return result.returncode == 0
 
 
-def _gh_repo_root_entries(owner: str, name: str, env: dict[str, str], timeout: float) -> Any:
-    """The repo's root ``contents`` listing, or ``None`` when unknown."""
+def _gh_repo_tree_paths(owner: str, name: str, env: dict[str, str], timeout: float) -> Any:
+    """Every path in the repo's HEAD tree, or ``None`` when unknown.
+
+    One bounded read-only call gives the whole shape, so a top-level folder that
+    holds ``.config/``/``.local/`` is visible without a call per folder
+    (README 12a/finding 50).
+    """
     if owner == "":
         return None
-    data, error = _gh_json(["gh", "api", f"repos/{owner}/{name}/contents"], timeout, env)
-    if error is not None:
+    data, error = _gh_json(
+        ["gh", "api", f"repos/{owner}/{name}/git/trees/HEAD?recursive=1"], timeout, env
+    )
+    if error is not None or not isinstance(data, dict):
         return None
-    return data if isinstance(data, list) else None
+    tree = data.get("tree")
+    if not isinstance(tree, list):
+        return None
+    return [str(item.get("path")) for item in tree if isinstance(item, dict) and item.get("path")]
 
 
 def _run_with_deadline(
@@ -3435,7 +3486,7 @@ def cmd_setup_candidates(
     shape_targets = [repo for repo in remaining if repo["name"] not in definitive]
     shape_results, shape_pending = _run_with_deadline(
         [(owner, repo["name"]) for repo in shape_targets],
-        lambda pair: _gh_repo_root_entries(pair[0], pair[1], env, CANDIDATES_API_TIMEOUT),
+        lambda pair: _gh_repo_tree_paths(pair[0], pair[1], env, CANDIDATES_API_TIMEOUT),
         deadline,
     )
     likely: set[str] = set()

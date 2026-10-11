@@ -59,7 +59,7 @@ Column {
     Bridge {
       width: parent.width
       bridge: Model.bridgeState(root.statusData, { notSetUp: root.notSetUp })
-      sentence: Model.explain(root.statusData, { machineSetup: root.notSetUp })
+      sentence: Model.explain(root.statusData, { notSetUp: root.notSetUp })
       busy: root.busy
       motion: root.motion
       foreground: root.foreground
@@ -187,7 +187,7 @@ Column {
     Text {
       width: parent.width
       textFormat: Text.PlainText
-      text: Model.explain(root.statusData, { machineSetup: root.notSetUp })
+      text: Model.explain(root.statusData, { notSetUp: root.notSetUp })
       color: Util.alpha(root.foreground, 0.72)
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall

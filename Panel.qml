@@ -37,7 +37,7 @@ Panel {
   property string adoptRepo: ""; property string adoptPath: ""; property string adoptPackage: ""; property var adoptSuggestions: []
   property string adoptError: ""; property string diffTitle: ""; property string diffBody: ""; property bool diffTruncated: false
   readonly property string clock: Qt.formatTime(new Date(root.nowMs), "HH:mm")
-  readonly property var hero: Model.heroState(root.statusData, root.clock, { machineSetup: root.setupOn })
+  readonly property var hero: Model.heroState(root.statusData, root.clock, { machineSetup: root.setupOn, notSetUp: root.setupNotSetUp })
   readonly property var primary: Model.primaryAction(root.statusData)
   readonly property var tabs: ["Overview", "Changes", "Packages"]
   readonly property var changeView: Model.changesView(root.statusData, { hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting })
@@ -49,7 +49,7 @@ Panel {
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
   readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"; readonly property int contentInset: Style.space(12)
-  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property bool setupNotSetUp: root.setupOn && Model.allReposMissing(root.statusData)
+  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property bool setupUndone: root.setupOn && Model.setupUndoneFromBackups(setupWizard.backups); readonly property bool setupNotSetUp: root.setupOn && (Model.allReposMissing(root.statusData) || root.setupUndone)
   property bool helpOpen: false
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5)
   readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
@@ -362,7 +362,7 @@ Panel {
       anchors.fill: parent
       opened: root.setupOpen; settings: root.settings; statusData: root.statusData
       busy: root.busy; motion: root.motionOn; foreground: Color.foreground
-      progressPath: root.stateDirPath
+      progressPath: Model.setupProgressPath(root.stateDirPath)
       onRequested: function(tag, args) { runner.runAction(tag, args) }
       onClosed: root.setupOpen = false
       onUndoConfirmRequested: function(backup, sentence) { root.confirmKind = "setup-undo"; root.confirmPayload = { backup: backup, sentence: sentence }; root.overlayMode = "confirm" }

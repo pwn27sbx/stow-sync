@@ -52,7 +52,9 @@ Column {
   Text {
     width: parent.width
     textFormat: Text.PlainText
-    text: "Setup finished. Everything below is what Stow Sync did on this machine."
+    text: root.undoResult !== null
+      ? "This setup was undone. Everything below is what it did before you undid it."
+      : "Setup finished. Everything below is what Stow Sync did on this machine."
     color: Util.alpha(root.foreground, 0.72)
     font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall
@@ -94,10 +96,10 @@ Column {
       spacing: Style.spacing.xs
 
       SetupGroupHeader {
-        title: String(modelData.title || "")
+        title: String(modelData.title || "") + (modelData.undone ? "  \u00b7  undone" : "")
         count: modelData.count !== undefined ? Number(modelData.count) : modelData.items.length
         unit: String(modelData.unit || "")
-        tone: String(modelData.tone || "muted")
+        tone: modelData.undone ? "muted" : String(modelData.tone || "muted")
         expanded: root.isExpanded(modelData)
         focused: root.hoveredKey === String(modelData.key)
         foreground: root.foreground
@@ -112,6 +114,7 @@ Column {
         width: parent.width
         spacing: Style.spacing.xs
         visible: root.isExpanded(modelData)
+        opacity: modelData.undone ? 0.6 : 1
 
         Repeater {
           model: modelData.items

@@ -851,7 +851,7 @@ function barIconState(data, opts) {
 function heroState(data, now, opts) {
   var d = data || {}
   var o = opts || {}
-  if (o.machineSetup === true && allReposMissing(d)) {
+  if (o.notSetUp === true || (o.machineSetup === true && allReposMissing(d))) {
     return {
       glyph: HERO_GLYPH.setup,
       title: "This machine is not set up yet",
@@ -1299,7 +1299,7 @@ function joinNames(names) {
 function explain(data, opts) {
   var d = data || {}
   var o = opts || {}
-  if (o.machineSetup === true && allReposMissing(d)) {
+  if (o.notSetUp === true || (o.machineSetup === true && allReposMissing(d))) {
     return "This machine is not set up yet. Use Set up to download your repos and link your configs."
   }
   var attention = attentionFor(d)
@@ -2133,9 +2133,27 @@ function setupStepState(results) {
   return rows
 }
 
-// One Report step row (README 11d.3): every recipe step is listed, its state is
-// `ran` / `skipped: <reason>` / `not selected`, and `sub` carries the cleaned
-// last output line to render under the step name.
+// Absolute path of the live progress file the wizard polls (README 12a/finding
+// 52): the panel used to watch the state DIRECTORY, so the FileView never loaded.
+function setupProgressPath(stateDir) {
+  var dir = String(stateDir === undefined || stateDir === null ? "" : stateDir)
+  if (dir === "") return ""
+  if (dir.charAt(dir.length - 1) === "/") dir = dir.slice(0, -1)
+  return dir + "/setup-progress.json"
+}
+
+// True when the newest setup backup is marked undone (README 12a/finding 61):
+// the machine is back to the not-set-up state. Backups are oldest-first.
+function setupUndoneFromBackups(backups) {
+  var list = backups || []
+  if (list.length === 0) return false
+  return list[list.length - 1].undone === true
+}
+
+// One Report step row (README 11d.3/12a findings 59): every recipe step is
+// listed, its state is `ran` / `skipped: <reason>` / `not selected`, and `sub`
+// carries the cleaned last output line to render under the step name. A step the
+// plan marked unavailable is `skipped: needs X` (the user never deselected it).
 function setupReportSteps(plan, results) {
   var posts = results || []
   var byId = {}
@@ -2146,7 +2164,7 @@ function setupReportSteps(plan, results) {
   for (var q = 0; q < planPosts.length; q++) {
     var pid = String(planPosts[q].id || "")
     seen[pid] = true
-    ordered.push({ id: pid, label: String(planPosts[q].label || pid) })
+    ordered.push({ id: pid, label: String(planPosts[q].label || pid), planEntry: planPosts[q] })
   }
   for (var j = 0; j < posts.length; j++) {
     var rid = String(posts[j].id || "")
@@ -2156,7 +2174,14 @@ function setupReportSteps(plan, results) {
   for (var k = 0; k < ordered.length; k++) {
     var res = byId[ordered[k].id]
     if (res === undefined) {
-      items.push({ label: ordered[k].label, state: "not selected", sub: "", tone: "muted" })
+      var pe = ordered[k].planEntry || {}
+      if (pe.available === false) {
+        var missing = pe.missing || []
+        var reason = missing.length > 0 ? "needs " + missing.join(", ") : "unavailable"
+        items.push({ label: ordered[k].label, state: "skipped: " + reason, sub: "", tone: "muted" })
+      } else {
+        items.push({ label: ordered[k].label, state: "not selected", sub: "", tone: "muted" })
+      }
       continue
     }
     var st = String(res.state || (res.ok === true ? "ran" : "failed"))
@@ -2169,7 +2194,7 @@ function setupReportSteps(plan, results) {
 
 // One collapsible Report group (README 11d.4): title, tone, count, unit and
 // whether it starts expanded.
-function setupReportSection(key, title, tone, unit, items, expandByDefault) {
+function setupReportSection(key, title, tone, unit, items, expandByDefault, undone) {
   return {
     key: key,
     title: title,
@@ -2177,6 +2202,7 @@ function setupReportSection(key, title, tone, unit, items, expandByDefault) {
     count: items.length,
     unit: pluralUnit(items.length, unit),
     expandByDefault: expandByDefault === true,
+    undone: undone === true,
     items: items
   }
 }
@@ -2185,8 +2211,9 @@ function setupReportSection(key, title, tone, unit, items, expandByDefault) {
 // line per problem (README 10b.6/11d.4). Packages and Moved collapse by default;
 // Services, Steps, Failed and notes start expanded. Notes are kept separate so
 // they can be shown again under "Still to do by hand".
-function setupReport(results, plan) {
+function setupReport(results, plan, undone) {
   var r = results || {}
+  var undoneFlag = undone === true
   var packages = r.packages || r.applied || []
   var appliedPackages = []
   for (var i = 0; i < packages.length; i++) {
@@ -2201,12 +2228,12 @@ function setupReport(results, plan) {
   if (appliedPackages.length > 0) {
     var pkgItems = []
     for (var p = 0; p < appliedPackages.length; p++) pkgItems.push({ label: String(appliedPackages[p].repo || "") + " \u00b7 " + String(appliedPackages[p].package || ""), detail: "", tone: "muted" })
-    sections.push(setupReportSection("packages", "Packages linked", "accent", "package", pkgItems, false))
+    sections.push(setupReportSection("packages", "Packages linked", "accent", "package", pkgItems, false, undoneFlag))
   }
   if (moved.length > 0) {
     var moveItems = []
     for (var m = 0; m < moved.length; m++) moveItems.push({ label: String((moved[m] || {}).path || ""), detail: "", tone: "muted" })
-    sections.push(setupReportSection("moved", "Moved to backup", "muted", "file", moveItems, false))
+    sections.push(setupReportSection("moved", "Moved to backup", "muted", "file", moveItems, false, undoneFlag))
   }
   if (services.length > 0) {
     var svcItems = []
@@ -2215,19 +2242,19 @@ function setupReport(results, plan) {
       var svcOk = svc.state !== undefined ? String(svc.state) === "enabled" : svc.ok === true
       svcItems.push({ label: String(svc.unit || ""), detail: svcOk ? (svc.state !== undefined ? String(svc.state) : "enabled") : String(svc.error || "failed"), tone: svcOk ? "muted" : "urgent" })
     }
-    sections.push(setupReportSection("services", "Services", "accent", "service", svcItems, true))
+    sections.push(setupReportSection("services", "Services", "accent", "service", svcItems, true, undoneFlag))
   }
   if (failed.length > 0) {
     var failItems = []
     for (var f = 0; f < failed.length; f++) failItems.push({ label: String((failed[f] || {}).repo || "") + " \u00b7 " + String((failed[f] || {}).package || ""), detail: String((failed[f] || {}).error || "failed"), tone: "urgent" })
-    sections.push(setupReportSection("failed", "Failed", "urgent", "problem", failItems, true))
+    sections.push(setupReportSection("failed", "Failed", "urgent", "problem", failItems, true, undoneFlag))
   }
   var steps = setupReportSteps(plan, posts)
-  if (steps.length > 0) sections.push(setupReportSection("steps", "Steps", "accent", "step", steps, true))
+  if (steps.length > 0) sections.push(setupReportSection("steps", "Steps", "accent", "step", steps, true, undoneFlag))
   if (notes.length > 0) {
     var noteItems = []
     for (var n = 0; n < notes.length; n++) noteItems.push({ label: String(notes[n]), detail: "", tone: "muted" })
-    sections.push(setupReportSection("notes", "Still to do by hand", "muted", "note", noteItems, true))
+    sections.push(setupReportSection("notes", "Still to do by hand", "muted", "note", noteItems, true, undoneFlag))
   }
   var lines = []
   for (var x = 0; x < sections.length; x++) {

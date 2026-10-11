@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -3094,6 +3095,32 @@ class FreshOmarchyHome:
         os.chmod(script, 0o755)
         return script
 
+    def install_fake_slow_git(self, sleep: float = 0.15) -> Path:
+        """A ``git`` that emits clone progress with delays, then creates the dest."""
+        script = self.fakebin / "git"
+        write(
+            script,
+            "#!/bin/sh\n"
+            'case "$*" in\n'
+            "  *clone*)\n"
+            '    for arg in "$@"; do dest="$arg"; done\n'
+            f"    printf 'Receiving objects:  10%% (10/100), 1.00 MiB | 1.00 MiB/s\\r' >&2; sleep {sleep}\n"
+            f"    printf 'Receiving objects:  55%% (55/100), 5.00 MiB | 5.00 MiB/s\\r' >&2; sleep {sleep}\n"
+            "    printf 'Receiving objects: 100%% (100/100), 10.00 MiB | 5.00 MiB/s, done.\\n' >&2\n"
+            "    mkdir -p \"$dest\"; printf 'x\\n' > \"$dest/README.md\"; exit 0 ;;\n"
+            "esac\n"
+            "exit 0\n",
+        )
+        os.chmod(script, 0o755)
+        return script
+
+    def install_fake_slow_stow(self, sleep: float = 0.12) -> Path:
+        """Front ``stow`` with a wrapper that sleeps, then execs the real stow."""
+        script = self.fakebin / "stow"
+        write(script, "#!/bin/sh\n" f"sleep {sleep}\n" f'exec "{self.real_stow}" "$@"\n')
+        os.chmod(script, 0o755)
+        return script
+
     def _seed_defaults(self) -> None:
         home = self.home
         write(home / ".config" / "fish" / "config.fish", self.fish_default)
@@ -4245,6 +4272,13 @@ class SetupCandidatesTests(SetupTestBase):
                 "repositoryTopics": [],
             },
             {
+                "name": "TRJS",
+                "url": "https://github.com/me/TRJS",
+                "isPrivate": False,
+                "description": "a web portfolio",
+                "repositoryTopics": [],
+            },
+            {
                 "name": "portfolio",
                 "url": "https://github.com/me/portfolio",
                 "isPrivate": False,
@@ -4272,19 +4306,12 @@ class SetupCandidatesTests(SetupTestBase):
         routes += [
             {"match": ["contents/.stow-sync/setup.json", "dotfiles"], "stdout": "{}", "exit": 0},
             {"match": ["contents/.stow-sync/setup.json"], "exit": 1},
-            {"match": ["contents", "myconf"], "stdout": '[{"name":".config","type":"dir"}]', "exit": 0},
-            {"match": ["contents", "zsh-dots"], "stdout": '[{"name":".zshrc","type":"file"}]', "exit": 0},
-            {
-                "match": ["contents", "OldDotfiles"],
-                "stdout": '[{"name":"README.md","type":"file"},{"name":"config","type":"dir"}]',
-                "exit": 0,
-            },
-            {
-                "match": ["contents", "portfolio"],
-                "stdout": '[{"name":"README.md","type":"file"},{"name":"src","type":"dir"}]',
-                "exit": 0,
-            },
-            {"match": ["contents", "notes"], "stdout": '[{"name":"README.md","type":"file"}]', "exit": 0},
+            {"match": ["git/trees", "myconf"], "stdout": '{"tree":[{"path":"fish/.config/fish/config.fish"},{"path":"fish/.config"}]}', "exit": 0},
+            {"match": ["git/trees", "zsh-dots"], "stdout": '{"tree":[{"path":".zshrc"},{"path":"README.md"}]}', "exit": 0},
+            {"match": ["git/trees", "OldDotfiles"], "stdout": '{"tree":[{"path":"README.md"},{"path":"kitty/kitty.conf"},{"path":"nvim/init.lua"},{"path":"starship.toml"},{"path":"zshrc.txt"}]}', "exit": 0},
+            {"match": ["git/trees", "TRJS"], "stdout": '{"tree":[{"path":"package.json"},{"path":"app/main.tsx"},{"path":".github/workflows/ci.yml"},{"path":".gitignore"}]}', "exit": 0},
+            {"match": ["git/trees", "portfolio"], "stdout": '{"tree":[{"path":"README.md"},{"path":"src/main.js"},{"path":"package.json"}]}', "exit": 0},
+            {"match": ["git/trees", "notes"], "stdout": '{"tree":[{"path":"README.md"}]}', "exit": 0},
             {"match": ["auth", "status"], "stdout": "Logged in to github.com account me (keyring)\n", "exit": 0},
         ]
         return routes
@@ -4299,17 +4326,18 @@ class SetupCandidatesTests(SetupTestBase):
         self.assertEqual([r["name"] for r in result["definitive"]], ["dotfiles"])
         self.assertEqual([r["name"] for r in result["likely"]], ["myconf", "zsh-dots"])
         self.assertEqual(
-            [r["name"] for r in result["others"]], ["OldDotfiles", "portfolio", "notes"]
+            [r["name"] for r in result["others"]],
+            ["OldDotfiles", "TRJS", "portfolio", "notes"],
         )
         self.assertIn("took_ms", result)
         self.assertFalse(result["partial"])
         self.assertEqual(result["owner"], "me")
         self.assertEqual(result["definitive"][0]["detail"], "setup recipe")
+        # TRJS (a web portfolio) is not stow-like; OldDotfiles matches by name only.
+        trjs = [r for r in result["others"] if r["name"] == "TRJS"][0]
+        self.assertFalse(trjs["hint"])
         old = [r for r in result["others"] if r["name"] == "OldDotfiles"][0]
         self.assertTrue(old["hint"])
-        self.assertEqual(old["detail"], "")
-        portfolio = [r for r in result["others"] if r["name"] == "portfolio"][0]
-        self.assertFalse(portfolio["hint"])
 
     def test_definitive_from_code_search(self) -> None:
         search = '[{"repository":{"nameWithOwner":"me/dotfiles","name":"dotfiles"}}]'
@@ -4324,6 +4352,61 @@ class SetupCandidatesTests(SetupTestBase):
             result = self.candidates()
         self.assertFalse(result["ok"])
         self.assertIn("not installed", result["error"])
+
+
+class RepoShapeTests(unittest.TestCase):
+    """Likely-dotfiles heuristic (README 12a/finding 50)."""
+
+    def test_stow_shaped_repo_is_likely(self) -> None:
+        self.assertTrue(
+            ss._repo_looks_like_stow(
+                ["fish/.config/fish/config.fish", "nvim/.config/nvim/init.lua", "README.md"]
+            )
+        )
+        self.assertTrue(ss._repo_looks_like_stow([".zshrc", "README.md"]))
+        self.assertTrue(ss._repo_looks_like_stow(["zsh/.zshrc", "README.md"]))
+        self.assertTrue(ss._repo_looks_like_stow(["local/.local/share/x"]))
+
+    def test_generic_web_project_is_not_likely(self) -> None:
+        trjs = [
+            "package.json",
+            "app/main.tsx",
+            "app/components/Scene.tsx",
+            "app/lib/lang.ts",
+            ".github/workflows/ci.yml",
+            ".gitignore",
+            ".env.example",
+            ".eslintrc.json",
+            "biome.json",
+            "src/main.js",
+        ]
+        self.assertFalse(ss._repo_looks_like_stow(trjs))
+
+    def test_olddotfiles_shaped_repo_is_not_likely(self) -> None:
+        # Real pwn27sbx/OldDotfiles: per-app folders with direct config files, no
+        # .config/.local anywhere and no shell dotfile (zshrc.txt, not .zshrc).
+        old = [
+            "README.md",
+            "kitty/kitty.conf",
+            "fastfetch/config.jsonc",
+            "nvim/init.lua",
+            "nvim/lua/config/lazy.lua",
+            "starship.toml",
+            "zshrc.txt",
+            "nvim/.gitignore",
+        ]
+        self.assertFalse(ss._repo_looks_like_stow(old))
+
+    def test_generic_project_dotfiles_do_not_count(self) -> None:
+        self.assertFalse(
+            ss._repo_looks_like_stow(
+                [".gitignore", ".eslintrc.json", ".prettierrc", ".github/workflows/ci.yml", ".vscode/settings.json", ".env.local"]
+            )
+        )
+
+    def test_non_list_is_not_likely(self) -> None:
+        self.assertFalse(ss._repo_looks_like_stow(None))
+        self.assertFalse(ss._repo_looks_like_stow([]))
 
 
 class RunWithDeadlineTests(unittest.TestCase):
@@ -4555,6 +4638,71 @@ class SetupPerformMoveTests(unittest.TestCase):
                 with self.assertRaises(ss.CommandError) as ctx:
                     ss._setup_perform_move(str(src), str(dst))
             self.assertIn("filesystem", str(ctx.exception))
+
+
+class SetupProgressStreamingTests(SetupTestBase):
+    """End-to-end live progress (README 12a findings 52/56): the progress file
+    must carry intermediate states WHILE the long request runs."""
+
+    def _poll_until(self, path: Path, stop: threading.Event, seen: list) -> None:
+        while not stop.is_set():
+            try:
+                seen.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.02)
+
+    def test_clone_writes_intermediate_percent_while_running(self) -> None:
+        self.env.install_fake_slow_git()
+        progress = self.state / "setup-progress.json"
+        seen: list = []
+        stop = threading.Event()
+        thread = threading.Thread(target=self._poll_until, args=(progress, stop, seen))
+        thread.start()
+        try:
+            result = ss._setup_repo_state(
+                str(self.home / ".dotfiles"),
+                "https://example.invalid/dotfiles.git",
+                False,
+                timeout=10,
+                state_dir=str(self.state),
+                item="~/.dotfiles",
+            )
+        finally:
+            stop.set()
+            thread.join()
+        self.assertEqual(result["state"], "cloned", result)
+        intermediate = [
+            entry.get("percent")
+            for entry in seen
+            if isinstance(entry.get("percent"), int) and 0 < entry["percent"] < 100
+        ]
+        self.assertTrue(intermediate, "no intermediate percent observed: " + repr(seen))
+
+    def test_apply_writes_intermediate_item_states(self) -> None:
+        self.connect()
+        self.env.install_fake_slow_stow()
+        self.env.install_script("hello", "#!/bin/sh\necho hi\nexit 0\n")
+        progress = self.state / "setup-progress.json"
+        seen: list = []
+        stop = threading.Event()
+        thread = threading.Thread(target=self._poll_until, args=(progress, stop, seen))
+        plan = self.plan()
+        thread.start()
+        try:
+            result = self.apply(plan["token"])
+        finally:
+            stop.set()
+            thread.join()
+        self.assertTrue(result["ok"], result)
+        partial = [
+            entry
+            for entry in seen
+            if isinstance(entry.get("done"), int)
+            and isinstance(entry.get("total"), int)
+            and 0 < entry["done"] < entry["total"]
+        ]
+        self.assertTrue(partial, "no intermediate apply state observed: " + repr(seen))
 
 
 class CleanOutputTests(unittest.TestCase):
