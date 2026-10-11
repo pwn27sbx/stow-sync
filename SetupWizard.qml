@@ -191,6 +191,8 @@ Item {
             iconText: "\uf0e2"
             foreground: Color.urgent
             bordered: true
+            // Same box height as the primary so their text ink centres align (finding 68).
+            verticalPadding: Style.space(8)
             visible: flow.mode === "wizard" && flow.step === 4 && flow.applyResult !== null && String(flow.applyResult.backup || "") !== "" && flow.undoResult === null
             enabled: !root.busy
             onClicked: flow.requestUndo(String(flow.applyResult.backup || ""))
@@ -200,6 +202,8 @@ Item {
             text: flow.backLabel()
             visible: flow.backLabel() !== "Close"
             opacity: flow.running ? 0.4 : 1
+            // Centre Back on the primary's vertical axis (finding 68).
+            verticalPadding: Style.space(8)
             enabled: !flow.running
             onClicked: flow.back()
           }

@@ -4658,6 +4658,15 @@ class SetupWizardSpacingTests(unittest.TestCase):
         self.assertEqual(picker.count("spacing: Style.space(8)"), 2)
 
 
+class SetupWizardFooterTests(unittest.TestCase):
+    """Finding 68: Back and the primary share one vertical centre, so the Undo,
+    Back and primary footer buttons all carry the same vertical padding."""
+
+    def test_every_footer_button_has_the_same_vertical_padding(self) -> None:
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        self.assertEqual(wizard.count("verticalPadding: Style.space(8)"), 3)
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""
