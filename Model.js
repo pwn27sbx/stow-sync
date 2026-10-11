@@ -2047,18 +2047,22 @@ function setupPlanGroups(plan) {
     linkItems.push({ label: String(l.repo || "") + " \u00b7 " + String(l.package || ""), detail: pluralCount(files, "file"), tone: "muted" })
   }
   if (linkItems.length > 0) groups.push({ key: "link", title: "Will link", subtitle: "Stow packages", tone: "accent", count: linkItems.length, unit: pluralUnit(linkItems.length, "package"), expandByDefault: false, items: linkItems })
-  // Backup files grouped by package, with plain wording (README 12c finding 54).
+  // Backup files grouped by package, with plain wording (README 12c finding 54)
+  // and per-kind counts plus bare file names (finding 69).
   var backupGroups = setupBackupByPackage(p)
   if (backupGroups.length > 0) {
     var backupTotal = 0
     var backupItems = []
     for (var bg = 0; bg < backupGroups.length; bg++) {
       backupTotal += backupGroups[bg].count
-      var sub = []
-      for (var sf = 0; sf < backupGroups[bg].files.length; sf++) {
-        sub.push(backupGroups[bg].files[sf].wording + "  \u00b7  " + backupGroups[bg].files[sf].target)
-      }
-      backupItems.push({ label: backupGroups[bg].package, detail: pluralCount(backupGroups[bg].count, "file"), tone: "muted", sub: sub })
+      var bGroup = backupGroups[bg]
+      var clauses = []
+      if (bGroup.savedToBackup > 0) clauses.push(bGroup.savedToBackup + " saved to backup")
+      if (bGroup.identical > 0) clauses.push(bGroup.identical + " same as yours")
+      var bDetail = pluralCount(bGroup.count, "file") + (clauses.length > 0 ? " \u00b7 " + clauses.join(", ") : "")
+      var names = []
+      for (var sf = 0; sf < bGroup.files.length; sf++) names.push(bGroup.files[sf].name)
+      backupItems.push({ label: bGroup.package, detail: bDetail, tone: "muted", sub: names })
     }
     groups.push({ key: "backup", title: "Will move to backup", subtitle: "Existing files kept in the backup folder", tone: "accent", count: backupTotal, unit: pluralUnit(backupTotal, "file"), expandByDefault: false, items: backupItems })
   }
@@ -2284,11 +2288,18 @@ function setupBackupByPackage(plan) {
   for (var i = 0; i < links.length; i++) {
     var conflicts = links[i].conflicts || []
     var files = []
+    var savedToBackup = 0
+    var identical = 0
     for (var k = 0; k < conflicts.length; k++) {
       if (conflicts[k].kind === "blocked") continue
+      var target = String(conflicts[k].target || "")
+      var kind = String(conflicts[k].kind || "")
+      if (kind === "different") savedToBackup++
+      else if (kind === "identical") identical++
       files.push({
-        target: String(conflicts[k].target || ""),
-        kind: String(conflicts[k].kind || ""),
+        target: target,
+        kind: kind,
+        name: target.slice(target.lastIndexOf("/") + 1),
         wording: setupConflictWording(conflicts[k].kind)
       })
     }
@@ -2298,6 +2309,8 @@ function setupBackupByPackage(plan) {
         package: String(links[i].package || ""),
         count: files.length,
         unit: pluralUnit(files.length, "file"),
+        savedToBackup: savedToBackup,
+        identical: identical,
         files: files
       })
     }

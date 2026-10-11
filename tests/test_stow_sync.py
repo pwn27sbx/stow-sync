@@ -4705,6 +4705,21 @@ class RepoSectionOverviewTests(unittest.TestCase):
         self.assertIn("root.overview.updateHint", source)
 
 
+class SetupReviewRowsTests(unittest.TestCase):
+    """Finding 70: every Afterwards row shares one style; unavailable steps are
+    greyed with their reason in place of the toggle."""
+
+    def test_afterwards_uses_one_row_style(self) -> None:
+        review = (ROOT / "SetupReview.qml").read_text(encoding="utf-8")
+        self.assertIn("id: postRow", review)
+        self.assertIn("ToggleSwitch {", review)
+        self.assertIn("visible: modelData.available === false", review)
+        self.assertIn("Model.setupToggleLabel(", review)
+        # The old split card/disabled branches are gone.
+        self.assertNotIn("id: disabledRow", review)
+        self.assertNotIn("id: postToggle", review)
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""

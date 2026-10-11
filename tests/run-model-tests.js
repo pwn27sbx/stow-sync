@@ -1604,11 +1604,13 @@ test("setupPlanGroups: full plan produces every ordered group", () => {
   assert.equal(byKey.download.items[0].label, "~/wallpapers")
   assert.equal(byKey.link.count, 3)
   assert.equal(byKey.backup.items.length, 2)
-  // Backup files are grouped by package with plain wording (finding 54).
+  // Backup files are grouped by package; the meaning is stated once per package
+  // and only bare file names are listed under it (finding 69).
   assert.equal(byKey.backup.items[0].label, "fish")
-  assert.equal(byKey.backup.items[0].detail, "1 file")
-  assert.ok(byKey.backup.items[0].sub[0].indexOf("same as yours") !== -1)
-  assert.ok(byKey.backup.items[1].sub[0].indexOf("saved to backup") !== -1)
+  assert.equal(byKey.backup.items[0].detail, "1 file \u00b7 1 same as yours")
+  same(byKey.backup.items[0].sub, ["config.fish"])
+  assert.equal(byKey.backup.items[1].detail, "1 file \u00b7 1 saved to backup")
+  same(byKey.backup.items[1].sub, ["config"])
   assert.equal(byKey.skipped.tone, "urgent")
   assert.equal(byKey.skipped.items[0].label, "~/.dotfiles · app")
   assert.equal(byKey.missing.items[0].label, "gowall")
@@ -1916,6 +1918,24 @@ test("setupBackupByPackage: files grouped by package, blocked skipped", () => {
   assert.equal(groups[0].count, 2)
   assert.equal(groups[0].unit, "files")
   assert.equal(groups[0].files[0].wording, "Omarchy's version \u2192 saved to backup, yours is used")
+  // Per-kind counts and bare basenames are returned (finding 69).
+  assert.equal(groups[0].savedToBackup, 1)
+  assert.equal(groups[0].identical, 1)
+  assert.equal(groups[0].files[0].name, "init.lua")
+  assert.equal(groups[0].files[1].name, "x.lua")
+})
+
+test("setupPlanGroups: per-package backup detail counts saved vs identical", () => {
+  const plan = setupPlan({ link: [
+    { repo: "~/.dotfiles", package: "nvim", status: "conflicts", files_to_backup: 10, conflicts: [
+      { target: "~/.config/nvim/a.lua", kind: "different" },
+      { target: "~/.config/nvim/b.lua", kind: "different" },
+      { target: "~/.config/nvim/c.lua", kind: "identical" }
+    ] }
+  ] })
+  const backup = Model.setupPlanGroups(plan).filter(function(g) { return g.key === "backup" })[0]
+  assert.equal(backup.items[0].detail, "3 files \u00b7 2 saved to backup, 1 same as yours")
+  same(backup.items[0].sub, ["a.lua", "b.lua", "c.lua"])
 })
 
 test("setupToggleLabel: explicit On / Off wording", () => {

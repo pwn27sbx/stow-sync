@@ -148,38 +148,38 @@ Column {
               }
             }
 
-            Toggle {
-              id: postToggle
-              width: parent.width
-              visible: modelData.default !== undefined && modelData.available !== false
-              label: String(modelData.label || "") + "   \u00b7   " + Model.setupToggleLabel(root.postChecked[String(modelData.id || "")] === true)
-              foreground: root.foreground
-              enabled: !root.busy
-              checked: root.postChecked[String(modelData.id || "")] === true
-              onClicked: root.postToggled(String(modelData.id || ""), !checked)
-            }
-
+            // One row style for every Afterwards step (finding 70): label with
+            // its On/Off wording, then the switch, or the reason in its place.
             RowLayout {
-              id: disabledRow
+              id: postRow
               width: parent.width
-              visible: modelData.default !== undefined && modelData.available === false
+              visible: modelData.default !== undefined
               spacing: Style.spacing.md
 
               Text {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
-                text: String(modelData.label || "")
-                color: Util.alpha(root.foreground, 0.72)
+                text: String(modelData.label || "") + "   \u00b7   " + Model.setupToggleLabel(root.postChecked[String(modelData.id || "")] === true)
+                color: modelData.available === false ? Util.alpha(root.foreground, 0.72) : root.foreground
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
                 elide: Text.ElideRight
               }
 
+              ToggleSwitch {
+                Layout.alignment: Qt.AlignVCenter
+                visible: modelData.available !== false
+                checked: root.postChecked[String(modelData.id || "")] === true
+                enabled: !root.busy
+                onToggled: root.postToggled(String(modelData.id || ""), !checked)
+              }
+
               Text {
                 Layout.alignment: Qt.AlignVCenter
+                visible: modelData.available === false
                 textFormat: Text.PlainText
                 text: String(modelData.detail || "unavailable")
-                color: Color.urgent
+                color: Util.alpha(root.foreground, 0.72)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
               }
