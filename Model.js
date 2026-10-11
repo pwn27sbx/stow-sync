@@ -699,6 +699,22 @@ function flowTotals(data, key) {
   return { count: count, repos: names }
 }
 
+// Overview gating for a machine that is not set up (finding 76): while not set
+// up the Overview shows only the setup card, hides the management actions, and
+// keeps at most a one-line "Updates available" hint.
+function overviewState(data, opts) {
+  var o = opts || {}
+  var notSetUp = o.notSetUp === true
+  var behind = flowTotals(data, "behind").count
+  return {
+    notSetUp: notSetUp,
+    showSetupCard: notSetUp || o.setupNeeded === true,
+    showManagement: !notSetUp,
+    showUpdateHint: notSetUp && behind > 0,
+    updateHint: behind > 0 ? "Updates available on GitHub" : ""
+  }
+}
+
 // Candidates the owner has not acknowledged yet (the "New configs" list).
 function newCandidateCount(data) {
   var candidates = (data && data.candidates) || []
@@ -2384,7 +2400,9 @@ function setupReport(results, plan, undone) {
     for (var s = 0; s < services.length; s++) {
       var svc = services[s] || {}
       var svcOk = svc.state !== undefined ? String(svc.state) === "enabled" : svc.ok === true
-      svcItems.push({ label: String(svc.unit || ""), detail: svcOk ? (svc.state !== undefined ? String(svc.state) : "enabled") : String(svc.error || "failed"), tone: svcOk ? "muted" : "urgent" })
+      // After an undo the row shows the real current state, not stale "enabled" (finding 74).
+      var svcDetail = undoneFlag ? "disabled" : (svcOk ? (svc.state !== undefined ? String(svc.state) : "enabled") : String(svc.error || "failed"))
+      svcItems.push({ label: String(svc.unit || ""), detail: svcDetail, tone: (undoneFlag || svcOk) ? "muted" : "urgent" })
     }
     sections.push(setupReportSection("services", "Services", "accent", "service", svcItems, true, undoneFlag))
   }
@@ -2398,7 +2416,8 @@ function setupReport(results, plan, undone) {
   if (notes.length > 0) {
     var noteItems = []
     for (var n = 0; n < notes.length; n++) noteItems.push({ label: String(notes[n]), detail: "", tone: "muted" })
-    sections.push(setupReportSection("notes", "Still to do by hand", "muted", "note", noteItems, true, undoneFlag))
+    // Notes are instructions, not results: never tag them undone (finding 74).
+    sections.push(setupReportSection("notes", "Still to do by hand", "muted", "note", noteItems, true, false))
   }
   var lines = []
   for (var x = 0; x < sections.length; x++) {

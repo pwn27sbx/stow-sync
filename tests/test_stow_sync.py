@@ -4692,6 +4692,19 @@ class SetupApplyReportLayoutTests(unittest.TestCase):
         self.assertLess(undo, report.index("// Elide in the middle"))
 
 
+class RepoSectionOverviewTests(unittest.TestCase):
+    """Finding 76: on a not-set-up (or just-undone) machine the Overview shows
+    only the not-set-up card and hides Fix packages / Needs fixing."""
+
+    def test_overview_uses_the_overview_state_helper(self) -> None:
+        source = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.overviewState(root.statusData", source)
+        self.assertIn("root.overview.showSetupCard", source)
+        self.assertIn("root.overview.showManagement", source)
+        self.assertIn("root.overview.showUpdateHint", source)
+        self.assertIn("root.overview.updateHint", source)
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""

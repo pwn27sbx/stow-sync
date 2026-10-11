@@ -1791,6 +1791,42 @@ test("setupReport: undone marks every section undone", () => {
   assert.ok(live.sections.every(function(s) { return s.undone !== true }))
 })
 
+test("setupReport: notes stay live and a service reads disabled after Undo", () => {
+  const report = Model.setupReport(
+    { ok: true, services: [{ unit: "t.timer", state: "enabled" }], notes: ["a note"] },
+    { post: [] },
+    true
+  )
+  const byKey = {}
+  report.sections.forEach(function(s) { byKey[s.key] = s })
+  // Notes are not undone, only the setup sections are (finding 74).
+  assert.equal(byKey.notes.undone, false)
+  assert.equal(byKey.services.undone, true)
+  // The greyed timer row shows the post-undo state, not stale "enabled" (finding 74).
+  assert.equal(byKey.services.items[0].detail, "disabled")
+  assert.equal(byKey.services.items[0].tone, "muted")
+})
+
+test("overviewState: a not-set-up machine shows only the setup card", () => {
+  const fresh = Model.overviewState({ repos: [] }, { notSetUp: true })
+  assert.equal(fresh.notSetUp, true)
+  assert.equal(fresh.showSetupCard, true)
+  assert.equal(fresh.showManagement, false)
+  assert.equal(fresh.showUpdateHint, false)
+  // A behind repo only adds a one-line hint while not set up (finding 76).
+  const behind = Model.overviewState({ repos: [{ path: "~/.dotfiles", behind: 2 }] }, { notSetUp: true })
+  assert.equal(behind.showUpdateHint, true)
+  assert.equal(behind.updateHint, "Updates available on GitHub")
+  // A normal machine keeps the management UI.
+  const normal = Model.overviewState({ repos: [{ path: "~/.dotfiles", behind: 0 }] }, {})
+  assert.equal(normal.showSetupCard, false)
+  assert.equal(normal.showManagement, true)
+  // setupNeeded alone forces the setup card without hiding management.
+  const needed = Model.overviewState({ repos: [] }, { setupNeeded: true })
+  assert.equal(needed.showSetupCard, true)
+  assert.equal(needed.showManagement, true)
+})
+
 test("setupUndoneFromBackups: true only when the newest backup is undone", () => {
   assert.equal(Model.setupUndoneFromBackups(null), false)
   assert.equal(Model.setupUndoneFromBackups([]), false)

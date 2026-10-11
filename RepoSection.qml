@@ -10,20 +10,14 @@ import "Model.js" as Model
 // from its children and positions them by height alone.
 Column {
   id: root
-  property var statusData: null; property int tab: 0
-  property string version: ""; property string now: ""
-  property bool busy: false; property bool motion: true
-  property var checkedPaths: ({}); property var hiddenPaths: []
-  property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false; property bool notSetUp: false
-  property string focusedKey: ""; property var packages: []
+  property var statusData: null; property int tab: 0; property string version: ""; property string now: ""
+  property bool busy: false; property bool motion: true; property var checkedPaths: ({}); property var hiddenPaths: []
+  property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false; property bool notSetUp: false; property string focusedKey: ""; property var packages: []
   property color foreground: Color.foreground
   signal reviewRequested(); signal publishRequested(); signal updateRequested()
-  signal restowRequested(string repo, string packageName)
-  signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
-  signal copyRequested(string value)
-  signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
-  signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested()
-  signal changeToggled(string key, bool value); signal changeHovered(string key)
+  signal restowRequested(string repo, string packageName); signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
+  signal copyRequested(string value); signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
+  signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested(); signal changeToggled(string key, bool value); signal changeHovered(string key)
   signal diffRequested(string repo, string path)
   property var expandedGroups: ({}); property var expandedRepos: ({}); property var expandedPackages: ({})
   property string packageKey: ""
@@ -35,6 +29,7 @@ Column {
   readonly property int fresh: Model.newCandidateCount(root.statusData)
   readonly property int hiddenCount: root.hiddenPaths.length
   readonly property var firstUnhealthy: Model.firstUnhealthy(root.statusData)
+  readonly property var overview: Model.overviewState(root.statusData, { notSetUp: root.notSetUp, setupNeeded: root.setupNeeded }) // finding 76
   function setKey(map, key, value) { var next = {}; for (var k in map) next[k] = map[k]; next[key] = value; return next }
   function groupExpanded(key) { return root.expandedGroups[key] === true }
   function expandGroup(key) { root.expandedGroups = root.setKey(root.expandedGroups, key, true) }
@@ -63,11 +58,12 @@ Column {
       foreground: root.foreground
     }
     SetupBanner {
-      width: parent.width; visible: root.setupNeeded; foreground: root.foreground; onSetupRequested: root.setupRequested()
+      width: parent.width; visible: root.overview.showSetupCard; foreground: root.foreground; onSetupRequested: root.setupRequested()
     }
+    Text { width: parent.width; visible: root.overview.showUpdateHint; text: root.overview.updateHint; color: Util.alpha(root.foreground, 0.72); font.family: Style.font.family; font.pixelSize: Style.font.caption }
     BorderSurface {
       width: parent.width
-      visible: root.fresh > 0
+      visible: root.fresh > 0 && root.overview.showManagement
       implicitHeight: bannerRow.implicitHeight + Style.spacing.lg * 2
       color: Util.alpha(Color.accent, 0.10)
       borderSpec: Border.none()
@@ -103,6 +99,7 @@ Column {
     }
     Row {
       width: parent.width
+      visible: root.overview.showManagement && (root.changes > 0 || root.fresh > 0 || root.behind > 0 || root.firstUnhealthy !== null)
       spacing: Style.spacing.lg
       Button { visible: root.changes > 0 || root.fresh > 0 || root.behind > 0; text: "Review Changes"; iconText: "\uf044"; fontSize: Style.font.caption; onClicked: root.reviewRequested() }
       Button { visible: root.behind > 0; text: "Update"; iconText: "\uf0ed"; fontSize: Style.font.caption; onClicked: root.updateRequested() }
@@ -136,7 +133,7 @@ Column {
       GroupCard {
         required property var modelData
         width: parent.width
-        visible: modelData.key !== "newConfigs" || root.groupExpanded("newConfigs")
+        visible: root.overview.showManagement && (modelData.key !== "newConfigs" || root.groupExpanded("newConfigs"))
         title: modelData.title
         subtitle: modelData.subtitle
         count: String(modelData.count)
