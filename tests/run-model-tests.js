@@ -1530,11 +1530,16 @@ test("setupCandidateRows: groups by tier, stars definitive and likely", () => {
   assert.equal(groups.definitive[0].value, "u1")
   assert.equal(groups.definitive[0].likely, true)
   assert.equal(groups.definitive[0].tier, "definitive")
+  assert.equal(groups.definitive[0].sentence, "Has a Stow Sync recipe")
+  assert.equal(groups.likely[0].sentence, "Looks like a dotfiles repo")
   assert.equal(groups.likely[0].detail, "stow-like \u00b7 private")
   assert.equal(groups.likely[0].likely, true)
+  assert.equal(groups.likely[0].badges.indexOf("private") !== -1, true)
+  assert.equal(groups.definitive[0].badges.indexOf("recipe") !== -1, true)
   assert.equal(groups.others[0].value, "u3")
   assert.equal(groups.others[0].likely, false)
   assert.equal(groups.others[0].tier, "other")
+  assert.equal(groups.others[0].sentence, "")
 })
 
 test("setupCandidateFirstUrl: first definitive repo fills the URL", () => {

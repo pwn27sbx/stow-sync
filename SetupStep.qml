@@ -15,6 +15,7 @@ Column {
   property bool checking: false
   property var candidates: null
   property string selectedUrl: ""
+  property string url: ""
   property bool repoLoading: false
   property string repoError: ""
   property var connectEntries: []
@@ -35,6 +36,7 @@ Column {
   signal postToggled(string id, bool value)
   signal checkAgainRequested()
   signal repoPicked(string url)
+  signal urlEdited(string text)
   signal repoRetryRequested()
   signal groupToggled(string key)
 
@@ -73,6 +75,7 @@ Column {
     visible: root.step === 1
     candidates: root.candidates
     selectedUrl: root.selectedUrl
+    url: root.url
     loginDetail: Model.setupLoginDetail(root.prereqs)
     repoLoading: root.repoLoading
     repoError: root.repoError
@@ -83,6 +86,7 @@ Column {
     motion: root.motion
     foreground: root.foreground
     onRepoPicked: function(url) { root.repoPicked(url) }
+    onUrlEdited: function(text) { root.urlEdited(text) }
     onRepoRetryRequested: root.repoRetryRequested()
     onCheckAgainRequested: root.checkAgainRequested()
   }

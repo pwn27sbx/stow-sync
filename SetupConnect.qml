@@ -13,6 +13,7 @@ Column {
 
   property var candidates: null
   property string selectedUrl: ""
+  property string url: ""
   property bool repoLoading: false
   property string repoError: ""
   property var connectEntries: []
@@ -24,6 +25,7 @@ Column {
   property color foreground: Color.foreground
 
   signal repoPicked(string url)
+  signal urlEdited(string text)
   signal repoRetryRequested()
   signal checkAgainRequested()
 
@@ -44,16 +46,6 @@ Column {
     if (status === "failed") return "\uf00d"
     if (status === "running") return "\uf110"
     return "\uf10c"
-  }
-
-  Text {
-    width: parent.width
-    textFormat: Text.PlainText
-    text: "Cloning is safe and repeatable. Stow Sync downloads your dotfiles repo, reads its recipe and downloads the other repos it lists, one at a time."
-    color: Util.alpha(root.foreground, 0.72)
-    font.family: Style.font.family
-    font.pixelSize: Style.font.bodySmall
-    wrapMode: Text.WordWrap
   }
 
   Text {
@@ -118,8 +110,10 @@ Column {
     visible: root.showPicker
     candidates: root.candidates
     selectedUrl: root.selectedUrl
+    url: root.url
     foreground: root.foreground
     onRepoPicked: function(url) { root.repoPicked(url) }
+    onUrlEdited: function(text) { root.urlEdited(text) }
   }
 
   Column {

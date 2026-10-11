@@ -6,29 +6,36 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Repo picker for the Connect step (README 11c.2). Definitive repos (with a
-// Stow Sync recipe) come first and are preselected; likely repos follow; every
-// other repo is behind "Show all repos" with a filter field. Pure rendering:
-// the chosen URL leaves through `repoPicked`.
+// Connect repo picker (README 12c finding 51): radio cards for the recommended
+// repos, the rest behind "Show all repos", and the URL field as a collapsed
+// fallback. Pure rendering; selection and URL edits leave through signals.
 Column {
   id: root
 
   property var candidates: null
   property string selectedUrl: ""
+  property string url: ""
   property color foreground: Color.foreground
+  property bool urlOpen: false
+  property bool showAll: false
 
   signal repoPicked(string url)
+  signal urlEdited(string text)
 
   readonly property var groups: Model.setupCandidateRows(root.candidates)
   readonly property var filteredOthers: Model.setupFilterRows(root.groups.others, filterField.text)
-  property bool showAll: false
 
   width: parent ? parent.width : 0
-  spacing: Style.spacing.sm
+  spacing: Style.spacing.md
 
-  function chipText(row) {
-    var detail = String(row.detail || "")
-    return String(row.label || "") + (row.likely ? " \u2605" : "") + (detail !== "" ? "  \u00b7  " + detail : "")
+  Text {
+    width: parent.width
+    textFormat: Text.PlainText
+    text: "Stow Sync will download your repos and link your configs. Nothing is changed until you confirm in Review."
+    color: Util.alpha(root.foreground, 0.72)
+    font.family: Style.font.family
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
   }
 
   Column {
@@ -39,28 +46,24 @@ Column {
     Text {
       width: parent.width
       textFormat: Text.PlainText
-      text: "Ready to set up"
+      text: "Your setup repo"
       color: Util.alpha(root.foreground, 0.72)
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
     }
 
-    Flow {
-      width: parent.width
-      spacing: Style.spacing.xs
+    Repeater {
+      model: root.groups.definitive
 
-      Repeater {
-        model: root.groups.definitive
-
-        Button {
-          required property var modelData
-          text: root.chipText(modelData)
-          fontSize: Style.font.caption
-          selected: String(modelData.value || "") === root.selectedUrl
-          horizontalPadding: Style.space(6)
-          verticalPadding: Style.space(3)
-          onClicked: root.repoPicked(String(modelData.value || ""))
-        }
+      SetupRepoCard {
+        required property var modelData
+        width: parent.width
+        name: String(modelData.label || "")
+        sentence: String(modelData.sentence || "")
+        badges: modelData.badges || []
+        selected: String(modelData.value || "") === root.selectedUrl
+        foreground: root.foreground
+        onPicked: root.repoPicked(String(modelData.value || ""))
       }
     }
   }
@@ -79,22 +82,18 @@ Column {
       font.pixelSize: Style.font.caption
     }
 
-    Flow {
-      width: parent.width
-      spacing: Style.spacing.xs
+    Repeater {
+      model: root.groups.likely
 
-      Repeater {
-        model: root.groups.likely
-
-        Button {
-          required property var modelData
-          text: root.chipText(modelData)
-          fontSize: Style.font.caption
-          selected: String(modelData.value || "") === root.selectedUrl
-          horizontalPadding: Style.space(6)
-          verticalPadding: Style.space(3)
-          onClicked: root.repoPicked(String(modelData.value || ""))
-        }
+      SetupRepoCard {
+        required property var modelData
+        width: parent.width
+        name: String(modelData.label || "")
+        sentence: String(modelData.sentence || "")
+        badges: modelData.badges || []
+        selected: String(modelData.value || "") === root.selectedUrl
+        foreground: root.foreground
+        onPicked: root.repoPicked(String(modelData.value || ""))
       }
     }
   }
@@ -131,7 +130,7 @@ Column {
 
         Button {
           required property var modelData
-          text: root.chipText(modelData)
+          text: String(modelData.label || "")
           fontSize: Style.font.caption
           selected: String(modelData.value || "") === root.selectedUrl
           horizontalPadding: Style.space(6)
@@ -140,5 +139,23 @@ Column {
         }
       }
     }
+  }
+
+  Button {
+    text: root.urlOpen ? "Hide the URL field" : "Use another repo URL"
+    iconText: root.urlOpen ? "\uf077" : "\uf078"
+    fontSize: Style.font.caption
+    horizontalPadding: Style.space(6)
+    verticalPadding: Style.space(3)
+    onClicked: root.urlOpen = !root.urlOpen
+  }
+
+  TextField {
+    width: parent.width
+    visible: root.urlOpen
+    text: root.url
+    placeholderText: "https://github.com/<you>/dotfiles.git"
+    foreground: root.foreground
+    onTextEdited: root.urlEdited(text)
   }
 }

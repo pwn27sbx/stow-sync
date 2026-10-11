@@ -35,7 +35,7 @@ Item {
   signal closed()
   signal undoConfirmRequested(string backup, string sentence)
 
-  readonly property bool contentActiveFocus: urlField.activeFocus
+  readonly property bool contentActiveFocus: false
   readonly property var backups: flow.backups
   readonly property bool reviewActive: flow.mode === "wizard" && flow.step === 2
 
@@ -145,17 +145,6 @@ Item {
             font.pixelSize: Style.font.caption
           }
 
-          TextField {
-            id: urlField
-            width: parent.width
-            visible: flow.mode === "wizard" && flow.step === 1
-            text: flow.url
-            placeholderText: "https://github.com/<you>/dotfiles.git"
-            foreground: root.foreground
-            onTextEdited: flow.url = text
-            onAccepted: flow.primary()
-          }
-
           Text {
             width: parent.width
             visible: flow.errorText !== ""
@@ -230,6 +219,7 @@ Item {
       checking: flow.checking
       candidates: flow.candidates
       selectedUrl: flow.selectedUrl
+      url: flow.url
       repoLoading: flow.repoLoading
       repoError: flow.repoError
       connectEntries: flow.connectEntries
@@ -249,6 +239,7 @@ Item {
       onPostToggled: function(id, value) { var next = {}; for (var k in flow.postChecked) next[k] = flow.postChecked[k]; next[id] = value; flow.postChecked = next }
       onCheckAgainRequested: flow.runCheck()
       onRepoPicked: function(url) { flow.url = url; flow.selectedUrl = url }
+      onUrlEdited: function(text) { flow.url = text }
       onRepoRetryRequested: flow.retryRepos()
       onGroupToggled: function(key) { flow.toggleGroupKey(key) }
     }

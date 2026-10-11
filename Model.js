@@ -1915,7 +1915,11 @@ function setupCandidateRows(data) {
         likely: tier !== "other",
         tier: tier,
         hint: r.hint === true,
-        private: r.private === true
+        private: r.private === true,
+        // Radio-card fields (README 12c finding 51).
+        sentence: tier === "definitive" ? "Has a Stow Sync recipe"
+          : (tier === "likely" ? "Looks like a dotfiles repo" : ""),
+        badges: (r.private === true ? ["private"] : []).concat(tier === "definitive" ? ["recipe"] : [])
       })
     }
     return rows
