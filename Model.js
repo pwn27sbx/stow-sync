@@ -1412,7 +1412,7 @@ function overviewGroup(key, title, unit, items) {
   return {
     key: key,
     title: title,
-    subtitle: pluralCount(items.length, "item") + " included \u00b7 press to expand",
+    subtitle: pluralCount(items.length, "item") + " included",
     count: items.length,
     unit: pluralUnit(items.length, unit),
     items: items,
@@ -1558,7 +1558,7 @@ function changesGroups(data, options) {
       key: "changes:" + repoPath,
       repo: repoPath,
       title: repoDisplayName(repoPath),
-      subtitle: pluralCount(count, "change") + " \u00b7 press to expand",
+      subtitle: pluralCount(count, "change"),
       count: count,
       unit: pluralUnit(count, "file"),
       packages: packages
@@ -1615,7 +1615,7 @@ function changesView(data, options) {
         key: group.key,
         repo: group.repo,
         title: group.title,
-        subtitle: pluralCount(count, "change") + " \u00b7 press to expand",
+        subtitle: pluralCount(count, "change"),
         count: count,
         unit: pluralUnit(count, "file"),
         packages: packages
@@ -1700,7 +1700,7 @@ function packageCards(data) {
       var statusText
       if (health !== "ok") statusText = "Needs fixing"
       else if (files.length > 0) statusText = plural(files.length, " change", " changes")
-      else statusText = "Stowed \u00b7 press to expand"
+      else statusText = "Stowed"
       var target = packageTargetLabel(pkg, files)
       cards.push({
         repo: repoPath,

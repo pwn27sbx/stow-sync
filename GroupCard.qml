@@ -54,24 +54,16 @@ Item {
       onClicked: root.toggled()
     }
 
-    Column {
-      id: inner
-      x: Style.space(3)
-      width: parent.width - Style.space(3) - Style.spacing.xxl
-      spacing: Style.spacing.sm
+      Column {
+        id: inner
+        // Match the repo lanes: content starts Style.spacing.xxl after the stripe.
+        x: Style.space(3) + Style.spacing.xxl
+        width: parent.width - Style.space(3) - Style.spacing.xxl * 2
+        spacing: Style.spacing.sm
 
       RowLayout {
         width: parent.width
         spacing: Style.spacing.sm
-
-        Text {
-          Layout.alignment: Qt.AlignVCenter
-          textFormat: Text.PlainText
-          text: root.expanded ? "\u25be" : "\u25b8"
-          color: Util.alpha(root.foreground, 0.72)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body
-        }
 
         Text {
           Layout.alignment: Qt.AlignVCenter
@@ -132,12 +124,17 @@ Item {
           onClicked: root.actionClicked()
         }
 
-        // Reserved fixed-width chevron slot: group cards keep their chevron on
-        // the left, so this slot is empty but keeps the count's right edge in
-        // line with the repo lanes' right labels.
-        Item {
+        // Chevron on the right after the count, same slot/glyph/size as the
+        // repo lanes, so every expandable row shares one chevron x.
+        Text {
+          Layout.alignment: Qt.AlignVCenter
           Layout.preferredWidth: Style.space(14)
-          Layout.preferredHeight: Style.space(14)
+          textFormat: Text.PlainText
+          text: root.expanded ? "\u25be" : "\u25b8"
+          color: Util.alpha(root.foreground, 0.72)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+          horizontalAlignment: Text.AlignRight
         }
       }
 

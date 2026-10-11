@@ -47,7 +47,7 @@ Panel {
   readonly property string stateDirPath: String(root.setting("stateDir", "")) !== "" ? String(root.setting("stateDir", "")) : (Quickshell.env("HOME") + "/.local/state/stow-sync")
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
-  readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"; readonly property int contentInset: Style.space(12)
+  readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"
   readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property bool setupUndone: root.setupOn && Model.setupUndoneFromBackups(setupWizard.backups); readonly property bool setupNotSetUp: root.setupOn && (Model.allReposMissing(root.statusData) || root.setupUndone)
   property bool helpOpen: false
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5); readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
@@ -249,6 +249,8 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: keyCatcher
+    // Equal inset on all sides; the content column adds no extra horizontal margin.
+    padding: Style.space(16)
     contentWidth: panel.fittedContentWidth(Style.space(560))
     // While the wizard is open, reserve the fixed dialog height so the wizard
     // never resizes between steps (README 12c finding 57).
@@ -274,7 +276,6 @@ Panel {
         spacing: Style.spacing.sm
         Header {
           Layout.fillWidth: true
-          Layout.leftMargin: root.contentInset; Layout.rightMargin: root.contentInset
           version: root.version
           stateTone: root.hero.tone
           busy: root.busy
@@ -294,7 +295,6 @@ Panel {
 
         SegmentedTabs {
           Layout.fillWidth: true
-          Layout.leftMargin: root.contentInset; Layout.rightMargin: root.contentInset
           tabs: root.tabs
           current: root.activeTab
           motion: root.motionOn
@@ -313,7 +313,7 @@ Panel {
 
           RepoSection {
             id: overviewTab
-            x: root.contentInset; width: Math.max(0, flick.width - root.contentInset * 2)
+            x: 0; width: flick.width
             tab: root.activeTab
             statusData: root.statusData
             version: root.version
