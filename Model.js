@@ -816,6 +816,16 @@ function pluralUnit(count, singular, pluralForm) {
   return num(count, 0) === 1 ? singular : (pluralForm !== undefined ? pluralForm : singular + "s")
 }
 
+// The rendered label of a group header: the count and a BARE unit noun, so
+// groupCountLabel(6, "packages") is "6 packages" (never "6 6 packages", the
+// 11d regression). A negative count means "no count".
+function groupCountLabel(count, unit) {
+  var n = num(count, -1)
+  if (n < 0) return ""
+  var u = String(unit === undefined || unit === null ? "" : unit)
+  return String(n) + (u !== "" ? " " + u : "")
+}
+
 // --- bar icon overlays (Unit 7) ------------------------------------------
 // At most one status dot plus the up/down chevrons: the dot is `urgent` when
 // anything needs attention (conflict/diverged/operation/stow conflict/missing),
@@ -2054,7 +2064,7 @@ function setupPlanGroups(plan) {
   if (notes.length > 0) {
     var noteItems = []
     for (var n = 0; n < notes.length; n++) noteItems.push({ label: String(notes[n]), detail: "", tone: "muted" })
-    groups.push({ key: "notes", title: "Still to do by hand", subtitle: "", tone: "muted", count: noteItems.length, unit: "", expandByDefault: true, items: noteItems })
+    groups.push({ key: "notes", title: "Still to do by hand", subtitle: "", tone: "muted", count: noteItems.length, unit: pluralUnit(noteItems.length, "note"), expandByDefault: true, items: noteItems })
   }
   return groups
 }
@@ -2165,7 +2175,7 @@ function setupReportSection(key, title, tone, unit, items, expandByDefault) {
     title: title,
     tone: tone,
     count: items.length,
-    unit: pluralCount(items.length, unit),
+    unit: pluralUnit(items.length, unit),
     expandByDefault: expandByDefault === true,
     items: items
   }

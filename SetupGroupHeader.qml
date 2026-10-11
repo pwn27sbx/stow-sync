@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 // Shared collapsible summary row for the setup wizard (Review and Report,
 // README 11a.1 / 11d.4): a chevron, a bold title, a right-aligned count, a
@@ -76,7 +77,7 @@ Rectangle {
       Layout.alignment: Qt.AlignVCenter
       visible: root.count >= 0
       textFormat: Text.PlainText
-      text: String(root.count) + (root.unit !== "" ? " " + root.unit : "")
+      text: Model.groupCountLabel(root.count, root.unit)
       color: Util.alpha(root.foreground, 0.72)
       font.family: Style.font.family
       font.pixelSize: Style.font.caption

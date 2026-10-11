@@ -4445,10 +4445,25 @@ class ConfirmCardLayoutTests(unittest.TestCase):
         self.assertLess(source.index("text: root.message"), source.index("id: buttonRow"))
 
 
+class SetupGroupHeaderSourceTests(unittest.TestCase):
+    """Finding 11d regression: every group count renders exactly once."""
+
+    def test_header_renders_the_count_through_one_helper(self) -> None:
+        header = (ROOT / "SetupGroupHeader.qml").read_text(encoding="utf-8")
+        self.assertIn('import "Model.js" as Model', header)
+        self.assertIn("Model.groupCountLabel(", header)
+        # The header must not concatenate the raw count itself, which doubled it.
+        self.assertNotIn("String(root.count)", header)
+
+    def test_review_and_report_share_the_header(self) -> None:
+        for name in ("SetupReview.qml", "SetupReport.qml"):
+            source = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn("SetupGroupHeader {", source)
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""
-
     def test_inject_panel_sets_settings_ready(self) -> None:
         barwidget = (ROOT / "BarWidget.qml").read_text(encoding="utf-8")
         self.assertIn("settingsReady", barwidget, "injectPanel must set settingsReady")

@@ -1747,6 +1747,31 @@ test("setupReport: every post step is listed with ran/skipped/not selected", () 
   assert.equal(solo.sections.filter(function(s) { return s.key === "steps" })[0].items[0].label, "extra")
 })
 
+test("groupCountLabel: a count and a bare unit render once", () => {
+  assert.equal(Model.groupCountLabel(6, "packages"), "6 packages")
+  assert.equal(Model.groupCountLabel(1, "file"), "1 file")
+  assert.equal(Model.groupCountLabel(2, "notes"), "2 notes")
+  assert.equal(Model.groupCountLabel(0, "steps"), "0 steps")
+  assert.equal(Model.groupCountLabel(-1, "packages"), "")
+  assert.equal(Model.groupCountLabel(3, ""), "3")
+  // Every group unit is a BARE noun, so count + unit is one label, never "6 6 packages".
+  const report = Model.setupReport({
+    ok: true,
+    packages: Array(6).fill({ state: "applied", repo: "~/.dotfiles", package: "p" }),
+    moved: Array(4).fill({ path: "~/.config/x" })
+  })
+  const byKey = {}
+  report.sections.forEach(function(s) { byKey[s.key] = s })
+  assert.equal(byKey.packages.unit, "packages")
+  assert.equal(Model.groupCountLabel(byKey.packages.count, byKey.packages.unit), "6 packages")
+  assert.equal(byKey.moved.unit, "files")
+  assert.equal(Model.groupCountLabel(byKey.moved.count, byKey.moved.unit), "4 files")
+  const groups = Model.setupPlanGroups({ notes: ["a", "b"] })
+  const notes = groups.filter(function(g) { return g.key === "notes" })[0]
+  assert.equal(notes.unit, "notes")
+  assert.equal(Model.groupCountLabel(notes.count, notes.unit), "2 notes")
+})
+
 test("setupUndoSentence: names what undo does", () => {
   assert.equal(
     Model.setupUndoSentence({ packages: Array(17).fill({ state: "applied" }), moved: Array(16).fill({}) }),
