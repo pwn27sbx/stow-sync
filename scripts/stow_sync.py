@@ -2598,7 +2598,9 @@ _SETUP_TOP_KEYS = frozenset(
     {"version", "repos", "skip_packages", "services", "requires", "post", "notes"}
 )
 _SETUP_REPO_KEYS = frozenset({"path", "url", "packages", "order", "private"})
-_SETUP_POST_KEYS = frozenset({"id", "label", "argv", "default", "timeout_s", "needs"})
+_SETUP_POST_KEYS = frozenset(
+    {"id", "label", "argv", "default", "timeout_s", "needs", "requires_path", "requires_hint"}
+)
 
 
 def setup_recipe_file(repo_path: str) -> str:
@@ -2743,6 +2745,14 @@ def validate_setup_recipe(data: Any) -> dict[str, Any]:
             raise CommandError(
                 "recipe: " + where + ".needs must be a list of non-empty strings"
             )
+        requires_path = item.get("requires_path", "")
+        if requires_path != "" and not _setup_str(requires_path):
+            raise CommandError(
+                "recipe: " + where + ".requires_path must be a non-empty string"
+            )
+        requires_hint = item.get("requires_hint", "")
+        if not isinstance(requires_hint, str):
+            raise CommandError("recipe: " + where + ".requires_hint must be a string")
         posts.append(
             {
                 "id": item["id"],
@@ -2751,6 +2761,8 @@ def validate_setup_recipe(data: Any) -> dict[str, Any]:
                 "default": default,
                 "timeout_s": timeout_s,
                 "needs": list(needs_raw),
+                "requires_path": requires_path,
+                "requires_hint": requires_hint,
             }
         )
 
@@ -3711,9 +3723,17 @@ def build_setup_plan(recipe: dict[str, Any]) -> dict[str, Any]:
     for entry in recipe["post"]:
         needs = list(entry.get("needs", []))
         missing = [name for name in needs if shutil.which(name) is None]
+        # A declarative precondition (README 12c answer 3): a glob that must
+        # match at least one path under $HOME.
+        requires_path = entry.get("requires_path", "")
+        if requires_path and not glob.glob(os.path.expanduser(requires_path)):
+            missing.append(requires_path)
         available = not missing
+        reason = ""
+        if not available:
+            reason = entry.get("requires_hint") or ("needs " + missing[0])
         # An unavailable step is never enabled by default (README 10a.3), but it
-        # stays in the plan so the Review can show it disabled with "needs X".
+        # stays in the plan so the Review can show it disabled with its reason.
         post.append(
             {
                 "id": entry["id"],
@@ -3723,6 +3743,7 @@ def build_setup_plan(recipe: dict[str, Any]) -> dict[str, Any]:
                 "needs": needs,
                 "available": available,
                 "missing": missing,
+                "reason": reason,
                 "default": bool(entry.get("default")) and available,
             }
         )

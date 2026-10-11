@@ -4162,6 +4162,52 @@ class SetupCloneTests(SetupTestBase):
 
 
 class SetupPostNeedsTests(SetupTestBase):
+    def _recipe_with_zen(self, requires_path: str) -> Path:
+        recipe = valid_setup_recipe()
+        recipe["post"].append(
+            {
+                "id": "zen-link",
+                "label": "Link the Zen Browser config",
+                "argv": ["~/.dotfiles/zen/zen-sync", "link"],
+                "default": True,
+                "timeout_s": 120,
+                "requires_path": requires_path,
+                "requires_hint": "Install Zen and open it once first",
+            }
+        )
+        path = self.env.root / "recipe-zen.json"
+        path.write_text(json.dumps(recipe), encoding="utf-8")
+        return path
+
+    def test_plan_marks_unavailable_post_by_requires_path(self) -> None:
+        # README 12c answer 3: a requires_path glob that matches nothing disables
+        # the step with the plain hint.
+        self.env.clone_dotfiles()
+        path = self._recipe_with_zen("~/.zen/*/prefs.js")
+        plan = ss.dispatch(["setup-plan", "--recipe", str(path)], None, str(self.state))
+        by_id = {entry["id"]: entry for entry in plan["plan"]["post"]}
+        zen = by_id["zen-link"]
+        self.assertFalse(zen["available"])
+        self.assertIn("~/.zen/*/prefs.js", zen["missing"])
+        self.assertEqual(zen["reason"], "Install Zen and open it once first")
+        self.assertFalse(zen["default"])
+
+    def test_plan_available_when_requires_path_matches(self) -> None:
+        self.env.clone_dotfiles()
+        write(self.home / ".zen" / "abc" / "prefs.js", "x\n")
+        path = self._recipe_with_zen("~/.zen/*/prefs.js")
+        plan = ss.dispatch(["setup-plan", "--recipe", str(path)], None, str(self.state))
+        by_id = {entry["id"]: entry for entry in plan["plan"]["post"]}
+        self.assertTrue(by_id["zen-link"]["available"])
+        self.assertEqual(by_id["zen-link"]["reason"], "")
+
+    def test_recipe_rejects_bad_requires_path(self) -> None:
+        recipe = copy.deepcopy(valid_setup_recipe())
+        recipe["post"][0]["requires_path"] = 5
+        with self.assertRaises(ss.CommandError) as ctx:
+            ss.validate_setup_recipe(recipe)
+        self.assertIn("requires_path must be a non-empty string", str(ctx.exception))
+
     def test_plan_marks_unavailable_post(self) -> None:
         self.env.clone_dotfiles()
         plan = self.plan()

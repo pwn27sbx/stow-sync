@@ -9,7 +9,7 @@
   "requires": ["git", "stow", "python3", "jq", "gowall", "tsuzuri"],
   "post": [
     { "id": "wallpaper-tint", "label": "Recolor wallpapers for every theme", "argv": ["~/.local/bin/wallpaper-tint", "--all"], "default": true, "timeout_s": 900, "needs": ["gowall"] },
-    { "id": "zen-sync", "label": "Link the Zen Browser config", "argv": ["~/.dotfiles/zen/zen-sync", "link"], "default": false, "timeout_s": 120 },
+    { "id": "zen-sync", "label": "Link the Zen Browser config", "argv": ["~/.dotfiles/zen/zen-sync", "link"], "default": false, "timeout_s": 120, "requires_path": "~/.zen/*/prefs.js", "requires_hint": "Install Zen and open it once first" },
     { "id": "mise-install", "label": "Install the tools from your mise config", "argv": ["~/.dotfiles/.stow-sync/post/mise-install"], "default": true, "timeout_s": 1800 }
   ],
   "notes": [

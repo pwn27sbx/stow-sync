@@ -199,6 +199,8 @@ precise error.
 | `post[].default` | boolean | Whether the step is selected by default. |
 | `post[].timeout_s` | number | Per-step timeout in seconds. |
 | `post[].needs` | array | Command names the step needs. If one is missing, the step is shown disabled (`needs gowall`) and is never run. |
+| `post[].requires_path` | string | A `~`-relative glob that must match at least one path (e.g. `~/.zen/*/prefs.js`). If nothing matches, the step is shown disabled. |
+| `post[].requires_hint` | string | The plain reason shown for a disabled `requires_path` step (e.g. "Install Zen and open it once first"). |
 | `notes` | array | Free-form reminders shown verbatim in Review and Report. |
 
 The recipe also drives post-steps a fresh machine would otherwise do by hand. A
