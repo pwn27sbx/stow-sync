@@ -3429,18 +3429,18 @@ class SetupConnectTests(SetupTestBase):
         self.assertTrue((self.home / "wallpapers").is_dir())
 
     def test_connect_reports_private_repo_auth_failure(self) -> None:
-        real_run_git = ss.run_git
+        real_run_bounded = ss.run_bounded
 
-        def fake_run_git(repo, args, *rest, **kwargs):
-            if args and args[0] == "clone" and any("wallpapers" in str(a) for a in args):
+        def fake_run_bounded(argv, timeout, *rest, **kwargs):
+            if any("clone" in str(a) for a in argv) and any("wallpapers" in str(a) for a in argv):
                 return subprocess.CompletedProcess(
-                    args,
+                    argv,
                     128,
                     b"",
                     b"fatal: could not read Username for 'https://github.com': "
                     b"terminal prompts disabled",
                 )
-            return real_run_git(repo, args, *rest, **kwargs)
+            return real_run_bounded(argv, timeout, *rest, **kwargs)
 
         result = ss.dispatch(
             ["setup-connect", "--url", str(self.env.dotfiles_bare)], None, str(self.state)
@@ -3448,7 +3448,7 @@ class SetupConnectTests(SetupTestBase):
         self.assertTrue(result["ok"], result)
         self.assertTrue((self.dotfiles / ".stow-sync" / "setup.json").is_file())
         self.assertFalse((self.home / "wallpapers").exists())
-        with patch.object(ss, "run_git", side_effect=fake_run_git):
+        with patch.object(ss, "run_bounded", side_effect=fake_run_bounded):
             clone = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
         self.assertTrue(clone["ok"], clone)
         self.assertEqual(clone["state"], "error")
@@ -3986,14 +3986,14 @@ class SetupCloneTests(SetupTestBase):
     def test_clone_uses_900_second_timeout(self) -> None:
         self.env.clone_dotfiles()
         captured: dict = {}
-        real_run_git = ss.run_git
+        real_run_bounded = ss.run_bounded
 
-        def spy(repo, args, *rest, **kwargs):
-            if args and args[0] == "clone":
-                captured["timeout"] = kwargs.get("timeout")
-            return real_run_git(repo, args, *rest, **kwargs)
+        def spy(argv, timeout, *rest, **kwargs):
+            if any("clone" in str(a) for a in argv):
+                captured["timeout"] = timeout
+            return real_run_bounded(argv, timeout, *rest, **kwargs)
 
-        with patch.object(ss, "run_git", side_effect=spy):
+        with patch.object(ss, "run_bounded", side_effect=spy):
             result = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
         self.assertTrue(result["ok"], result)
         self.assertEqual(captured.get("timeout"), 900)
@@ -4192,6 +4192,30 @@ class SetupRealHomeRefusalTests(unittest.TestCase):
             result = ss.dispatch(["setup-apply", "--token", "x"], None, tmp)
             self.assertFalse(result["ok"])
             self.assertNotIn("state-dir", result.get("error", ""))
+
+
+class CloneProgressTests(SetupTestBase):
+    def test_parse_git_clone_progress(self) -> None:
+        text = (
+            "Cloning into 'x'...\n"
+            "remote: Enumerating objects: 100% (10/10), done.\r"
+            "Receiving objects:  45% (1234/2742), 410.20 MiB | 5.2 MiB/s\r"
+            "Receiving objects: 100% (2742/2742), 1.02 GiB | 8.0 MiB/s, done.\r"
+            "Resolving deltas:  67% (2/3)\r"
+        )
+        progress = ss.parse_git_clone_progress(text)
+        self.assertEqual(progress["phase"], "Resolving deltas")
+        self.assertEqual(progress["percent"], 67)
+        self.assertIsNone(ss.parse_git_clone_progress("no progress here"))
+
+    def test_setup_clone_writes_progress(self) -> None:
+        self.env.clone_dotfiles()
+        result = ss.dispatch(["setup-clone", "--path", "~/wallpapers"], None, str(self.state))
+        self.assertTrue(result["ok"], result)
+        data = json.loads((self.state / "setup-progress.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["phase"], "clone")
+        self.assertEqual(data["item"], "~/wallpapers")
+        self.assertEqual(data["state"], "done")
 
 
 class SetupPerformMoveTests(unittest.TestCase):

@@ -59,7 +59,7 @@ Item {
 
   Timer {
     interval: 500
-    running: flow.applying
+    running: flow.applying || flow.connectRunning
     repeat: true
     onTriggered: if (root.progressPath !== "") progressView.reload()
   }
@@ -196,6 +196,8 @@ Item {
       checking: flow.checking
       repoPicker: flow.repoPicker
       selectedUrl: flow.selectedUrl
+      repoLoading: flow.repoLoading
+      repoError: flow.repoError
       connectEntries: flow.connectEntries
       connectRunning: flow.connectRunning
       plan: flow.plan
@@ -204,13 +206,16 @@ Item {
       focusedKey: flow.groupKey
       progress: root.applyProgress
       report: flow.report
+      undoResult: flow.undoResult
       undoSentence: flow.undoSentence
       postChecked: flow.postChecked
       busy: root.busy
+      motion: root.motion
       foreground: root.foreground
       onPostToggled: function(id, value) { var next = {}; for (var k in flow.postChecked) next[k] = flow.postChecked[k]; next[id] = value; flow.postChecked = next }
       onCheckAgainRequested: flow.runCheck()
       onRepoPicked: function(url) { flow.url = url; flow.selectedUrl = url }
+      onRepoRetryRequested: flow.retryRepos()
       onGroupToggled: function(key) { flow.toggleGroupKey(key) }
       onUndoRequested: flow.requestUndo(flow.applyResult ? flow.applyResult.backup : "")
     }

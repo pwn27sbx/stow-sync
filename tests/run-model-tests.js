@@ -1705,6 +1705,47 @@ test("setupGroupExpanded / setupToggleGroup: toggling flips a group", () => {
   assert.equal(Model.setupGroupExpanded(notesToggled, expandedGroup), false)
 })
 
+test("setupCloneProgress: percent, size and an indeterminate fallback", () => {
+  assert.equal(Model.setupCloneProgress(null), null)
+  assert.equal(Model.setupCloneProgress({ phase: "apply" }), null)
+  const p = Model.setupCloneProgress({ phase: "clone", item: "~/wallpapers", percent: 45, size: "410.20 MiB", state: "running" })
+  assert.equal(p.item, "~/wallpapers")
+  assert.equal(p.percent, 45)
+  assert.equal(p.label, "Downloading 45% \u00b7 410.20 MiB")
+  const indet = Model.setupCloneProgress({ phase: "clone", item: "x", percent: null, size: "", state: "running" })
+  assert.equal(indet.percent, -1)
+  assert.equal(indet.label, "Downloading \u2026")
+})
+
+test("setupUndoResult: unlinked/restored/disabled counts and problems", () => {
+  const r = Model.setupUndoResult({
+    ok: true, backup: "20261010T043006Z",
+    unstowed: [{ package: "a" }, { package: "b" }],
+    restored: [{ path: "~/.config/fish/config.fish" }],
+    services_disabled: [{ unit: "t.timer" }],
+    refused: [{ package: "c", paths: ["x"] }],
+    errors: [{ path: "~/.y", error: "dest changed" }]
+  })
+  assert.equal(r.backup, "20261010T043006Z")
+  assert.ok(r.lines.some((l) => l.label === "2 packages unlinked"))
+  assert.ok(r.lines.some((l) => l.label === "1 file restored"))
+  assert.ok(r.lines.some((l) => l.label === "1 service disabled"))
+  assert.ok(r.lines.some((l) => l.tone === "urgent"))
+  assert.equal(Model.setupUndoResult(null).ok, false)
+})
+
+test("groupFor / nextGroupKey: Review keyboard navigation", () => {
+  const groups = [{ key: "a" }, { key: "b" }, { key: "c" }]
+  assert.equal(Model.nextGroupKey(groups, "", 1), "a")
+  assert.equal(Model.nextGroupKey(groups, "a", 1), "b")
+  assert.equal(Model.nextGroupKey(groups, "c", 1), "c")
+  assert.equal(Model.nextGroupKey(groups, "b", -1), "a")
+  assert.equal(Model.nextGroupKey(groups, "a", -1), "a")
+  assert.equal(Model.nextGroupKey([], "a", 1), "")
+  assert.equal(Model.groupFor(groups, "b").key, "b")
+  assert.equal(Model.groupFor(groups, "z"), null)
+})
+
 test("setupStepName covers the five wizard steps", () => {
   assert.equal(Model.setupWizardSteps.length, 5)
   same(Model.setupWizardSteps, ["Check", "Connect", "Review", "Apply", "Report"])

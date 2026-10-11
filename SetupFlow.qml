@@ -21,6 +21,8 @@ QtObject {
   property var prereqs: null
   property bool checking: false
   property var repoPicker: []
+  property bool repoLoading: false
+  property string repoError: ""
   property var connectEntries: []
   property var cloneQueue: []
   property bool connectRunning: false
@@ -85,31 +87,17 @@ QtObject {
   }
 
   function runCheck() { flow.checking = true; flow.errorText = ""; flow.requested("setup-prereqs", ["setup-prereqs", "--url", flow.url]) }
-  function fetchRepos() { flow.requested("setup-repos", ["setup-repos"]) }
+  function fetchRepos() { flow.repoLoading = true; flow.repoError = ""; flow.requested("setup-repos", ["setup-repos"]) }
+  function retryRepos() { flow.fetchRepos() }
   function goConnect() { flow.step = 1; if (flow.repoPicker.length === 0) flow.fetchRepos() }
 
   function reviewGroups() { return Model.setupPlanGroups(flow.plan) }
 
-  function moveGroup(dy) {
-    var gs = flow.reviewGroups()
-    if (gs.length === 0) return
-    var index = -1
-    for (var i = 0; i < gs.length; i++) if (String(gs[i].key) === flow.groupKey) index = i
-    if (index < 0) index = dy >= 0 ? -1 : gs.length
-    index = Math.max(0, Math.min(gs.length - 1, index + (dy >= 0 ? 1 : -1)))
-    flow.groupKey = String(gs[index].key)
-  }
+  function moveGroup(dy) { flow.groupKey = Model.nextGroupKey(flow.reviewGroups(), flow.groupKey, dy) }
 
   function toggleGroupKey(key) {
-    var target = String(key || flow.groupKey)
-    if (target === "") return
-    var gs = flow.reviewGroups()
-    for (var i = 0; i < gs.length; i++) {
-      if (String(gs[i].key) === target) {
-        flow.groupsExpanded = Model.setupToggleGroup(flow.groupsExpanded, gs[i])
-        return
-      }
-    }
+    var group = Model.groupFor(flow.reviewGroups(), String(key || flow.groupKey))
+    if (group) flow.groupsExpanded = Model.setupToggleGroup(flow.groupsExpanded, group)
   }
 
   function connect() {
@@ -225,7 +213,16 @@ QtObject {
       return
     }
     if (tag === "setup-repos") {
-      flow.repoPicker = (payload && payload.ok === true) ? Model.setupRepoPickerRows(payload.repos) : []
+      flow.repoLoading = false
+      if (payload && payload.ok === true) {
+        flow.repoPicker = Model.setupRepoPickerRows(payload.repos)
+        flow.repoError = ""
+      } else {
+    flow.repoPicker = []
+    flow.repoLoading = false
+    flow.repoError = ""
+        flow.repoError = String((payload && payload.error) || "Could not load your GitHub repos.")
+      }
       return
     }
     if (tag === "setup-fixture") {
@@ -292,6 +289,7 @@ QtObject {
     flow.checking = false
     flow.planLoading = false
     flow.connectRunning = false
+    if (tag === "setup-repos") { flow.repoLoading = false; flow.repoError = String(message || "Could not load your GitHub repos.") }
     flow.errorText = String(message || "The helper failed.")
   }
 }

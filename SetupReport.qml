@@ -11,6 +11,7 @@ Column {
   id: root
 
   property var report: null
+  property var undoResult: null
   property string undoSentence: ""
   property bool undoVisible: false
   property bool busy: false
@@ -19,6 +20,7 @@ Column {
   signal undoRequested()
 
   readonly property var sections: (root.report && root.report.sections) || []
+  readonly property var undo: Model.setupUndoResult(root.undoResult)
 
   width: parent ? parent.width : 0
   spacing: Style.spacing.lg
@@ -125,7 +127,7 @@ Column {
 
   Column {
     width: parent.width
-    visible: root.undoVisible
+    visible: root.undoVisible && root.undoResult === null
     spacing: Style.spacing.sm
 
     Text {
@@ -149,11 +151,60 @@ Column {
     }
   }
 
+  // Undo result card (README 11b.3): what was unlinked, restored, disabled or
+  // refused, with the backup marked undone.
+  Column {
+    width: parent.width
+    visible: root.undoResult !== null
+    spacing: Style.spacing.xs
+
+    Text {
+      width: parent.width
+      textFormat: Text.PlainText
+      text: root.undo.ok ? "Setup undone" : "Undo finished with problems"
+      color: root.undo.ok ? Color.accent : Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      font.bold: true
+    }
+
+    Repeater {
+      model: root.undo.lines
+
+      RowLayout {
+        required property var modelData
+        width: parent.width
+        spacing: Style.spacing.md
+
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: String(modelData.label || "")
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
+        }
+
+        Text {
+          Layout.maximumWidth: Style.space(200)
+          visible: String(modelData.detail || "") !== ""
+          textFormat: Text.PlainText
+          text: String(modelData.detail || "")
+          color: String(modelData.tone) === "urgent" ? Color.urgent : Util.alpha(root.foreground, 0.72)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          horizontalAlignment: Text.AlignRight
+        }
+      }
+    }
+  }
+
   Text {
     width: parent.width
     visible: root.report !== null && root.report.backup !== ""
     textFormat: Text.PlainText
-    text: "Backup " + String(root.report ? root.report.backup : "")
+    text: "Backup " + String(root.report ? root.report.backup : "") + (root.undoResult !== null ? "  \u00b7  undone" : "")
     color: Util.alpha(root.foreground, 0.72)
     font.family: Style.font.family
     font.pixelSize: Style.font.caption

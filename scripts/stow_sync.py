@@ -2801,13 +2801,20 @@ def _setup_state_result(
 
 
 def _setup_repo_state(
-    repo_path: str, url: str, private: bool, timeout: float = 300
+    repo_path: str,
+    url: str,
+    private: bool,
+    timeout: float = 300,
+    state_dir: str | None = None,
+    item: str | None = None,
 ) -> dict[str, Any]:
     """Clone one repo if missing and report a single ``state`` (README 10a.2).
 
     ``cloned`` (this call cloned it), ``ready`` (it already existed with the
     same remote) or ``error`` (with the private-repo auth message when the
-    failure is an auth failure). Never raises for a clone failure.
+    failure is an auth failure). Never raises for a clone failure. When
+    ``state_dir``/``item`` are given, real ``git clone --progress`` output is
+    parsed into ``setup-progress.json`` (README 11b.2).
     """
     if os.path.isdir(repo_path) and _is_git_repo(repo_path):
         origin = _git_origin_url(repo_path)
@@ -2839,11 +2846,20 @@ def _setup_repo_state(
     parent = os.path.dirname(repo_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    result = run_git(None, ["clone", url, repo_path], timeout=timeout)
+    if state_dir and item:
+        write_clone_progress(state_dir, item, None, "running")
+    result = run_bounded(
+        build_git_argv(None, ["clone", "--progress", url, repo_path]), timeout, env=git_env()
+    )
+    progress = parse_git_clone_progress(_decode(result.stderr))
     if result.returncode != 0:
+        if state_dir and item:
+            write_clone_progress(state_dir, item, progress, "failed")
         return _setup_state_result(
             repo_path, url, private, "error", _clone_failure_text(repo_path, url, private, result)
         )
+    if state_dir and item:
+        write_clone_progress(state_dir, item, progress, "done")
     return _setup_state_result(repo_path, url, private, "cloned")
 
 
@@ -2877,7 +2893,9 @@ def cmd_setup_connect(
         raise CommandError("missing --url")
     raw_path = opt_value(args, "--path") or DEFAULT_SETUP_PATH
     path = expand_path(raw_path)
-    dotfiles_state = _setup_repo_state(path, url, False, timeout=300)
+    dotfiles_state = _setup_repo_state(
+        path, url, False, timeout=300, state_dir=resolve_state_dir(state_dir), item=to_tilde(path)
+    )
     if dotfiles_state["state"] == "error":
         return {"ok": False, "error": dotfiles_state["error"]}
 
@@ -2925,7 +2943,17 @@ def cmd_setup_clone(
             break
     if entry is None:
         raise CommandError("no recipe repo at " + to_tilde(repo_path))
-    return {"ok": True, **_setup_repo_state(repo_path, entry["url"], entry["private"], timeout=900)}
+    return {
+        "ok": True,
+        **_setup_repo_state(
+            repo_path,
+            entry["url"],
+            entry["private"],
+            timeout=900,
+            state_dir=resolve_state_dir(state_dir),
+            item=to_tilde(repo_path),
+        ),
+    }
 
 
 def _is_github_url(url: str) -> bool:
@@ -3510,6 +3538,55 @@ def _path_matches_move(move: dict[str, Any], path: str) -> bool:
 
 def setup_progress_path(state_dir: str) -> str:
     return os.path.join(state_dir, SETUP_PROGRESS_FILENAME)
+
+
+_CLONE_PROGRESS_RE = re.compile(
+    r"(Receiving objects|Resolving deltas|Compressing objects|Counting objects|Enumerating objects):\s*(\d+)%"
+    r"(?:\s*\((\d+)/(\d+)\))?(?:\s*,\s*([0-9.]+\s*[KMGT]?i?B))?"
+)
+
+
+def parse_git_clone_progress(text: str) -> dict[str, Any] | None:
+    """Last progress tuple in ``git clone --progress`` stderr (README 11b.2).
+
+    Git writes one ``\\r``-updated line per phase, e.g.
+    ``Receiving objects:  45% (1234/2742), 410.20 MiB | 5.2 MiB/s``. Returns the
+    last seen ``{phase, percent, size}``, or ``None`` when there is none.
+    """
+    last: dict[str, Any] | None = None
+    for chunk in re.split(r"[\r\n]", text or ""):
+        match = _CLONE_PROGRESS_RE.search(chunk)
+        if match:
+            last = {
+                "phase": match.group(1),
+                "percent": int(match.group(2)),
+                "size": (match.group(5) or "").strip(),
+            }
+    return last
+
+
+def write_clone_progress(
+    state_dir: str, item: str, progress: dict[str, Any] | None, state: str
+) -> None:
+    """Write one repo's clone progress to ``setup-progress.json`` (README 11b.2)."""
+    finished = state in ("done", "failed")
+    payload = {
+        "version": 1,
+        "phase": "clone",
+        "item": str(item),
+        "done": 1 if state == "done" else 0,
+        "total": 1,
+        "percent": (progress or {}).get("percent"),
+        "size": (progress or {}).get("size", ""),
+        "state": str(state),
+        "items": [{"kind": "clone", "id": str(item), "state": str(state)}],
+    }
+    try:
+        os.makedirs(state_dir, 0o700, exist_ok=True)
+        _write_json_atomic(setup_progress_path(state_dir), payload, 0o600, prefix=".progress-")
+    except OSError:
+        pass
+    _ = finished
 
 
 def _refuse_real_setup(state_dir: str | None, command: str) -> dict[str, Any] | None:

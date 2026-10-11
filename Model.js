@@ -2150,6 +2150,40 @@ function setupBackupsRows(backups) {
   return rows
 }
 
+// Live clone progress from setup-progress.json (README 11b.2). percent is -1
+// when git has not reported one yet (the UI shows an indeterminate bar).
+function setupCloneProgress(progress) {
+  var p = progress || {}
+  if (String(p.phase || "") !== "clone") return null
+  var hasPercent = p.percent !== null && p.percent !== undefined
+  var percent = hasPercent ? Number(p.percent) : -1
+  var size = String(p.size || "")
+  return {
+    item: String(p.item || ""),
+    percent: percent,
+    size: size,
+    state: String(p.state || ""),
+    label: "Downloading " + (hasPercent ? percent + "%" : "\u2026") + (size !== "" ? " \u00b7 " + size : "")
+  }
+}
+
+// Undo result card data (README 11b.3).
+function setupUndoResult(results) {
+  var r = results || {}
+  var unstowed = r.unstowed || []
+  var restored = r.restored || []
+  var disabled = r.services_disabled || []
+  var refused = r.refused || []
+  var errors = r.errors || []
+  var lines = []
+  if (unstowed.length > 0) lines.push({ label: pluralCount(unstowed.length, "package") + " unlinked", detail: "", tone: "muted" })
+  if (restored.length > 0) lines.push({ label: pluralCount(restored.length, "file") + " restored", detail: "", tone: "muted" })
+  if (disabled.length > 0) lines.push({ label: pluralCount(disabled.length, "service") + " disabled", detail: "", tone: "muted" })
+  for (var i = 0; i < refused.length; i++) lines.push({ label: String(refused[i].package || refused[i].path || ""), detail: "refused", tone: "urgent" })
+  for (var e = 0; e < errors.length; e++) lines.push({ label: String(errors[e].path || ""), detail: String(errors[e].error || "error"), tone: "urgent" })
+  return { backup: String(r.backup || ""), lines: lines, ok: results !== null && r.ok !== false }
+}
+
 var setupWizardSteps = ["Check", "Connect", "Review", "Apply", "Report"]
 
 function setupStepName(index) {
@@ -2193,6 +2227,23 @@ function setupToggleGroup(expanded, group) {
   for (var k in map) next[k] = map[k]
   next[key] = !setupGroupExpanded(map, g)
   return next
+}
+
+function groupFor(groups, key) {
+  var gs = groups || []
+  for (var i = 0; i < gs.length; i++) if (String(gs[i].key) === String(key)) return gs[i]
+  return null
+}
+
+// Move the Review group keyboard cursor by `dy` and return the next group key.
+function nextGroupKey(groups, currentKey, dy) {
+  var gs = groups || []
+  if (gs.length === 0) return ""
+  var index = -1
+  for (var i = 0; i < gs.length; i++) if (String(gs[i].key) === String(currentKey)) index = i
+  if (index < 0) index = dy >= 0 ? -1 : gs.length
+  index = Math.max(0, Math.min(gs.length - 1, index + (dy >= 0 ? 1 : -1)))
+  return String(gs[index].key)
 }
 
 // --- Panel selection/cursor helpers (kept pure, moved out of Panel.qml) ----
