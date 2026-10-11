@@ -29,7 +29,6 @@ Column {
   signal repoRetryRequested()
   signal checkAgainRequested()
 
-  readonly property var connectRows: Model.setupConnectRows(root.connectEntries)
   readonly property bool showPicker: root.candidates !== null && !root.repoLoading && root.repoError === "" && !root.connectRunning && root.connectEntries.length === 0
 
   width: parent ? parent.width : 0
@@ -39,13 +38,6 @@ Column {
     if (tone === "urgent") return Color.urgent
     if (tone === "accent") return Color.accent
     return Util.alpha(root.foreground, 0.72)
-  }
-
-  function statusGlyph(status) {
-    if (status === "done") return "\uf00c"
-    if (status === "failed") return "\uf00d"
-    if (status === "running") return "\uf110"
-    return "\uf10c"
   }
 
   Text {
@@ -81,27 +73,97 @@ Column {
     }
   }
 
+  // Download view (README 12c finding 53): one card per repo with a real
+  // progress bar, size and state; the overall line on top.
   Column {
     width: parent.width
-    visible: root.connectRunning && root.clone !== null
-    spacing: Style.spacing.xs
+    visible: root.connectEntries.length > 0
+    spacing: Style.spacing.sm
 
     Text {
       width: parent.width
       textFormat: Text.PlainText
-      text: root.clone !== null ? (String(root.clone.item) + "  \u00b7  " + String(root.clone.label)) : ""
+      text: Model.setupDownloadSummary(root.connectEntries)
       color: root.foreground
       font.family: Style.font.family
-      font.pixelSize: Style.font.caption
-      elide: Text.ElideRight
+      font.pixelSize: Style.font.bodySmall
+      font.bold: true
     }
 
-    SetupProgress {
-      width: parent.width
-      value: (root.clone !== null && root.clone.percent >= 0) ? root.clone.percent / 100 : -1
-      active: root.connectRunning
-      motion: root.motion
-      foreground: root.foreground
+    Repeater {
+      model: Model.setupDownloadCards(root.connectEntries, root.clone)
+
+      Rectangle {
+        required property var modelData
+        width: parent.width
+        implicitHeight: cardColumn.implicitHeight + Style.space(16)
+        radius: Style.cornerRadius
+        color: Util.alpha(root.foreground, 0.03)
+
+        Column {
+          id: cardColumn
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.leftMargin: Style.space(12)
+          anchors.rightMargin: Style.space(12)
+          spacing: Style.spacing.xs
+
+          RowLayout {
+            width: parent.width
+            spacing: Style.spacing.md
+
+            Text {
+              Layout.alignment: Qt.AlignVCenter
+              textFormat: Text.PlainText
+              text: (modelData.state === "cloned" || modelData.state === "ready") ? "\uf00c"
+                : (modelData.state === "error" ? "\uf00d" : (modelData.state === "cloning" ? "\uf110" : "\uf10c"))
+              color: modelData.tone === "urgent" ? Color.urgent : (modelData.tone === "accent" ? Color.accent : Util.alpha(root.foreground, 0.72))
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: String(modelData.label || "")
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
+
+            Text {
+              Layout.alignment: Qt.AlignVCenter
+              textFormat: Text.PlainText
+              text: String(modelData.size || "")
+              color: Util.alpha(root.foreground, 0.72)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          SetupProgress {
+            width: parent.width
+            visible: modelData.state === "cloning"
+            value: modelData.percent >= 0 ? modelData.percent / 100 : -1
+            active: modelData.state === "cloning"
+            motion: root.motion
+            foreground: root.foreground
+          }
+
+          Text {
+            width: parent.width
+            visible: String(modelData.detail || "") !== ""
+            textFormat: Text.PlainText
+            text: String(modelData.detail || "")
+            color: root.toneColor(String(modelData.tone || "muted"))
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+        }
+      }
     }
   }
 
@@ -159,52 +221,6 @@ Column {
       iconText: "\uf021"
       fontSize: Style.font.caption
       onClicked: root.checkAgainRequested()
-    }
-  }
-
-  Column {
-    width: parent.width
-    visible: root.connectRows.length > 0
-    spacing: Style.spacing.xs
-
-    Repeater {
-      model: root.connectRows
-
-      RowLayout {
-        required property var modelData
-        width: parent.width
-        spacing: Style.spacing.md
-
-        Text {
-          Layout.alignment: Qt.AlignVCenter
-          textFormat: Text.PlainText
-          text: root.statusGlyph(String(modelData.status))
-          color: modelData.status === "done" ? Color.accent : (modelData.status === "failed" ? Color.urgent : Util.alpha(root.foreground, 0.72))
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
-
-        Text {
-          Layout.fillWidth: true
-          textFormat: Text.PlainText
-          text: String(modelData.label || "")
-          color: root.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          elide: Text.ElideRight
-        }
-
-        Text {
-          Layout.maximumWidth: Style.space(280)
-          textFormat: Text.PlainText
-          text: String(modelData.detail || "")
-          color: root.toneColor(String(modelData.tone || "muted"))
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-          horizontalAlignment: Text.AlignRight
-        }
-      }
     }
   }
 }

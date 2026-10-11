@@ -42,8 +42,6 @@ QtObject {
   readonly property var stepRows: Model.setupStepState(flow.applyResult)
   readonly property var report: Model.setupReport(flow.applyResult, flow.plan, flow.undoResult !== null)
   readonly property string undoSentence: flow.applyResult !== null ? Model.setupUndoSentence(flow.applyResult) : ""
-  readonly property string stepLine: flow.mode === "backups" ? "Setup backups"
-    : ("Step " + (flow.step + 1) + " of " + flow.stepNames.length + " \u00b7 " + Model.setupStepName(flow.step))
 
   function fixture() { return flow.settings ? String(flow.settings.setupFixture || "") : "" }
 
@@ -103,12 +101,14 @@ QtObject {
     flow.requested("setup-connect", ["setup-connect", "--url", flow.url])
   }
 
-  function setEntryState(path, state, error, authError) {
+  function setEntryState(path, state, error, authError, sizeBytes) {
     var next = []
     for (var i = 0; i < flow.connectEntries.length; i++) {
       var e = flow.connectEntries[i]
-      if (String(e.path) === String(path)) next.push({ path: e.path, state: state, error: error, authError: authError === true })
-      else next.push(e)
+      if (String(e.path) === String(path)) {
+        var sb = (sizeBytes === undefined || sizeBytes === null) ? e.sizeBytes : sizeBytes
+        next.push({ path: e.path, state: state, error: error, authError: authError === true, sizeBytes: sb, sizeLabel: Model.setupSizeLabel(sb) })
+      } else next.push(e)
     }
     flow.connectEntries = next
   }
@@ -234,11 +234,11 @@ QtObject {
         }
         return
       }
-      var entries = [{ path: String(payload.path || ""), state: String(payload.state || ""), error: payload.error ? String(payload.error) : "", authError: payload.auth_error === true }]
+      var entries = [{ path: String(payload.path || ""), state: String(payload.state || ""), error: payload.error ? String(payload.error) : "", authError: payload.auth_error === true, sizeBytes: payload.size_bytes, sizeLabel: Model.setupSizeLabel(payload.size_bytes) }]
       var queue = []
       var repos = payload.repos || []
       for (var i = 0; i < repos.length; i++) {
-        entries.push({ path: String(repos[i].path || ""), state: "waiting", error: "" })
+        entries.push({ path: String(repos[i].path || ""), state: "waiting", error: "", sizeBytes: repos[i].size_bytes, sizeLabel: Model.setupSizeLabel(repos[i].size_bytes) })
         queue.push({ path: String(repos[i].path || "") })
       }
       flow.connectEntries = entries
@@ -251,7 +251,7 @@ QtObject {
       var path = payload && payload.path ? String(payload.path) : ""
       var state = (!payload || payload.ok === false) ? "error" : String(payload.state || "error")
       var error = payload && payload.error ? String(payload.error) : ""
-      flow.setEntryState(path, state, error, !!(payload && payload.auth_error))
+      flow.setEntryState(path, state, error, !!(payload && payload.auth_error), payload ? payload.size_bytes : undefined)
       if (payload && payload.auth_error === true) flow.connectAuthError = true
       flow.runNextClone()
       return

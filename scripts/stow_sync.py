@@ -2990,12 +2990,21 @@ def cmd_setup_connect(
                 {"path": to_tilde(repo_path), "url": repo["url"], "private": repo["private"]}
             )
 
+    # Real download estimates from GitHub, best-effort (README 12c answer 2).
+    dotfiles_size: int | None = None
+    if _which("gh") is not None:
+        env = _gh_env()
+        dotfiles_size = _gh_repo_size_bytes(url, env)
+        for entry in repos:
+            entry["size_bytes"] = _gh_repo_size_bytes(entry["url"], env)
+
     result: dict[str, Any] = {
         "ok": True,
         "state": dotfiles_state["state"],
         "path": to_tilde(path),
         "recipe": recipe,
         "repos": repos,
+        "size_bytes": dotfiles_size,
     }
     if hint:
         result["hint"] = hint
@@ -3021,7 +3030,7 @@ def cmd_setup_clone(
             break
     if entry is None:
         raise CommandError("no recipe repo at " + to_tilde(repo_path))
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         **_setup_repo_state(
             repo_path,
@@ -3032,6 +3041,9 @@ def cmd_setup_clone(
             item=to_tilde(repo_path),
         ),
     }
+    if _which("gh") is not None:
+        result["size_bytes"] = _gh_repo_size_bytes(entry["url"], _gh_env())
+    return result
 
 
 def _is_github_url(url: str) -> bool:
@@ -3282,6 +3294,34 @@ def _repo_owner(url: str) -> str:
     """The owner segment of a GitHub repo URL, or an empty string."""
     match = re.search(r"github\.com[/:](?P<owner>[^/\s]+)/", url or "")
     return match.group("owner") if match else ""
+
+
+def _github_owner_repo(url: str) -> tuple[str, str] | None:
+    """``(owner, repo)`` for a GitHub URL, or ``None`` when it is not one."""
+    match = re.search(r"github\.com[/:](?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?$", url or "")
+    if not match:
+        return None
+    owner = match.group("owner")
+    repo = match.group("repo")
+    return (owner, repo) if owner and repo else None
+
+
+def _gh_repo_size_bytes(url: str, env: dict[str, str], timeout: float = 5.0) -> int | None:
+    """The repo's GitHub ``size`` in bytes, or ``None`` when unknown.
+
+    README 12c answer 2: the download estimate comes from the GitHub API, and a
+    number is only shown when it is real (never invented).
+    """
+    pair = _github_owner_repo(url)
+    if pair is None:
+        return None
+    data, error = _gh_json(["gh", "api", f"repos/{pair[0]}/{pair[1]}"], timeout, env)
+    if error is not None or not isinstance(data, dict):
+        return None
+    size_kb = data.get("size")
+    if not isinstance(size_kb, int) or isinstance(size_kb, bool) or size_kb <= 0:
+        return None
+    return size_kb * 1024
 
 
 def _repo_hint(repo: dict[str, Any]) -> bool:

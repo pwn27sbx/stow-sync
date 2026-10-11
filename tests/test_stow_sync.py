@@ -4409,6 +4409,27 @@ class RepoShapeTests(unittest.TestCase):
         self.assertFalse(ss._repo_looks_like_stow([]))
 
 
+class SetupRepoSizesTests(SetupTestBase):
+    """GitHub download estimates (README 12c answer 2)."""
+
+    def test_github_owner_repo_parses_urls(self) -> None:
+        self.assertEqual(ss._github_owner_repo("https://github.com/me/dotfiles.git"), ("me", "dotfiles"))
+        self.assertEqual(ss._github_owner_repo("git@github.com:me/wallpapers.git"), ("me", "wallpapers"))
+        self.assertIsNone(ss._github_owner_repo("/tmp/local/repo.git"))
+
+    def test_github_size_is_read_and_unknown_is_none(self) -> None:
+        self.env.install_fake_gh_routes([
+            {"match": ["repos/me/dotfiles"], "stdout": '{"size": 3072}', "exit": 0},
+            {"match": ["repos/me/empty"], "stdout": '{"size": 0}', "exit": 0},
+        ])
+        self.assertEqual(
+            ss._gh_repo_size_bytes("https://github.com/me/dotfiles.git", ss._gh_env()),
+            3072 * 1024,
+        )
+        self.assertIsNone(ss._gh_repo_size_bytes("https://github.com/me/empty", ss._gh_env()))
+        self.assertIsNone(ss._gh_repo_size_bytes("file:///tmp/x", ss._gh_env()))
+
+
 class RunWithDeadlineTests(unittest.TestCase):
     def test_maps_all_items_when_fast(self) -> None:
         results, pending = ss._run_with_deadline(
