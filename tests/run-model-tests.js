@@ -1604,6 +1604,11 @@ test("setupPlanGroups: full plan produces every ordered group", () => {
   assert.equal(byKey.download.items[0].label, "~/wallpapers")
   assert.equal(byKey.link.count, 3)
   assert.equal(byKey.backup.items.length, 2)
+  // Backup files are grouped by package with plain wording (finding 54).
+  assert.equal(byKey.backup.items[0].label, "fish")
+  assert.equal(byKey.backup.items[0].detail, "1 file")
+  assert.ok(byKey.backup.items[0].sub[0].indexOf("same as yours") !== -1)
+  assert.ok(byKey.backup.items[1].sub[0].indexOf("saved to backup") !== -1)
   assert.equal(byKey.skipped.tone, "urgent")
   assert.equal(byKey.skipped.items[0].label, "~/.dotfiles · app")
   assert.equal(byKey.missing.items[0].label, "gowall")

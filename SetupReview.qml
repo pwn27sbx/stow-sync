@@ -49,6 +49,17 @@ Column {
     font.pixelSize: Style.font.bodySmall
   }
 
+  Text {
+    width: parent.width
+    visible: !root.planLoading && root.plan !== null
+    textFormat: Text.PlainText
+    text: Model.setupReviewSummary(root.plan)
+    color: root.foreground
+    font.family: Style.font.family
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
   Repeater {
     model: root.groups
 
@@ -81,10 +92,10 @@ Column {
         Repeater {
           model: modelData.items
 
-          Item {
+          Column {
             required property var modelData
             width: parent.width
-            implicitHeight: modelData.default !== undefined ? (modelData.available === false ? disabledRow.implicitHeight : postToggle.implicitHeight) : plainRow.implicitHeight
+            spacing: 2
 
             RowLayout {
               id: plainRow
@@ -116,11 +127,32 @@ Column {
               }
             }
 
+            Column {
+              width: parent.width
+              spacing: 2
+              visible: modelData.default === undefined && (modelData.sub || []).length > 0
+
+              Repeater {
+                model: modelData.sub || []
+
+                Text {
+                  required property var modelData
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: String(modelData)
+                  color: Util.alpha(root.foreground, 0.72)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+            }
+
             Toggle {
               id: postToggle
               width: parent.width
               visible: modelData.default !== undefined && modelData.available !== false
-              label: String(modelData.label || "")
+              label: String(modelData.label || "") + "   \u00b7   " + Model.setupToggleLabel(root.postChecked[String(modelData.id || "")] === true)
               foreground: root.foreground
               enabled: !root.busy
               checked: root.postChecked[String(modelData.id || "")] === true

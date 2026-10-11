@@ -2017,7 +2017,6 @@ function setupPlanGroups(plan) {
   }
   var links = p.link || []
   var linkItems = []
-  var backupItems = []
   var skippedItems = []
   for (var i = 0; i < links.length; i++) {
     var l = links[i]
@@ -2030,15 +2029,23 @@ function setupPlanGroups(plan) {
     }
     var files = (l.links && l.links.length) || num(l.files_to_backup, 0)
     linkItems.push({ label: String(l.repo || "") + " \u00b7 " + String(l.package || ""), detail: pluralCount(files, "file"), tone: "muted" })
-    var conflicts = l.conflicts || []
-    for (var k = 0; k < conflicts.length; k++) {
-      var cf = conflicts[k]
-      if (cf.kind === "blocked") continue
-      backupItems.push({ label: String(cf.target || ""), detail: String(cf.kind || ""), tone: cf.kind === "different" ? "accent" : "muted" })
-    }
   }
   if (linkItems.length > 0) groups.push({ key: "link", title: "Will link", subtitle: "Stow packages", tone: "accent", count: linkItems.length, unit: pluralUnit(linkItems.length, "package"), expandByDefault: false, items: linkItems })
-  if (backupItems.length > 0) groups.push({ key: "backup", title: "Will move to backup", subtitle: "Existing files kept in the backup folder", tone: "accent", count: backupItems.length, unit: pluralUnit(backupItems.length, "file"), expandByDefault: false, items: backupItems })
+  // Backup files grouped by package, with plain wording (README 12c finding 54).
+  var backupGroups = setupBackupByPackage(p)
+  if (backupGroups.length > 0) {
+    var backupTotal = 0
+    var backupItems = []
+    for (var bg = 0; bg < backupGroups.length; bg++) {
+      backupTotal += backupGroups[bg].count
+      var sub = []
+      for (var sf = 0; sf < backupGroups[bg].files.length; sf++) {
+        sub.push(backupGroups[bg].files[sf].wording + "  \u00b7  " + backupGroups[bg].files[sf].target)
+      }
+      backupItems.push({ label: backupGroups[bg].package, detail: pluralCount(backupGroups[bg].count, "file"), tone: "muted", sub: sub })
+    }
+    groups.push({ key: "backup", title: "Will move to backup", subtitle: "Existing files kept in the backup folder", tone: "accent", count: backupTotal, unit: pluralUnit(backupTotal, "file"), expandByDefault: false, items: backupItems })
+  }
   if (skippedItems.length > 0) groups.push({ key: "skipped", title: "Skipped", subtitle: "Nothing is forced", tone: "urgent", count: skippedItems.length, unit: pluralUnit(skippedItems.length, "package"), expandByDefault: false, items: skippedItems })
   var missing = []
   var requires = p.requires || []
@@ -2056,7 +2063,7 @@ function setupPlanGroups(plan) {
       afterItems.push({
         id: String(post.id || ""),
         label: String(post.label || post.id || ""),
-        detail: available ? "" : ("needs " + missingTools.join(", ")),
+        detail: available ? "" : String(post.reason || ("needs " + missingTools.join(", "))),
         tone: available ? "muted" : "urgent",
         default: post.default === true,
         available: available
@@ -2314,7 +2321,7 @@ function setupReportSteps(plan, results) {
       var pe = ordered[k].planEntry || {}
       if (pe.available === false) {
         var missing = pe.missing || []
-        var reason = missing.length > 0 ? "needs " + missing.join(", ") : "unavailable"
+        var reason = String(pe.reason || ("needs " + missing.join(", ")) || "unavailable")
         items.push({ label: ordered[k].label, state: "skipped: " + reason, sub: "", tone: "muted" })
       } else {
         items.push({ label: ordered[k].label, state: "not selected", sub: "", tone: "muted" })
