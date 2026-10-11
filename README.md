@@ -154,14 +154,23 @@ omarchy plugin enable pwnsxb.stow-sync --section right
    header, or the button on the Overview banner. The wizard walks through five
    steps: **Check → Connect → Review → Apply → Report**.
 
-The **Check** step verifies `stow`, `git`, the pacman sync database and — only
-when a repo is private — `gh` and `gh auth status`, showing the exact fix
-command for anything missing. **Connect** clones your dotfiles repo, reads its
-recipe and clones each other repo one at a time. **Review** shows exactly what
-will be linked and moved to backup; nothing is forced, and blocked packages are
-reported in red. **Apply** links the packages, enables the services and runs the
-selected post-steps. **Report** lists what happened, where the backup folder is,
-and offers a one-click Undo.
+The **Check** step verifies `stow`, `git`, the pacman sync database and — when
+`gh` is installed — a **GitHub login** row ("signed in as …" / "not signed in"),
+showing the exact fix command for anything missing. **Connect** asks GitHub which
+of your repos are dotfiles candidates: a repo that contains
+`.stow-sync/setup.json` is **definitive** (shown first and preselected), a repo
+with a Stow-package shape is **likely**, and everything else stays behind "Show
+all repos" with a filter field; it then clones the dotfiles repo and each other
+recipe repo one at a time with a real progress bar, and shows a GitHub login fix
+with **Check again** if a clone fails on authentication. **Review** shows exactly
+what will be linked and moved to backup; nothing is forced, and blocked packages
+are reported in red. **Apply** links the packages, enables the services and runs
+the selected post-steps behind a live per-item checklist. **Report** lists what
+happened under collapsible groups — every post-step with its state (`ran`,
+`skipped: needs gowall`, `not selected`) and its last output line — the backup
+folder path, and a one-click **Undo** pinned in the footer. An Undo shows a result
+card (packages unlinked, files restored, services disabled, anything refused) and,
+on a fresh machine, returns the overview to the "not set up" state.
 
 ### The recipe
 

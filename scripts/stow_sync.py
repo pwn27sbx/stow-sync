@@ -4013,12 +4013,33 @@ def _selected_post_commands(plan: dict[str, Any], args: list[str]) -> list[dict[
     return [entry for entry in plan["post"] if entry.get("default")]
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+# Progress-bar block glyphs a tool like mise prints inline (README 11d.2).
+_PROGRESS_GLYPHS = frozenset("\u2588\u2589\u258a\u258b\u258c\u258d\u258e\u258f\u2591\u2592\u2593")
+
+
+def clean_output_text(text: str, limit: int = 200) -> str:
+    """Strip ANSI codes, CR segments and progress-bar glyphs from one line.
+
+    A tool that redraws progress with ``\\r`` leaves several segments; only the
+    last one is meaningful, so everything before the final ``\\r`` is dropped
+    (README 11d.2 / finding 42). Runs of whitespace collapse to one space.
+    """
+    cleaned = _ANSI_RE.sub("", text or "")
+    if "\r" in cleaned:
+        cleaned = cleaned.rsplit("\r", 1)[-1]
+    cleaned = "".join(ch for ch in cleaned if ch not in _PROGRESS_GLYPHS)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:limit]
+
+
 def _last_nonempty_line(text: str, limit: int = 200) -> str | None:
-    """The last non-empty line of a process' output, trimmed and capped."""
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return None
-    return lines[-1][:limit]
+    """The last non-empty cleaned line of a process' output, capped at ``limit``."""
+    for raw in reversed((text or "").splitlines()):
+        cleaned = clean_output_text(raw, limit)
+        if cleaned:
+            return cleaned
+    return None
 
 
 def _run_setup_post(

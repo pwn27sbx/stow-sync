@@ -58,61 +58,18 @@ Column {
       spacing: Style.spacing.xs
       visible: modelData.items.length > 0
 
-      Rectangle {
-        id: header
-        width: parent.width
-        implicitHeight: headerRow.implicitHeight + Style.spacing.sm
-        radius: Style.cornerRadius
-        color: (root.focusedKey === modelData.key || root.hoveredKey === modelData.key)
-          ? Util.alpha(root.foreground, 0.06) : "transparent"
-
-        MouseArea {
-          anchors.fill: parent
-          cursorShape: Qt.PointingHandCursor
-          hoverEnabled: true
-          onEntered: root.hoveredKey = String(modelData.key)
-          onExited: if (root.hoveredKey === String(modelData.key)) root.hoveredKey = ""
-          onClicked: root.groupToggled(String(modelData.key))
-        }
-
-        RowLayout {
-          id: headerRow
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          anchors.leftMargin: Style.spacing.sm
-          anchors.rightMargin: Style.spacing.sm
-          spacing: Style.spacing.sm
-
-          Text {
-            Layout.alignment: Qt.AlignVCenter
-            textFormat: Text.PlainText
-            // Font Awesome chevrons; caption size rendered as a dot (finding 37).
-            text: root.isExpanded(modelData) ? "\uf078" : "\uf054"
-            color: root.toneColor(String(modelData.tone || "muted"))
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-          }
-
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: String(modelData.title || "")
-            color: root.toneColor(String(modelData.tone || "muted"))
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            font.bold: true
-            elide: Text.ElideRight
-          }
-
-          Text {
-            Layout.alignment: Qt.AlignVCenter
-            textFormat: Text.PlainText
-            text: String(modelData.count) + (String(modelData.unit || "") !== "" ? " " + String(modelData.unit) : "")
-            color: Util.alpha(root.foreground, 0.72)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
+      SetupGroupHeader {
+        title: String(modelData.title || "")
+        count: modelData.count !== undefined ? Number(modelData.count) : -1
+        unit: String(modelData.unit || "")
+        tone: String(modelData.tone || "muted")
+        expanded: root.isExpanded(modelData)
+        focused: root.focusedKey === String(modelData.key) || root.hoveredKey === String(modelData.key)
+        foreground: root.foreground
+        onToggled: root.groupToggled(String(modelData.key))
+        onHoverChanged: function(hovered) {
+          if (hovered) root.hoveredKey = String(modelData.key)
+          else if (root.hoveredKey === String(modelData.key)) root.hoveredKey = ""
         }
       }
 

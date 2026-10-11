@@ -4428,6 +4428,23 @@ class SetupOverlayOrderTests(unittest.TestCase):
         )
 
 
+class ConfirmCardLayoutTests(unittest.TestCase):
+    """Regression for finding 46: the wrapped sentence must sit on its own row
+    above the buttons, and the card must reserve room for the button row so the
+    text can never run under Cancel (README 11d.5)."""
+
+    def test_card_height_reserves_the_button_row(self) -> None:
+        source = (ROOT / "ConfirmCard.qml").read_text(encoding="utf-8")
+        height_line = next(
+            line
+            for line in source.splitlines()
+            if "chrome.implicitHeight" in line and "height:" not in line
+        )
+        self.assertIn("buttonRow.implicitHeight", height_line)
+        # The message is declared before the buttons (title, sentence, buttons).
+        self.assertLess(source.index("text: root.message"), source.index("id: buttonRow"))
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""
@@ -4523,6 +4540,34 @@ class SetupPerformMoveTests(unittest.TestCase):
                 with self.assertRaises(ss.CommandError) as ctx:
                     ss._setup_perform_move(str(src), str(dst))
             self.assertIn("filesystem", str(ctx.exception))
+
+
+class CleanOutputTests(unittest.TestCase):
+    """Post-step output cleaning (README 11d.2 / finding 42)."""
+
+    def _fixture(self) -> str:
+        with open(ROOT / "tests" / "fixtures" / "mise_progress.txt", encoding="utf-8", newline="") as handle:
+            return handle.read()
+
+    def test_last_line_keeps_the_final_summary_sentence(self) -> None:
+        line = ss._last_nonempty_line(self._fixture())
+        self.assertEqual(line, "mise 7/7 \u00b7 installed 6 tools \u00b7 1 already installed in 41.7s")
+        self.assertNotIn("\x1b", line)
+        self.assertNotIn("\r", line)
+        for glyph in "\u2588\u2589\u258a\u258b\u258c\u258d\u258e\u258f\u2591\u2592\u2593":
+            self.assertNotIn(glyph, line)
+
+    def test_clean_output_text_removes_each_artifact(self) -> None:
+        self.assertEqual(ss.clean_output_text("\x1b[31mred\x1b[0m"), "red")
+        self.assertEqual(ss.clean_output_text("early\rmiddle\rfinal"), "final")
+        self.assertEqual(ss.clean_output_text("go \u2588\u2588\u2589\u2591 done"), "go done")
+        self.assertEqual(ss.clean_output_text("  spaced   out  "), "spaced out")
+        self.assertEqual(ss.clean_output_text(""), "")
+
+    def test_last_line_handles_empty_and_caps_length(self) -> None:
+        self.assertIsNone(ss._last_nonempty_line(""))
+        self.assertIsNone(ss._last_nonempty_line("   \n \r\n"))
+        self.assertEqual(len(ss._last_nonempty_line("x" * 500)), 200)
 
 
 if __name__ == "__main__":

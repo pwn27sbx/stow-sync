@@ -2123,10 +2123,59 @@ function setupStepState(results) {
   return rows
 }
 
+// One Report step row (README 11d.3): every recipe step is listed, its state is
+// `ran` / `skipped: <reason>` / `not selected`, and `sub` carries the cleaned
+// last output line to render under the step name.
+function setupReportSteps(plan, results) {
+  var posts = results || []
+  var byId = {}
+  for (var i = 0; i < posts.length; i++) byId[String(posts[i].id || "")] = posts[i]
+  var ordered = []
+  var seen = {}
+  var planPosts = (plan && plan.post) || []
+  for (var q = 0; q < planPosts.length; q++) {
+    var pid = String(planPosts[q].id || "")
+    seen[pid] = true
+    ordered.push({ id: pid, label: String(planPosts[q].label || pid) })
+  }
+  for (var j = 0; j < posts.length; j++) {
+    var rid = String(posts[j].id || "")
+    if (!seen[rid]) { seen[rid] = true; ordered.push({ id: rid, label: rid }) }
+  }
+  var items = []
+  for (var k = 0; k < ordered.length; k++) {
+    var res = byId[ordered[k].id]
+    if (res === undefined) {
+      items.push({ label: ordered[k].label, state: "not selected", sub: "", tone: "muted" })
+      continue
+    }
+    var st = String(res.state || (res.ok === true ? "ran" : "failed"))
+    if (st === "ran") items.push({ label: ordered[k].label, state: "ran", sub: String(res.last_line || ""), tone: "muted" })
+    else if (st === "skipped") items.push({ label: ordered[k].label, state: "skipped: " + String(res.reason || "unavailable"), sub: "", tone: "muted" })
+    else items.push({ label: ordered[k].label, state: "failed", sub: String(res.last_line || res.error || ""), tone: "urgent" })
+  }
+  return items
+}
+
+// One collapsible Report group (README 11d.4): title, tone, count, unit and
+// whether it starts expanded.
+function setupReportSection(key, title, tone, unit, items, expandByDefault) {
+  return {
+    key: key,
+    title: title,
+    tone: tone,
+    count: items.length,
+    unit: pluralCount(items.length, unit),
+    expandByDefault: expandByDefault === true,
+    items: items
+  }
+}
+
 // Report step summary: grouped sections with counts, the backup folder and one
-// line per problem (README 10b.6). Notes are kept separate so they can be shown
-// again under "Still to do by hand".
-function setupReport(results) {
+// line per problem (README 10b.6/11d.4). Packages and Moved collapse by default;
+// Services, Steps, Failed and notes start expanded. Notes are kept separate so
+// they can be shown again under "Still to do by hand".
+function setupReport(results, plan) {
   var r = results || {}
   var packages = r.packages || r.applied || []
   var appliedPackages = []
@@ -2142,12 +2191,12 @@ function setupReport(results) {
   if (appliedPackages.length > 0) {
     var pkgItems = []
     for (var p = 0; p < appliedPackages.length; p++) pkgItems.push({ label: String(appliedPackages[p].repo || "") + " \u00b7 " + String(appliedPackages[p].package || ""), detail: "", tone: "muted" })
-    sections.push({ key: "packages", title: "Packages linked", tone: "accent", items: pkgItems })
+    sections.push(setupReportSection("packages", "Packages linked", "accent", "package", pkgItems, false))
   }
   if (moved.length > 0) {
     var moveItems = []
     for (var m = 0; m < moved.length; m++) moveItems.push({ label: String((moved[m] || {}).path || ""), detail: "", tone: "muted" })
-    sections.push({ key: "moved", title: "Moved to backup", tone: "muted", items: moveItems })
+    sections.push(setupReportSection("moved", "Moved to backup", "muted", "file", moveItems, false))
   }
   if (services.length > 0) {
     var svcItems = []
@@ -2156,32 +2205,24 @@ function setupReport(results) {
       var svcOk = svc.state !== undefined ? String(svc.state) === "enabled" : svc.ok === true
       svcItems.push({ label: String(svc.unit || ""), detail: svcOk ? (svc.state !== undefined ? String(svc.state) : "enabled") : String(svc.error || "failed"), tone: svcOk ? "muted" : "urgent" })
     }
-    sections.push({ key: "services", title: "Services", tone: "accent", items: svcItems })
-  }
-  if (posts.length > 0) {
-    var postItems = []
-    for (var q = 0; q < posts.length; q++) {
-      var post = posts[q] || {}
-      var postState = String(post.state || (post.ok === true ? "ran" : "failed"))
-      var detail = postState === "skipped" ? ("skipped: " + String(post.reason || "unavailable")) : String(post.last_line || post.error || "")
-      postItems.push({ label: String(post.id || ""), detail: detail, tone: postState === "failed" ? "urgent" : "muted" })
-    }
-    sections.push({ key: "post", title: "Steps", tone: "accent", items: postItems })
+    sections.push(setupReportSection("services", "Services", "accent", "service", svcItems, true))
   }
   if (failed.length > 0) {
     var failItems = []
     for (var f = 0; f < failed.length; f++) failItems.push({ label: String((failed[f] || {}).repo || "") + " \u00b7 " + String((failed[f] || {}).package || ""), detail: String((failed[f] || {}).error || "failed"), tone: "urgent" })
-    sections.push({ key: "failed", title: "Failed", tone: "urgent", items: failItems })
+    sections.push(setupReportSection("failed", "Failed", "urgent", "problem", failItems, true))
   }
+  var steps = setupReportSteps(plan, posts)
+  if (steps.length > 0) sections.push(setupReportSection("steps", "Steps", "accent", "step", steps, true))
   if (notes.length > 0) {
     var noteItems = []
     for (var n = 0; n < notes.length; n++) noteItems.push({ label: String(notes[n]), detail: "", tone: "muted" })
-    sections.push({ key: "notes", title: "Still to do by hand", tone: "muted", items: noteItems })
+    sections.push(setupReportSection("notes", "Still to do by hand", "muted", "note", noteItems, true))
   }
   var lines = []
   for (var x = 0; x < sections.length; x++) {
     var sec = sections[x]
-    for (var y = 0; y < sec.items.length; y++) lines.push({ label: sec.items[y].label, detail: sec.items[y].detail, tone: sec.items[y].tone })
+    for (var y = 0; y < sec.items.length; y++) lines.push({ label: sec.items[y].label, detail: String(sec.items[y].detail || ""), tone: sec.items[y].tone })
   }
   return {
     ok: results === null ? false : r.ok === true,

@@ -83,9 +83,11 @@ Item {
     BorderSurface {
       id: card
       width: Math.min(parent.width - Style.space(24), Style.space(460))
+      // Reserve room for the button row as well as the text, so a wrapped
+      // sentence never runs under the buttons (README 11d.5 / finding 46).
       height: root.bodyMode
         ? Math.min(parent.height - Style.space(16), Style.space(460))
-        : Math.min(parent.height - Style.space(16), chrome.implicitHeight + Style.space(28))
+        : Math.min(parent.height - Style.space(16), chrome.implicitHeight + buttonRow.implicitHeight + Style.space(28))
       anchors.centerIn: parent
       color: Color.popups.background
       borderSpec: Border.flat(root.destructive ? Color.urgent : Color.accent, Style.normalBorderWidth)

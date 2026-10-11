@@ -171,6 +171,16 @@ Item {
           spacing: Style.spacing.sm
 
           Button {
+            text: "Undo this setup"
+            iconText: "\uf0e2"
+            foreground: Color.urgent
+            bordered: true
+            visible: flow.mode === "wizard" && flow.step === 4 && flow.applyResult !== null && String(flow.applyResult.backup || "") !== "" && flow.undoResult === null
+            enabled: !root.busy
+            onClicked: flow.requestUndo(String(flow.applyResult.backup || ""))
+          }
+
+          Button {
             text: flow.backLabel()
             visible: flow.backLabel() !== "Close"
             enabled: !flow.running
@@ -208,7 +218,6 @@ Item {
       progress: root.applyProgress
       report: flow.report
       undoResult: flow.undoResult
-      undoSentence: flow.undoSentence
       postChecked: flow.postChecked
       busy: root.busy
       motion: root.motion
@@ -218,7 +227,6 @@ Item {
       onRepoPicked: function(url) { flow.url = url; flow.selectedUrl = url }
       onRepoRetryRequested: flow.retryRepos()
       onGroupToggled: function(key) { flow.toggleGroupKey(key) }
-      onUndoRequested: flow.requestUndo(flow.applyResult ? flow.applyResult.backup : "")
     }
   }
 

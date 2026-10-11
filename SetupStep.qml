@@ -27,7 +27,6 @@ Column {
   property var progress: null
   property var report: null
   property var undoResult: null
-  property string undoSentence: ""
   property var postChecked: ({})
   property bool busy: false
   property bool motion: true
@@ -38,7 +37,6 @@ Column {
   signal repoPicked(string url)
   signal repoRetryRequested()
   signal groupToggled(string key)
-  signal undoRequested()
 
   readonly property var prereqRows: Model.setupPrereqRows(root.prereqs)
   readonly property var prereqReady: Model.setupPrereqReady(root.prereqs)
@@ -163,10 +161,7 @@ Column {
     visible: root.step === 4
     report: root.report
     undoResult: root.undoResult
-    undoSentence: root.undoSentence
-    undoVisible: root.report !== null && root.report.backup !== ""
     busy: root.busy
     foreground: root.foreground
-    onUndoRequested: root.undoRequested()
   }
 }

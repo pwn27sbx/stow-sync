@@ -1688,7 +1688,7 @@ test("setupStepState: done/failed/skipped from the rich apply result", () => {
   assert.equal(byLabel["boom"].detail, "kaboom")
 })
 
-test("setupReport: grouped results, counts and backup dir", () => {
+test("setupReport: grouped sections, counts and collapse defaults", () => {
   same(Model.setupReport(null).sections, [])
   const report = Model.setupReport({
     ok: true,
@@ -1711,8 +1711,40 @@ test("setupReport: grouped results, counts and backup dir", () => {
   const keys = report.sections.map(function(s) { return s.key })
   assert.ok(keys.indexOf("moved") !== -1)
   assert.ok(keys.indexOf("notes") !== -1)
-  const post = report.sections.filter(function(s) { return s.key === "post" })[0]
-  assert.equal(post.items[1].detail, "skipped: needs gowall")
+  const byKey = {}
+  report.sections.forEach(function(s) { byKey[s.key] = s })
+  // Packages and Moved collapse by default; Services, Steps and notes do not.
+  assert.equal(byKey.packages.expandByDefault, false)
+  assert.equal(byKey.packages.count, 1)
+  assert.equal(byKey.moved.expandByDefault, false)
+  assert.equal(byKey.services.expandByDefault, true)
+  assert.equal(byKey.steps.expandByDefault, true)
+  assert.equal(byKey.notes.expandByDefault, true)
+  assert.equal(byKey.steps.count, 2)
+  assert.equal(byKey.steps.items[0].state, "ran")
+  assert.equal(byKey.steps.items[0].sub, "recolored")
+  assert.equal(byKey.steps.items[1].state, "skipped: needs gowall")
+})
+
+test("setupReport: every post step is listed with ran/skipped/not selected", () => {
+  const report = Model.setupReport(
+    { ok: true, post: [{ id: "mise", state: "ran", last_line: "installed 6 tools" }] },
+    { post: [
+      { id: "mise", label: "Install tools", default: true },
+      { id: "wallpaper-tint", label: "Recolor wallpapers", default: true },
+      { id: "zen-sync", label: "Link Zen", default: false }
+    ] }
+  )
+  const steps = report.sections.filter(function(s) { return s.key === "steps" })[0]
+  same(steps.items.map(function(i) { return [i.label, i.state] }), [
+    ["Install tools", "ran"],
+    ["Recolor wallpapers", "not selected"],
+    ["Link Zen", "not selected"]
+  ])
+  assert.equal(steps.items[0].sub, "installed 6 tools")
+  // A result-only step (no plan) still appears, labelled by its id.
+  const solo = Model.setupReport({ ok: true, post: [{ id: "extra", state: "ran" }] }, { post: [] })
+  assert.equal(solo.sections.filter(function(s) { return s.key === "steps" })[0].items[0].label, "extra")
 })
 
 test("setupUndoSentence: names what undo does", () => {

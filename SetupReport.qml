@@ -5,20 +5,20 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Report step body of the setup wizard (README 10b.6/finding 22). Grouped
-// results, the backup folder path (selectable, copyable), every post step with
-// its last line, the notes again, and the destructive Undo button.
+// Report step body of the setup wizard (README 10b.6 / 11d). Grouped results as
+// collapsible rows (Packages and Moved collapsed, Services/Steps/notes expanded),
+// the backup folder path (elided in the middle, copyable), every post step with
+// its state and last output line, the notes again and the Undo result card. The
+// Undo button and Done are pinned in the wizard footer.
 Column {
   id: root
 
   property var report: null
   property var undoResult: null
-  property string undoSentence: ""
-  property bool undoVisible: false
   property bool busy: false
   property color foreground: Color.foreground
-
-  signal undoRequested()
+  property var expanded: ({})
+  property string hoveredKey: ""
 
   readonly property var sections: (root.report && root.report.sections) || []
   readonly property var undo: Model.setupUndoResult(root.undoResult)
@@ -36,6 +36,19 @@ Column {
     if (String(text) !== "") Util.execArgv(["wl-copy", String(text)])
   }
 
+  function isExpanded(group) {
+    return Model.setupGroupExpanded(root.expanded, group)
+  }
+
+  function rightText(item) {
+    if (item && item.state !== undefined) return String(item.state)
+    return String((item && item.detail) || "")
+  }
+
+  function toggle(group) {
+    root.expanded = Model.setupToggleGroup(root.expanded, group)
+  }
+
   Text {
     width: parent.width
     textFormat: Text.PlainText
@@ -51,17 +64,16 @@ Column {
     visible: root.report !== null && String(root.report.backupDir || "") !== ""
     spacing: Style.spacing.sm
 
-    TextEdit {
+    Text {
       Layout.fillWidth: true
-      Layout.preferredHeight: implicitHeight
+      textFormat: Text.PlainText
+      // Elide in the middle so the timestamp at the end is never lost (finding 41).
       text: String(root.report ? root.report.backupDir : "")
       color: Util.alpha(root.foreground, 0.72)
       font.family: "monospace"
       font.pixelSize: Style.font.caption
-      readOnly: true
-      selectByMouse: true
-      wrapMode: TextEdit.NoWrap
-      clip: true
+      elide: Text.ElideMiddle
+      wrapMode: Text.NoWrap
     }
 
     Button {
@@ -81,74 +93,76 @@ Column {
       width: parent.width
       spacing: Style.spacing.xs
 
-      Text {
-        width: parent.width
-        textFormat: Text.PlainText
-        text: String(modelData.title || "")
-        color: root.toneColor(String(modelData.tone || "muted"))
-        font.family: Style.font.family
-        font.pixelSize: Style.font.bodySmall
-        font.bold: true
+      SetupGroupHeader {
+        title: String(modelData.title || "")
+        count: modelData.count !== undefined ? Number(modelData.count) : modelData.items.length
+        unit: String(modelData.unit || "")
+        tone: String(modelData.tone || "muted")
+        expanded: root.isExpanded(modelData)
+        focused: root.hoveredKey === String(modelData.key)
+        foreground: root.foreground
+        onToggled: root.toggle(modelData)
+        onHoverChanged: function(hovered) {
+          if (hovered) root.hoveredKey = String(modelData.key)
+          else if (root.hoveredKey === String(modelData.key)) root.hoveredKey = ""
+        }
       }
 
-      Repeater {
-        model: modelData.items
+      Column {
+        width: parent.width
+        spacing: Style.spacing.xs
+        visible: root.isExpanded(modelData)
 
-        RowLayout {
-          required property var modelData
-          width: parent.width
-          spacing: Style.spacing.md
+        Repeater {
+          model: modelData.items
 
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: String(modelData.label || "")
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: modelData.tone === "muted" && String(modelData.detail || "") === "" ? Text.WordWrap : Text.NoWrap
-            elide: modelData.tone === "muted" && String(modelData.detail || "") === "" ? Text.ElideNone : Text.ElideRight
-          }
+          Column {
+            required property var modelData
+            width: parent.width
+            spacing: 2
 
-          Text {
-            Layout.maximumWidth: Style.space(200)
-            visible: String(modelData.detail || "") !== ""
-            textFormat: Text.PlainText
-            text: String(modelData.detail || "")
-            color: root.toneColor(String(modelData.tone || "muted"))
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-            horizontalAlignment: Text.AlignRight
+            RowLayout {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Text {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: String(modelData.label || "")
+                color: root.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: root.rightText(modelData) === "" ? Text.WordWrap : Text.NoWrap
+                elide: root.rightText(modelData) === "" ? Text.ElideNone : Text.ElideRight
+              }
+
+              Text {
+                Layout.maximumWidth: Style.space(180)
+                visible: root.rightText(modelData) !== ""
+                textFormat: Text.PlainText
+                text: root.rightText(modelData)
+                color: root.toneColor(String(modelData.tone || "muted"))
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignRight
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: String(modelData.sub || "") !== ""
+              textFormat: Text.PlainText
+              text: String(modelData.sub || "")
+              color: Util.alpha(root.foreground, 0.72)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignLeft
+            }
           }
         }
       }
-    }
-  }
-
-  Column {
-    width: parent.width
-    visible: root.undoVisible && root.undoResult === null
-    spacing: Style.spacing.sm
-
-    Text {
-      width: parent.width
-      textFormat: Text.PlainText
-      text: String(root.undoSentence || "")
-      color: Util.alpha(root.foreground, 0.72)
-      font.family: Style.font.family
-      font.pixelSize: Style.font.caption
-      wrapMode: Text.WordWrap
-    }
-
-    Button {
-      text: "Undo this setup"
-      iconText: "\uf0e2"
-      foreground: Color.urgent
-      bordered: true
-      fontSize: Style.font.caption
-      enabled: !root.busy
-      onClicked: root.undoRequested()
     }
   }
 
