@@ -4099,6 +4099,56 @@ class SetupFixtureHookTests(SetupTestBase):
         self.assertIn("JSON", result["error"])
 
 
+class SetupApplyProgressTests(SetupTestBase):
+    def test_apply_writes_progress_file(self) -> None:
+        self.connect()
+        self.env.install_script("hello", "#!/bin/sh\nexit 0\n")
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        path = self.state / "setup-progress.json"
+        self.assertTrue(path.is_file(), "setup-progress.json was not written")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["phase"], "apply")
+        self.assertEqual(data["total"], len(data["items"]))
+        self.assertEqual({item["kind"] for item in data["items"]}, {"package", "service", "post"})
+        states = {item["state"] for item in data["items"]}
+        self.assertFalse(states & {"waiting", "running"}, states)
+        self.assertEqual(data["done"], data["total"])
+
+    def test_apply_progress_is_read_only_safe(self) -> None:
+        # A failed plan (stale token) never writes a progress file.
+        self.env.clone_dotfiles()
+        result = self.apply("nope")
+        self.assertFalse(result["ok"])
+        self.assertFalse((self.state / "setup-progress.json").exists())
+
+
+class SetupStatusAfterApplyTests(SetupTestBase):
+    def test_status_after_apply_reports_no_conflicts(self) -> None:
+        # Regression for finding 47: a fresh status right after a successful
+        # apply must not report the pre-apply conflicts.
+        self.connect()
+        result = self.plan_and_apply()
+        self.assertTrue(result["ok"], result)
+        status = ss.dispatch(["status"], None, str(self.state))
+        self.assertTrue(status["ok"], status)
+        for repo in status["repos"]:
+            for package in repo.get("packages", []):
+                self.assertNotEqual(package.get("health"), "conflicts", package)
+
+
+class SetupOverlayOrderTests(unittest.TestCase):
+    def test_confirm_card_is_declared_after_the_wizard(self) -> None:
+        # Regression for finding 45: the confirm overlay must stack above the
+        # wizard, so it is declared later in Panel.qml.
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertGreater(
+            panel.index("ConfirmCard {"),
+            panel.index("SetupWizard {"),
+            "ConfirmCard must be declared after SetupWizard so it stacks on top",
+        )
+
+
 class SetupPerformMoveTests(unittest.TestCase):
     def test_refuses_an_existing_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

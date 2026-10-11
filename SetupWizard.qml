@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -18,6 +19,8 @@ Item {
   property bool busy: false
   property bool motion: true
   property color foreground: Color.foreground
+  property string progressPath: ""
+  property var applyProgress: null
 
   signal requested(string tag, var args)
   signal closed()
@@ -25,16 +28,41 @@ Item {
 
   readonly property bool contentActiveFocus: urlField.activeFocus
   readonly property var backups: flow.backups
+  readonly property bool reviewActive: flow.mode === "wizard" && flow.step === 2
 
   function handleResult(tag, payload) { flow.handleResult(tag, payload) }
   function handleFailure(tag, message) { flow.handleFailure(tag, message) }
   function openBackups() { flow.openBackups() }
   function primary() { flow.primary() }
   function back() { flow.back() }
+  function reviewMove(dy) { flow.moveGroup(dy) }
+  function reviewToggle() { flow.toggleGroupKey(flow.groupKey) }
   function scrollBy(dy) { bodyArea.contentY = Math.max(0, Math.min(Math.max(0, bodyArea.contentHeight - bodyArea.height), bodyArea.contentY + dy)) }
+
+  function parseProgress(text) {
+    var raw = String(text || "").trim()
+    if (raw === "") return null
+    try { return JSON.parse(raw) } catch (error) { return null }
+  }
 
   visible: opened
   onOpenedChanged: if (opened) flow.start()
+
+  FileView {
+    id: progressView
+    path: root.progressPath
+    watchChanges: false
+    printErrors: false
+    onLoaded: root.applyProgress = root.parseProgress(text())
+    onLoadFailed: root.applyProgress = null
+  }
+
+  Timer {
+    interval: 500
+    running: flow.applying
+    repeat: true
+    onTriggered: if (root.progressPath !== "") progressView.reload()
+  }
 
   SetupFlow {
     id: flow
@@ -167,11 +195,14 @@ Item {
       prereqs: flow.prereqs
       checking: flow.checking
       repoPicker: flow.repoPicker
+      selectedUrl: flow.selectedUrl
       connectEntries: flow.connectEntries
       connectRunning: flow.connectRunning
       plan: flow.plan
       planLoading: flow.planLoading
-      stepRows: flow.stepRows
+      expanded: flow.groupsExpanded
+      focusedKey: flow.groupKey
+      progress: root.applyProgress
       report: flow.report
       undoSentence: flow.undoSentence
       postChecked: flow.postChecked
@@ -179,7 +210,8 @@ Item {
       foreground: root.foreground
       onPostToggled: function(id, value) { var next = {}; for (var k in flow.postChecked) next[k] = flow.postChecked[k]; next[id] = value; flow.postChecked = next }
       onCheckAgainRequested: flow.runCheck()
-      onRepoPicked: function(url) { flow.url = url }
+      onRepoPicked: function(url) { flow.url = url; flow.selectedUrl = url }
+      onGroupToggled: function(key) { flow.toggleGroupKey(key) }
       onUndoRequested: flow.requestUndo(flow.applyResult ? flow.applyResult.backup : "")
     }
   }

@@ -45,7 +45,7 @@ Panel {
   readonly property var packages: Model.packageCards(root.statusData)
   readonly property int changeCount: Model.changeTotals(root.statusData).count
   readonly property bool busy: runner.busy
-  readonly property string stateText: root.hero.title + (root.busy ? "  \u00b7  updating" : "")
+  readonly property string stateDirPath: String(root.setting("stateDir", "")) !== "" ? String(root.setting("stateDir", "")) : (Quickshell.env("HOME") + "/.local/state/stow-sync")
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
   readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"; readonly property int contentInset: Style.space(12)
@@ -155,7 +155,7 @@ Panel {
   function applyAction(tag, payload) {
     if (String(tag).indexOf("setup-") === 0) {
       setupWizard.handleResult(tag, payload)
-      if (tag === "setup-undo" || tag === "setup-apply") { root.overlayMode = ""; root.refreshSetupBackups() }
+      if (tag === "setup-undo" || tag === "setup-apply") { root.overlayMode = ""; root.refresh(); root.refreshSetupBackups() }
       return
     }
     var outcome = Model.actionOutcome(tag, payload)
@@ -223,7 +223,7 @@ Panel {
     if (root.overlayMode !== "") root.overlayCancel(); else root.close()
   }
   function activateCursor() {
-    if (root.setupOpen) { setupWizard.primary(); return }
+    if (root.setupOpen) { if (setupWizard.reviewActive) setupWizard.reviewToggle(); else setupWizard.primary(); return }
     if (root.overlayMode === "diff") { root.overlayMode = ""; return }
     if (root.activeTab === 1) { var row = root.focusedChange(); if (row) root.openDiff(String(row.repo), String(row.path)) }
   }
@@ -258,7 +258,7 @@ Panel {
       anchors.fill: parent
       blocked: overlay.contentActiveFocus || overlay.contentPopupOpen || setupWizard.contentActiveFocus
       onMoveRequested: function(dx, dy) {
-        if (root.setupOpen) { if (dy !== 0) setupWizard.scrollBy(dy * Style.space(28)); return }
+        if (root.setupOpen) { if (setupWizard.reviewActive && dy !== 0) setupWizard.reviewMove(dy); else if (dy !== 0) setupWizard.scrollBy(dy * Style.space(28)); return }
         if (root.overlayMode !== "") return
         if (dx !== 0) root.switchTab(dx > 0 ? 1 : -1)
         else if (root.activeTab === 1) root.moveCursor(dy)
@@ -356,21 +356,29 @@ Panel {
       }
     }
 
+    SetupWizard {
+      id: setupWizard
+      anchors.fill: parent
+      opened: root.setupOpen; settings: root.settings; statusData: root.statusData
+      busy: root.busy; motion: root.motionOn; foreground: Color.foreground
+      progressPath: root.stateDirPath
+      onRequested: function(tag, args) { runner.runAction(tag, args) }
+      onClosed: root.setupOpen = false
+      onUndoConfirmRequested: function(backup, sentence) { root.confirmKind = "setup-undo"; root.confirmPayload = { backup: backup, sentence: sentence }; root.overlayMode = "confirm" }
+    }
+    // Declared after the wizard (z above) so a confirm card never opens under it.
     ConfirmCard {
       id: overlay
       anchors.fill: parent
+      z: 2
       opened: root.overlayMode !== ""
       mode: root.overlayMode
       confirmKind: root.confirmKind
       confirmPayload: root.confirmPayload
-      publishMessage: root.publishMessage
-      publishLines: root.publishLines
-      publishTargets: root.publishTargets
-      publishSecrets: root.publishSecrets
-      publishAllowSecrets: root.publishAllowSecrets
-      publishError: root.publishError
-      adoptRepo: root.adoptRepo
-      adoptPath: root.adoptPath
+      publishMessage: root.publishMessage; publishLines: root.publishLines
+      publishTargets: root.publishTargets; publishSecrets: root.publishSecrets
+      publishAllowSecrets: root.publishAllowSecrets; publishError: root.publishError
+      adoptRepo: root.adoptRepo; adoptPath: root.adoptPath
       adoptPackage: root.adoptPackage
       adoptSuggestions: root.adoptSuggestions
       adoptError: root.adoptError
@@ -385,15 +393,6 @@ Panel {
       onAdoptPackageEdited: function(text) { root.adoptPackage = text }
       onAdoptSuggestionClicked: function(value) { root.adoptPackage = value }
       onAdoptAccepted: root.adoptConfirmed()
-    }
-    SetupWizard {
-      id: setupWizard
-      anchors.fill: parent
-      opened: root.setupOpen; settings: root.settings; statusData: root.statusData
-      busy: root.busy; motion: root.motionOn; foreground: Color.foreground
-      onRequested: function(tag, args) { runner.runAction(tag, args) }
-      onClosed: root.setupOpen = false
-      onUndoConfirmRequested: function(backup, sentence) { root.confirmKind = "setup-undo"; root.confirmPayload = { backup: backup, sentence: sentence }; root.overlayMode = "confirm" }
     }
   }
 }

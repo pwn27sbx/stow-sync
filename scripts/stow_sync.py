@@ -2553,6 +2553,7 @@ SETUP_RECIPE_VERSION = 1
 SETUP_PLAN_FILENAME = "setup-plan.json"
 SETUP_PLAN_TTL_SECONDS = 600
 SETUP_BACKUPS_DIRNAME = "setup-backups"
+SETUP_PROGRESS_FILENAME = "setup-progress.json"
 SETUP_RECIPE_RELPATH = os.path.join(".stow-sync", "setup.json")
 DEFAULT_SETUP_PATH = "~/.dotfiles"
 SETUP_PLAN_ERROR = "The setup plan changed. Review it again."
@@ -3507,6 +3508,42 @@ def _path_matches_move(move: dict[str, Any], path: str) -> bool:
     return recorded is None or sha256_file(path) == recorded
 
 
+def setup_progress_path(state_dir: str) -> str:
+    return os.path.join(state_dir, SETUP_PROGRESS_FILENAME)
+
+
+def write_setup_progress(
+    state_dir: str, phase: str, current: str, items: list[dict[str, Any]]
+) -> None:
+    """Atomically write per-item setup progress (README 11a.4).
+
+    The panel watches this file to tick the Apply checklist as items finish. A
+    write failure is never fatal — progress is best-effort UI feedback.
+    """
+    finished = ("done", "failed", "skipped")
+    done = sum(1 for item in items if item.get("state") in finished)
+    payload = {
+        "version": 1,
+        "phase": str(phase),
+        "item": str(current),
+        "done": done,
+        "total": len(items),
+        "items": [
+            {
+                "kind": str(item.get("kind", "")),
+                "id": str(item.get("id", "")),
+                "state": str(item.get("state", "waiting")),
+            }
+            for item in items
+        ],
+    }
+    try:
+        os.makedirs(state_dir, 0o700, exist_ok=True)
+        _write_json_atomic(setup_progress_path(state_dir), payload, 0o600, prefix=".progress-")
+    except OSError:
+        pass
+
+
 def _selected_post_commands(plan: dict[str, Any], args: list[str]) -> list[dict[str, Any]]:
     override = opt_value(args, "--post")
     if override is not None:
@@ -3525,13 +3562,14 @@ def _last_nonempty_line(text: str, limit: int = 200) -> str | None:
 
 
 def _run_setup_post(
-    plan: dict[str, Any], args: list[str], home: str
+    plan: dict[str, Any], args: list[str], home: str, on_step: Any = None
 ) -> list[dict[str, Any]]:
     """Run the selected post steps, skipping any whose ``needs`` are missing.
 
     Every result carries ``state`` (``ran``/``failed``/``skipped``), ``exit``
     and ``last_line`` so the UI can show what each step actually did (README
-    10a.3/10a.4).
+    10a.3/10a.4). ``on_step(id, state)`` is called as each step starts and
+    finishes so the caller can stream progress (README 11a.4).
     """
     results: list[dict[str, Any]] = []
     for entry in _selected_post_commands(plan, args):
@@ -3549,7 +3587,11 @@ def _run_setup_post(
                     "error": None,
                 }
             )
+            if on_step:
+                on_step(entry["id"], "skipped")
             continue
+        if on_step:
+            on_step(entry["id"], "running")
         argv = [expand_path(part) for part in entry["argv"]]
         timeout = entry.get("timeout_s", 300)
         try:
@@ -3566,6 +3608,8 @@ def _run_setup_post(
                     "error": f"post command timed out after {timeout}s",
                 }
             )
+            if on_step:
+                on_step(entry["id"], "failed")
             continue
         except OSError as exc:
             results.append(
@@ -3579,6 +3623,8 @@ def _run_setup_post(
                     "error": _shorten(str(exc)),
                 }
             )
+            if on_step:
+                on_step(entry["id"], "failed")
             continue
         combined = _decode(result.stdout) + "\n" + _decode(result.stderr)
         ok = result.returncode == 0
@@ -3593,6 +3639,8 @@ def _run_setup_post(
                 "error": None if ok else _short_error(result),
             }
         )
+        if on_step:
+            on_step(entry["id"], "done" if ok else "failed")
     return results
 
 
@@ -3636,6 +3684,25 @@ def cmd_setup_apply(
         return {"ok": False, "error": SETUP_PLAN_ERROR}
     plan = stored["plan"]
 
+    # Per-item progress for the panel's live Apply checklist (README 11a.4).
+    progress_items: list[dict[str, Any]] = []
+    for link in plan.get("link", []):
+        progress_items.append(
+            {"kind": "package", "id": link["repo"] + " \u00b7 " + link["package"], "state": "waiting"}
+        )
+    for service in plan.get("services", []):
+        progress_items.append({"kind": "service", "id": service["unit"], "state": "waiting"})
+    for post_step in _selected_post_commands(plan, args):
+        progress_items.append({"kind": "post", "id": post_step["id"], "state": "waiting"})
+
+    def mark_progress(kind: str, item_id: str, item_state: str) -> None:
+        for item in progress_items:
+            if item["kind"] == kind and item["id"] == item_id:
+                item["state"] = item_state
+        write_setup_progress(state, "apply", item_id, progress_items)
+
+    write_setup_progress(state, "apply", "", progress_items)
+
     home = os.path.expanduser("~")
     backup_id = _new_backup_id(state)
     backup_root = os.path.join(state, SETUP_BACKUPS_DIRNAME, backup_id)
@@ -3674,11 +3741,13 @@ def cmd_setup_apply(
     for link in plan.get("link", []):
         repo_path = expand_path(link["repo"])
         target_dir = home
+        pid = link["repo"] + " \u00b7 " + link["package"]
         if link["status"] == "already":
             skipped.append({"repo": link["repo"], "package": link["package"], "status": "already"})
             packages.append(
                 {"repo": link["repo"], "package": link["package"], "state": "already"}
             )
+            mark_progress("package", pid, "done")
             continue
         if link["status"] == "blocked":
             skipped.append(
@@ -3692,7 +3761,9 @@ def cmd_setup_apply(
             packages.append(
                 {"repo": link["repo"], "package": link["package"], "state": "blocked"}
             )
+            mark_progress("package", pid, "failed")
             continue
+        mark_progress("package", pid, "running")
         pkg_moves: list[dict[str, Any]] = []
         for conflict in link.get("conflicts", []):
             if conflict["kind"] == "blocked":
@@ -3714,6 +3785,7 @@ def cmd_setup_apply(
                 {"repo": link["repo"], "package": link["package"], "status": "failed"}
             )
             _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+            mark_progress("package", pid, "failed")
             continue
         actions = parse_stow_actions(_decode(real.stderr), target_dir)
         applied.append(
@@ -3735,6 +3807,7 @@ def cmd_setup_apply(
             }
         )
         _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+        mark_progress("package", pid, "done")
 
     services_results: list[dict[str, Any]] = []
     if plan.get("services"):
@@ -3745,6 +3818,7 @@ def cmd_setup_apply(
         for service in plan["services"]:
             unit = service["unit"]
             error: str | None = None
+            mark_progress("service", unit, "running")
             try:
                 result = run_bounded(["systemctl", "--user", "enable", "--now", unit], 60)
                 ok = result.returncode == 0
@@ -3760,6 +3834,7 @@ def cmd_setup_apply(
                 {"unit": unit, "ok": ok, "state": "enabled" if ok else "failed", "error": error}
             )
             manifest["services"].append({"unit": unit, "ok": ok})
+            mark_progress("service", unit, "done" if ok else "failed")
     _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
 
     config_targets = {os.path.normpath(default_config_path())}
@@ -3774,7 +3849,9 @@ def cmd_setup_apply(
         except (OSError, ValueError):
             config_reloaded = False
 
-    post_results = _run_setup_post(plan, args, home)
+    post_results = _run_setup_post(
+        plan, args, home, on_step=lambda pid, state: mark_progress("post", pid, state)
+    )
     manifest["post"] = [{"id": entry["id"], "ok": entry["ok"]} for entry in post_results]
     _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
 

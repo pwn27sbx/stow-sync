@@ -1664,6 +1664,37 @@ test("setupBackupsRows: id, date, counts and undone", () => {
   assert.equal(rows[0].undone, false)
 })
 
+test("setupProgressRows: one row per item with its state", () => {
+  same(Model.setupProgressRows(null), [])
+  const rows = Model.setupProgressRows({
+    phase: "apply", item: "fish", done: 1, total: 3,
+    items: [
+      { kind: "package", id: "~/.dotfiles \u00b7 fish", state: "done" },
+      { kind: "service", id: "ai-tools-check.timer", state: "running" },
+      { kind: "post", id: "wallpaper-tint", state: "waiting" }
+    ]
+  })
+  assert.equal(rows.length, 3)
+  assert.equal(rows[0].kind, "package")
+  assert.equal(rows[0].label, "~/.dotfiles \u00b7 fish")
+  assert.equal(rows[0].status, "done")
+  assert.equal(rows[1].status, "running")
+  assert.equal(rows[2].status, "waiting")
+})
+
+test("setupGroupExpanded / setupToggleGroup: toggling flips a group", () => {
+  const collapsed = { key: "link", expandByDefault: false }
+  const expandedGroup = { key: "notes", expandByDefault: true }
+  assert.equal(Model.setupGroupExpanded({}, collapsed), false)
+  assert.equal(Model.setupGroupExpanded({}, expandedGroup), true)
+  const once = Model.setupToggleGroup({}, collapsed)
+  assert.equal(Model.setupGroupExpanded(once, collapsed), true)
+  const twice = Model.setupToggleGroup(once, collapsed)
+  assert.equal(Model.setupGroupExpanded(twice, collapsed), false)
+  const notesToggled = Model.setupToggleGroup({}, expandedGroup)
+  assert.equal(Model.setupGroupExpanded(notesToggled, expandedGroup), false)
+})
+
 test("setupStepName covers the five wizard steps", () => {
   assert.equal(Model.setupWizardSteps.length, 5)
   same(Model.setupWizardSteps, ["Check", "Connect", "Review", "Apply", "Report"])

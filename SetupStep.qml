@@ -14,11 +14,14 @@ Column {
   property var prereqs: null
   property bool checking: false
   property var repoPicker: []
+  property string selectedUrl: ""
   property var connectEntries: []
   property bool connectRunning: false
   property var plan: null
   property bool planLoading: false
-  property var stepRows: []
+  property var expanded: ({})
+  property string focusedKey: ""
+  property var progress: null
   property var report: null
   property string undoSentence: ""
   property var postChecked: ({})
@@ -28,14 +31,33 @@ Column {
   signal postToggled(string id, bool value)
   signal checkAgainRequested()
   signal repoPicked(string url)
+  signal groupToggled(string key)
   signal undoRequested()
 
   readonly property var prereqRows: Model.setupPrereqRows(root.prereqs)
   readonly property var prereqReady: Model.setupPrereqReady(root.prereqs)
   readonly property var connectRows: Model.setupConnectRows(root.connectEntries)
+  readonly property var progressRows: Model.setupProgressRows(root.progress)
+  readonly property int progressDone: root.progress ? Number(root.progress.done) || 0 : 0
+  readonly property int progressTotal: root.progress ? Number(root.progress.total) || 0 : 0
+  readonly property bool showPicker: root.repoPicker.length > 0 && !root.connectRunning && root.connectEntries.length === 0
 
   width: parent ? parent.width : 0
   spacing: Style.spacing.lg
+
+  function toneColor(tone) {
+    if (tone === "urgent") return Color.urgent
+    if (tone === "accent") return Color.accent
+    return Util.alpha(root.foreground, 0.72)
+  }
+
+  function statusGlyph(status) {
+    if (status === "done") return "\uf00c"
+    if (status === "failed") return "\uf00d"
+    if (status === "skipped") return "\uf05e"
+    if (status === "running") return "\uf110"
+    return "\uf10c"
+  }
 
   // ---- Step 0: Check ---------------------------------------------------
   SetupCheck {
@@ -66,7 +88,7 @@ Column {
 
     Column {
       width: parent.width
-      visible: root.repoPicker.length > 0
+      visible: root.showPicker
       spacing: Style.spacing.xs
 
       Text {
@@ -89,6 +111,7 @@ Column {
             required property var modelData
             text: String(modelData.label || "") + (modelData.likely ? " \u2605" : "") + (String(modelData.detail || "") !== "" ? " \u00b7 " + String(modelData.detail) : "")
             fontSize: Style.font.caption
+            selected: String(modelData.value || "") === root.selectedUrl
             horizontalPadding: Style.space(6)
             verticalPadding: Style.space(3)
             onClicked: root.repoPicked(String(modelData.value || ""))
@@ -113,7 +136,7 @@ Column {
           Text {
             Layout.alignment: Qt.AlignVCenter
             textFormat: Text.PlainText
-            text: modelData.status === "done" ? "\uf00c" : (modelData.status === "failed" ? "\uf00d" : (modelData.status === "running" ? "\uf110" : "\uf10c"))
+            text: root.statusGlyph(String(modelData.status))
             color: modelData.status === "done" ? Color.accent : (modelData.status === "failed" ? Color.urgent : Util.alpha(root.foreground, 0.72))
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -151,48 +174,54 @@ Column {
     plan: root.plan
     planLoading: root.planLoading
     postChecked: root.postChecked
+    expanded: root.expanded
+    focusedKey: root.focusedKey
     busy: root.busy
     foreground: root.foreground
     onPostToggled: function(id, value) { root.postToggled(id, value) }
+    onGroupToggled: function(key) { root.groupToggled(key) }
   }
 
   // ---- Step 3: Apply ---------------------------------------------------
   Column {
     width: parent.width
     visible: root.step === 3
-    spacing: Style.spacing.md
+    spacing: Style.spacing.sm
 
-    RowLayout {
+    Text {
       width: parent.width
-      spacing: Style.spacing.md
+      textFormat: Text.PlainText
+      text: "Setting up this machine\u2026" + (root.progressTotal > 0 ? "  " + root.progressDone + "/" + root.progressTotal : "")
+      color: root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+    }
 
-      Text {
-        Layout.fillWidth: true
-        textFormat: Text.PlainText
-        text: "Setting up this machine\u2026"
-        color: root.foreground
-        font.family: Style.font.family
-        font.pixelSize: Style.font.bodySmall
-      }
+    Repeater {
+      model: root.progressRows
 
-      Item {
-        Layout.preferredWidth: Style.space(44)
-        Layout.preferredHeight: Style.space(10)
+      RowLayout {
+        required property var modelData
+        width: parent.width
+        spacing: Style.spacing.md
 
-        Rectangle {
-          width: Style.space(8)
-          height: width
-          radius: width / 2
-          y: (parent.height - height) / 2
-          color: Color.accent
-          visible: root.busy
+        Text {
+          Layout.alignment: Qt.AlignVCenter
+          textFormat: Text.PlainText
+          text: root.statusGlyph(String(modelData.status))
+          color: modelData.status === "done" ? Color.accent : (modelData.status === "failed" ? Color.urgent : Util.alpha(root.foreground, 0.72))
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
 
-          SequentialAnimation on x {
-            running: root.busy
-            loops: Animation.Infinite
-            NumberAnimation { from: 0; to: 36; duration: 600; easing.type: Easing.InOutSine }
-            NumberAnimation { from: 36; to: 0; duration: 600; easing.type: Easing.InOutSine }
-          }
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: String(modelData.label || "")
+          color: modelData.status === "waiting" ? Util.alpha(root.foreground, 0.6) : root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
         }
       }
     }
@@ -208,11 +237,5 @@ Column {
     busy: root.busy
     foreground: root.foreground
     onUndoRequested: root.undoRequested()
-  }
-
-  function toneColor(tone) {
-    if (tone === "urgent") return Color.urgent
-    if (tone === "accent") return Color.accent
-    return Util.alpha(root.foreground, 0.72)
   }
 }

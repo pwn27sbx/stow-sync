@@ -202,6 +202,8 @@ Item {
             text: root.busy ? "Working…" : root.confirmText
             foreground: root.destructive ? Color.urgent : Color.foreground
             enabled: !root.busy
+            focusable: true
+            focus: root.opened
             onClicked: root.acceptPrimary()
           }
         }

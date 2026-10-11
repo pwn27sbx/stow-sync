@@ -30,7 +30,7 @@ QtObject {
   property var applyResult: null
   property var undoResult: null
   property var backups: []
-  property var postChecked: ({})
+  property var postChecked: ({}); property var groupsExpanded: ({}); property string groupKey: ""; property string selectedUrl: ""
   property string errorText: ""
   property bool applying: false
 
@@ -60,6 +60,9 @@ QtObject {
     flow.applyResult = null
     flow.undoResult = null
     flow.postChecked = ({})
+    flow.groupsExpanded = ({})
+    flow.groupKey = ""
+    flow.selectedUrl = ""
     flow.errorText = ""
     flow.applying = false
     var applyFixture = flow.settings ? String(flow.settings.setupApplyFixture || "") : ""
@@ -85,10 +88,36 @@ QtObject {
   function fetchRepos() { flow.requested("setup-repos", ["setup-repos"]) }
   function goConnect() { flow.step = 1; if (flow.repoPicker.length === 0) flow.fetchRepos() }
 
+  function reviewGroups() { return Model.setupPlanGroups(flow.plan) }
+
+  function moveGroup(dy) {
+    var gs = flow.reviewGroups()
+    if (gs.length === 0) return
+    var index = -1
+    for (var i = 0; i < gs.length; i++) if (String(gs[i].key) === flow.groupKey) index = i
+    if (index < 0) index = dy >= 0 ? -1 : gs.length
+    index = Math.max(0, Math.min(gs.length - 1, index + (dy >= 0 ? 1 : -1)))
+    flow.groupKey = String(gs[index].key)
+  }
+
+  function toggleGroupKey(key) {
+    var target = String(key || flow.groupKey)
+    if (target === "") return
+    var gs = flow.reviewGroups()
+    for (var i = 0; i < gs.length; i++) {
+      if (String(gs[i].key) === target) {
+        flow.groupsExpanded = Model.setupToggleGroup(flow.groupsExpanded, gs[i])
+        return
+      }
+    }
+  }
+
   function connect() {
     if (!Model.setupValidUrl(flow.url)) { flow.errorText = "Enter a GitHub URL or a URL ending in .git."; return }
     flow.errorText = ""
-    flow.connectEntries = []
+    // Replace the picker with the checklist at once: the dotfiles clone runs
+    // first, the other repos appear once setup-connect returns the recipe.
+    flow.connectEntries = [{ path: "~/.dotfiles", state: "cloning", error: "" }]
     flow.cloneQueue = []
     flow.connectRunning = true
     flow.requested("setup-connect", ["setup-connect", "--url", flow.url])
@@ -236,6 +265,8 @@ QtObject {
       var post = (payload.plan && payload.plan.post) || []
       for (var p = 0; p < post.length; p++) selection[String(post[p].id || "")] = post[p].default === true
       flow.postChecked = selection
+      flow.groupsExpanded = ({})
+      flow.groupKey = ""
       return
     }
     if (tag === "setup-apply") {

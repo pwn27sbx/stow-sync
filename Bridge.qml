@@ -166,7 +166,7 @@ Item {
     Text {
       width: parent.width
       textFormat: Text.PlainText
-      text: root.sentence
+      text: root.sentence + (root.busy ? "  \u00b7  Refreshing\u2026" : "")
       color: Util.alpha(root.foreground, 0.72)
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall

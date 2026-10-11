@@ -2149,6 +2149,44 @@ function setupStepName(index) {
   return i >= 0 && i < setupWizardSteps.length ? setupWizardSteps[i] : ""
 }
 
+// Live Apply checklist rows from <state>/setup-progress.json (README 11a.4).
+function setupProgressRows(progress) {
+  var p = progress || {}
+  var items = p.items || []
+  var rows = []
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i] || {}
+    rows.push({
+      key: String(item.kind || "") + ":" + String(item.id || ""),
+      kind: String(item.kind || ""),
+      label: String(item.id || ""),
+      status: String(item.state || "waiting"),
+      detail: ""
+    })
+  }
+  return rows
+}
+
+// Review group expansion (README 11a.1): the default comes from the group, the
+// override from the user's toggles. Both pure so the toggle is unit-tested.
+function setupGroupExpanded(expanded, group) {
+  var map = expanded || {}
+  var g = group || {}
+  var key = String(g.key || "")
+  if (map[key] !== undefined) return map[key] === true
+  return g.expandByDefault === true
+}
+
+function setupToggleGroup(expanded, group) {
+  var map = expanded || {}
+  var g = group || {}
+  var key = String(g.key || "")
+  var next = {}
+  for (var k in map) next[k] = map[k]
+  next[key] = !setupGroupExpanded(map, g)
+  return next
+}
+
 // --- Panel selection/cursor helpers (kept pure, moved out of Panel.qml) ----
 // Cycle the checked set to one repo; returns the next cycle index.
 function selectRepoCycle(changeView, rows, index) {

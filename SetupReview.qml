@@ -5,23 +5,26 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Review step body of the setup wizard (README 10b.5). Each plan group is a
-// collapsible summary row; Missing tools and Still to do start expanded. Notes
-// wrap over several lines and are never elided. Post steps whose tool is missing
-// render disabled with "needs X".
+// Review step body of the setup wizard (README 10b.5 / 11a.1). Each plan group
+// is a collapsible summary row with a full-row click target, a hover/focus fill
+// and a clear chevron; Missing tools and Still to do start expanded. Notes wrap
+// and are never elided. Post steps whose tool is missing render disabled.
 Column {
   id: root
 
   property var plan: null
   property bool planLoading: false
   property var postChecked: ({})
+  property var expanded: ({})
+  property string focusedKey: ""
+  property string hoveredKey: ""
   property bool busy: false
   property color foreground: Color.foreground
 
   signal postToggled(string id, bool value)
+  signal groupToggled(string key)
 
   readonly property var groups: Model.setupPlanGroups(root.plan)
-  property var expanded: ({})
 
   width: parent ? parent.width : 0
   spacing: Style.spacing.lg
@@ -32,20 +35,9 @@ Column {
     return Util.alpha(root.foreground, 0.72)
   }
 
-  function isExpanded(key) {
-    if (root.expanded[key] !== undefined) return root.expanded[key] === true
-    for (var i = 0; i < root.groups.length; i++) if (root.groups[i].key === key) return root.groups[i].expandByDefault === true
-    return false
+  function isExpanded(group) {
+    return Model.setupGroupExpanded(root.expanded, group)
   }
-
-  function toggle(key) {
-    var next = {}
-    for (var k in root.expanded) next[k] = root.expanded[k]
-    next[key] = !root.isExpanded(key)
-    root.expanded = next
-  }
-
-  onGroupsChanged: root.expanded = ({})
 
   Text {
     width: parent.width
@@ -66,44 +58,68 @@ Column {
       spacing: Style.spacing.xs
       visible: modelData.items.length > 0
 
-      RowLayout {
+      Rectangle {
+        id: header
         width: parent.width
-        spacing: Style.spacing.sm
+        implicitHeight: headerRow.implicitHeight + Style.spacing.sm
+        radius: Style.cornerRadius
+        color: (root.focusedKey === modelData.key || root.hoveredKey === modelData.key)
+          ? Util.alpha(root.foreground, 0.06) : "transparent"
 
-        Text {
-          Layout.alignment: Qt.AlignVCenter
-          textFormat: Text.PlainText
-          text: root.isExpanded(modelData.key) ? "\u25be" : "\u25b8"
-          color: root.toneColor(String(modelData.tone || "muted"))
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          hoverEnabled: true
+          onEntered: root.hoveredKey = String(modelData.key)
+          onExited: if (root.hoveredKey === String(modelData.key)) root.hoveredKey = ""
+          onClicked: root.groupToggled(String(modelData.key))
         }
 
-        Text {
-          Layout.fillWidth: true
-          textFormat: Text.PlainText
-          text: String(modelData.title || "")
-          color: root.toneColor(String(modelData.tone || "muted"))
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          font.bold: true
-          elide: Text.ElideRight
-        }
+        RowLayout {
+          id: headerRow
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.leftMargin: Style.spacing.sm
+          anchors.rightMargin: Style.spacing.sm
+          spacing: Style.spacing.sm
 
-        Text {
-          Layout.alignment: Qt.AlignVCenter
-          textFormat: Text.PlainText
-          text: String(modelData.count) + (String(modelData.unit || "") !== "" ? " " + String(modelData.unit) : "")
-          color: Util.alpha(root.foreground, 0.72)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
+          Text {
+            Layout.alignment: Qt.AlignVCenter
+            textFormat: Text.PlainText
+            // Font Awesome chevrons; caption size rendered as a dot (finding 37).
+            text: root.isExpanded(modelData) ? "\uf078" : "\uf054"
+            color: root.toneColor(String(modelData.tone || "muted"))
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: String(modelData.title || "")
+            color: root.toneColor(String(modelData.tone || "muted"))
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+            elide: Text.ElideRight
+          }
+
+          Text {
+            Layout.alignment: Qt.AlignVCenter
+            textFormat: Text.PlainText
+            text: String(modelData.count) + (String(modelData.unit || "") !== "" ? " " + String(modelData.unit) : "")
+            color: Util.alpha(root.foreground, 0.72)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
         }
       }
 
       Column {
         width: parent.width
         spacing: Style.spacing.xs
-        visible: root.isExpanded(modelData.key)
+        visible: root.isExpanded(modelData)
 
         Repeater {
           model: modelData.items
