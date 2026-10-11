@@ -4,12 +4,10 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
-// Tab body: `tab` picks Overview (0), Changes (1) or Packages (2); expansion
-// state lives here so it survives tab switches, while selection/hidden state
-// is owned by Panel (the publish plan needs it).
-// Layout note: the root and each tab body are plain Columns (positioners),
-// not ColumnLayouts: a Column derives implicitHeight from its children and
-// positions them by height alone (what the Flickable contentHeight needs).
+// Tab body: `tab` picks Overview (0), Changes (1) or Packages (2). Expansion
+// state lives here (survives tab switches); selection/hidden state is owned by
+// Panel. Root and tab bodies are plain Columns: a Column derives implicitHeight
+// from its children and positions them by height alone.
 Column {
   id: root
   property var statusData: null; property int tab: 0

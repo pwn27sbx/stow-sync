@@ -196,12 +196,18 @@ Item {
           Button {
             text: flow.backLabel()
             visible: flow.backLabel() !== "Close"
+            opacity: flow.running ? 0.4 : 1
             enabled: !flow.running
             onClicked: flow.back()
           }
 
           Button {
             text: flow.primaryLabel()
+            // Filled accent primary action (README 12c finding 51).
+            background: Color.accent
+            foreground: Color.background
+            horizontalPadding: Style.space(16)
+            verticalPadding: Style.space(8)
             enabled: flow.primaryEnabled()
             onClicked: flow.primary()
           }
