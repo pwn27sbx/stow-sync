@@ -32,6 +32,9 @@ Column {
   property bool busy: false
   property bool motion: true
   property color foreground: Color.foreground
+  // Live height of the wizard body, so the Apply list can bound itself and let
+  // only the list scroll (finding 72).
+  property real bodyHeight: 0
 
   signal postToggled(string id, bool value)
   signal checkAgainRequested()
@@ -57,6 +60,16 @@ Column {
     if (status === "skipped") return "\uf05e"
     if (status === "running") return "\uf110"
     return "\uf10c"
+  }
+
+  // Scroll the Apply list when the wizard is on step 3; signal the caller that
+  // the key was consumed (finding 72).
+  function scrollBy(dy) {
+    if (root.step === 3) {
+      applyList.contentY = Math.max(0, Math.min(Math.max(0, applyList.contentHeight - applyList.height), applyList.contentY + dy))
+      return true
+    }
+    return false
   }
 
   // ---- Step 0: Check ---------------------------------------------------
@@ -114,48 +127,72 @@ Column {
     visible: root.step === 3
     spacing: Style.spacing.sm
 
-    Text {
+    // The status line and bar stay pinned above the scrolling list (finding 72).
+    Column {
+      id: applyHeader
       width: parent.width
-      textFormat: Text.PlainText
-      text: "Setting up this machine\u2026" + (root.progressTotal > 0 ? "  " + root.progressDone + "/" + root.progressTotal : "")
-      color: root.foreground
-      font.family: Style.font.family
-      font.pixelSize: Style.font.bodySmall
-    }
+      spacing: Style.spacing.sm
 
-    SetupProgress {
-      width: parent.width
-      value: root.progressTotal > 0 ? root.progressDone / root.progressTotal : -1
-      active: true
-      motion: root.motion
-      foreground: root.foreground
-    }
-
-    Repeater {
-      model: root.progressRows
-
-      RowLayout {
-        required property var modelData
+      Text {
         width: parent.width
-        spacing: Style.spacing.md
+        textFormat: Text.PlainText
+        text: "Setting up this machine\u2026" + (root.progressTotal > 0 ? "  " + root.progressDone + "/" + root.progressTotal : "")
+        color: root.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+      }
 
-        Text {
-          Layout.alignment: Qt.AlignVCenter
-          textFormat: Text.PlainText
-          text: root.statusGlyph(String(modelData.status))
-          color: modelData.status === "done" ? Color.accent : (modelData.status === "failed" ? Color.urgent : Util.alpha(root.foreground, 0.72))
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-        }
+      SetupProgress {
+        width: parent.width
+        value: root.progressTotal > 0 ? root.progressDone / root.progressTotal : -1
+        active: true
+        motion: root.motion
+        foreground: root.foreground
+      }
+    }
 
-        Text {
-          Layout.fillWidth: true
-          textFormat: Text.PlainText
-          text: String(modelData.label || "")
-          color: modelData.status === "waiting" ? Util.alpha(root.foreground, 0.6) : root.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          elide: Text.ElideRight
+    // Only this list scrolls, bounded to the space left under the header.
+    Flickable {
+      id: applyList
+      width: parent.width
+      height: Math.max(Style.space(80), root.bodyHeight - applyHeader.implicitHeight - Style.spacing.sm)
+      clip: true
+      contentWidth: width
+      contentHeight: applyItems.implicitHeight
+      boundsBehavior: Flickable.StopAtBounds
+
+      Column {
+        id: applyItems
+        width: parent.width
+        spacing: Style.spacing.sm
+
+        Repeater {
+          model: root.progressRows
+
+          RowLayout {
+            required property var modelData
+            width: parent.width
+            spacing: Style.spacing.md
+
+            Text {
+              Layout.alignment: Qt.AlignVCenter
+              textFormat: Text.PlainText
+              text: root.statusGlyph(String(modelData.status))
+              color: modelData.status === "done" ? Color.accent : (modelData.status === "failed" ? Color.urgent : Util.alpha(root.foreground, 0.72))
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: String(modelData.label || "")
+              color: modelData.status === "waiting" ? Util.alpha(root.foreground, 0.6) : root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
+          }
         }
       }
     }

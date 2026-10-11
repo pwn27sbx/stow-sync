@@ -4667,6 +4667,31 @@ class SetupWizardFooterTests(unittest.TestCase):
         self.assertEqual(wizard.count("verticalPadding: Style.space(8)"), 3)
 
 
+class SetupApplyReportLayoutTests(unittest.TestCase):
+    """Finding 72: the Apply status line and bar stay pinned above the scrolling
+    list. Finding 73: in the undone Report the undo result comes first."""
+
+    def test_apply_status_is_pinned_above_a_bounded_list(self) -> None:
+        step = (ROOT / "SetupStep.qml").read_text(encoding="utf-8")
+        self.assertIn("property real bodyHeight: 0", step)
+        self.assertIn("id: applyHeader", step)
+        self.assertIn("id: applyList", step)
+        self.assertIn("clip: true", step)
+        self.assertIn("function scrollBy(dy)", step)
+
+    def test_wizard_passes_the_body_height_and_delegates_scroll(self) -> None:
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        self.assertIn("bodyHeight: bodyArea.height", wizard)
+        self.assertIn("body.item.scrollBy", wizard)
+
+    def test_undo_result_precedes_the_greyed_sections(self) -> None:
+        report = (ROOT / "SetupReport.qml").read_text(encoding="utf-8")
+        undo = report.index("// Undo result card")
+        self.assertGreaterEqual(undo, 0)
+        self.assertLess(undo, report.index("model: root.sections"))
+        self.assertLess(undo, report.index("// Elide in the middle"))
+
+
 class SettingsReadyGateTests(unittest.TestCase):
     """Regression for the real-config leak: the helper must never run before
     BarWidget.injectPanel() has injected settings (README 11a fix)."""

@@ -49,7 +49,11 @@ Item {
   function back() { flow.back() }
   function reviewMove(dy) { flow.moveGroup(dy) }
   function reviewToggle() { flow.toggleGroupKey(flow.groupKey) }
-  function scrollBy(dy) { bodyArea.contentY = Math.max(0, Math.min(Math.max(0, bodyArea.contentHeight - bodyArea.height), bodyArea.contentY + dy)) }
+  function scrollBy(dy) {
+    // Let the step body consume the scroll first (the Apply list, finding 72).
+    if (body.item && typeof body.item.scrollBy === "function" && body.item.scrollBy(dy)) return
+    bodyArea.contentY = Math.max(0, Math.min(Math.max(0, bodyArea.contentHeight - bodyArea.height), bodyArea.contentY + dy))
+  }
 
   function parseProgress(text) {
     var raw = String(text || "").trim()
@@ -243,6 +247,7 @@ Item {
       expanded: flow.groupsExpanded
       focusedKey: flow.groupKey
       progress: root.applyProgress
+      bodyHeight: bodyArea.height
       report: flow.report
       undoResult: flow.undoResult
       postChecked: flow.postChecked

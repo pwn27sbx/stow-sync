@@ -61,6 +61,55 @@ Column {
     wrapMode: Text.WordWrap
   }
 
+  // Undo result card (README 11b.3/finding 73): the undo result comes first,
+  // right under the summary sentence; the sections below are the greyed history.
+  Column {
+    width: parent.width
+    visible: root.undoResult !== null
+    spacing: Style.spacing.xs
+
+    Text {
+      width: parent.width
+      textFormat: Text.PlainText
+      text: root.undo.ok ? "Setup undone" : "Undo finished with problems"
+      color: root.undo.ok ? Color.accent : Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      font.bold: true
+    }
+
+    Repeater {
+      model: root.undo.lines
+
+      RowLayout {
+        required property var modelData
+        width: parent.width
+        spacing: Style.spacing.md
+
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: String(modelData.label || "")
+          color: root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
+        }
+
+        Text {
+          Layout.maximumWidth: Style.space(200)
+          visible: String(modelData.detail || "") !== ""
+          textFormat: Text.PlainText
+          text: String(modelData.detail || "")
+          color: String(modelData.tone) === "urgent" ? Color.urgent : Util.alpha(root.foreground, 0.72)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          horizontalAlignment: Text.AlignRight
+        }
+      }
+    }
+  }
+
   RowLayout {
     width: parent.width
     visible: root.report !== null && String(root.report.backupDir || "") !== ""
@@ -164,55 +213,6 @@ Column {
               horizontalAlignment: Text.AlignLeft
             }
           }
-        }
-      }
-    }
-  }
-
-  // Undo result card (README 11b.3): what was unlinked, restored, disabled or
-  // refused, with the backup marked undone.
-  Column {
-    width: parent.width
-    visible: root.undoResult !== null
-    spacing: Style.spacing.xs
-
-    Text {
-      width: parent.width
-      textFormat: Text.PlainText
-      text: root.undo.ok ? "Setup undone" : "Undo finished with problems"
-      color: root.undo.ok ? Color.accent : Color.urgent
-      font.family: Style.font.family
-      font.pixelSize: Style.font.bodySmall
-      font.bold: true
-    }
-
-    Repeater {
-      model: root.undo.lines
-
-      RowLayout {
-        required property var modelData
-        width: parent.width
-        spacing: Style.spacing.md
-
-        Text {
-          Layout.fillWidth: true
-          textFormat: Text.PlainText
-          text: String(modelData.label || "")
-          color: root.foreground
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          elide: Text.ElideRight
-        }
-
-        Text {
-          Layout.maximumWidth: Style.space(200)
-          visible: String(modelData.detail || "") !== ""
-          textFormat: Text.PlainText
-          text: String(modelData.detail || "")
-          color: String(modelData.tone) === "urgent" ? Color.urgent : Util.alpha(root.foreground, 0.72)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          horizontalAlignment: Text.AlignRight
         }
       }
     }
