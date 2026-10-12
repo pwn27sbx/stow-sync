@@ -177,7 +177,7 @@ Item {
           }
         }
 
-        ScrollHint { anchors.left: bodyArea.left; anchors.right: bodyArea.right; anchors.bottom: bodyArea.bottom; flick: bodyArea; foreground: root.foreground }
+        ScrollHint { anchors.left: bodyArea.left; anchors.right: bodyArea.right; anchors.bottom: buttonRow.top; flick: bodyArea; foreground: root.foreground }
 
         Row {
           id: buttonRow

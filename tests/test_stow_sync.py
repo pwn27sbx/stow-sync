@@ -5317,5 +5317,33 @@ class Unit15eSourceTests(unittest.TestCase):
         self.assertIn("visible: modelData.undone !== true && modelData.empty !== true", backups)
 
 
+class Unit15fSourceTests(unittest.TestCase):
+    """Findings 92-93: Report scroll cue and the Done button."""
+
+    def test_scroll_hint_chevron_sits_in_the_footer_gap(self) -> None:
+        # Finding 92: the chevron must never sit over the sliced last line.
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        self.assertIn("anchors.bottom: buttonRow.top; flick: bodyArea", wizard)
+        hint = (ROOT / "ScrollHint.qml").read_text(encoding="utf-8")
+        # The hint spans the flickable's bottom band plus the 12 px footer gap:
+        # the fade covers the content bottom, the chevron lands in the gap.
+        self.assertIn("height: Style.space(24) + Style.space(12)", hint)
+        self.assertIn("anchors.top: parent.top", hint)
+        self.assertIn("Gradient {", hint)
+        self.assertIn("anchors.bottom: parent.bottom", hint)
+
+    def test_report_done_is_never_disabled(self) -> None:
+        # Finding 93: Done only closes the dialog, so a background refresh must
+        # never grey it out.
+        flow = (ROOT / "SetupFlow.qml").read_text(encoding="utf-8")
+        body = flow[flow.index("function primaryEnabled()") :]
+        body = body[: body.index("\n  }", 0)]
+        self.assertIn("if (flow.step === 4) return true", body)
+        self.assertLess(
+            body.index("if (flow.step === 4) return true"),
+            body.index("if (flow.running) return false"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

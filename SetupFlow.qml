@@ -160,8 +160,11 @@ QtObject {
   }
 
   function primaryEnabled() {
-    if (flow.running) return false
     if (flow.mode === "backups") return true
+    // Done on the Report only closes the dialog, so a background refresh must
+    // never grey it out (finding 93).
+    if (flow.step === 4) return true
+    if (flow.running) return false
     if (flow.step === 0) return Model.setupPrereqReady(flow.prereqs)
     if (flow.step === 1) return !flow.connectRunning && (flow.connectDone() || Model.setupValidUrl(flow.url))
     if (flow.step === 2) return !flow.planLoading && flow.plan !== null && Model.setupHasWork(flow.plan, Model.setupSelectedPostCount(flow.plan, flow.postChecked))
