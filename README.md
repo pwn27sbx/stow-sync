@@ -29,7 +29,7 @@ Omarchy-side config tree, Stow Sync handles your Stow repos.
 Published plugin:
 
 ```bash
-omarchy plugin add https://github.com/pwn27sbx/omarchy-stow-sync --enable --yes
+omarchy plugin add https://github.com/pwn27sbx/stow-sync --enable --yes
 ```
 
 From a local checkout (development):
@@ -139,7 +139,7 @@ gh auth login
 gh auth setup-git
 
 # 4. Install the plugin (published), or from a local checkout for development.
-omarchy plugin add https://github.com/pwn27sbx/omarchy-stow-sync --enable --yes
+omarchy plugin add https://github.com/pwn27sbx/stow-sync --enable --yes
 # omarchy plugin add /path/to/omarchy-stow-sync --enable --yes
 
 # 5. Enable it. For a manual copy the shell must rescan plugins first.
