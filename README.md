@@ -342,6 +342,22 @@ and change Stow state and is installed by the [New machine](#new-machine) guide.
 private repository. `notify-send` is optional and only used when
 `notify_after_hours` is greater than zero.
 
+## Known limitations
+
+- **Omarchy can rewrite `~/.config/ghostty/config`.** The Text size slider
+  (`omarchy-display-text-size`) and `omarchy-font-set` edit that file in place
+  with `sed -i`, which replaces the Stow symlink with a regular file. Stow Sync
+  then correctly reports a `ghostty` conflict. The clean fix is to keep your own
+  ghostty settings in a separate file and include it, leaving `config` to
+  Omarchy:
+
+  ```ini
+  # in the ghostty config your dotfiles stow
+  config-file = ~/.config/ghostty/personal
+  ```
+
+  Otherwise, re-adopt the rewritten file into its package.
+
 ## Notifications
 
 Set `notify_after_hours` to a value greater than zero to be reminded when a

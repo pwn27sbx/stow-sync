@@ -5153,6 +5153,7 @@ class Unit15SourceTests(unittest.TestCase):
         self.assertIn("onClosed: { root.setupOpen = false; root.refreshAfterSetup() }", panel)
         self.assertIn('tag === "setup-undo" || tag === "setup-apply"', panel)
         self.assertIn('tag === "setup-apply" || tag === "setup-undo"', panel)
+
     def test_undo_failure_is_rendered_outside_error_text(self) -> None:
         # Finding 80: the undo failure survives a status refresh because it lives
         # in flow.undoError and is rendered by the backups view and the Report.
@@ -5169,6 +5170,7 @@ class Unit15SourceTests(unittest.TestCase):
         self.assertIn("undoError: root.undoError", step)
         wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
         self.assertIn("undoError: flow.undoError", wizard)
+
     def test_header_replaces_the_floppy_with_the_undo_glyph(self) -> None:
         # Finding 83: md-undo with the "Undo setup" tooltip, Nerd Font verified.
         header = (ROOT / "Header.qml").read_text(encoding="utf-8")
@@ -5177,6 +5179,7 @@ class Unit15SourceTests(unittest.TestCase):
         self.assertNotIn("\\uf0c7", header)
         panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
         self.assertIn("onUndoSetupClicked: root.undoSetupFromHeader()", panel)
+
     def test_overview_groups_are_one_accordion(self) -> None:
         # Finding 84: one expanded key for the repo lanes and the group cards.
         section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
@@ -5189,6 +5192,23 @@ class Unit15SourceTests(unittest.TestCase):
         report = (ROOT / "SetupReport.qml").read_text(encoding="utf-8")
         self.assertIn("Model.setupAccordionToggle(", report)
 
+    def test_scroll_area_ends_above_the_footer(self) -> None:
+        # Finding 85: the body is anchored to the footer top, not a computed
+        # height that could run under the buttons.
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        self.assertIn("anchors.bottom: buttonRow.top", wizard)
+        self.assertIn("anchors.bottomMargin: Style.space(12)", wizard)
+        self.assertNotIn("inner.height - chrome.height - buttonRow.height", wizard)
+
+    def test_footer_buttons_share_one_height_and_centre(self) -> None:
+        # Finding 86: one shared height and one vertical centre for every step.
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        self.assertIn(
+            "height: Math.max(undoFooterButton.implicitHeight, backFooterButton.implicitHeight, primaryFooterButton.implicitHeight)",
+            wizard,
+        )
+        self.assertEqual(wizard.count("height: buttonRow.height"), 3)
+        self.assertEqual(wizard.count("anchors.verticalCenter: parent.verticalCenter"), 3)
 
 
 if __name__ == "__main__":

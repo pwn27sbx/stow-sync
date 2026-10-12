@@ -170,7 +170,10 @@ Item {
           anchors.topMargin: Style.space(16) // stepper block -> step content (finding 63)
           anchors.left: parent.left
           anchors.right: parent.right
-          height: Math.max(Style.space(60), inner.height - chrome.height - buttonRow.height - Style.space(20))
+          // End above the footer in every step so the last line is never hidden
+          // under the buttons (finding 85): reserve the footer height by anchoring.
+          anchors.bottom: buttonRow.top
+          anchors.bottomMargin: Style.space(12)
           clip: true
           contentWidth: width
           contentHeight: body.implicitHeight
@@ -188,14 +191,20 @@ Item {
           id: buttonRow
           anchors.right: parent.right
           anchors.bottom: parent.bottom
+          // Every footer button shares one height and one vertical centre
+          // (finding 86): the row takes the tallest implicit height and each
+          // button is centred on it, so Undo/Done/Back align.
+          height: Math.max(undoFooterButton.implicitHeight, backFooterButton.implicitHeight, primaryFooterButton.implicitHeight)
           spacing: Style.spacing.sm
 
           Button {
+            id: undoFooterButton
+            anchors.verticalCenter: parent.verticalCenter
+            height: buttonRow.height
             text: "Undo this setup"
             iconText: "\uf0e2"
             foreground: Color.urgent
             bordered: true
-            // Same box height as the primary so their text ink centres align (finding 68).
             verticalPadding: Style.space(8)
             visible: flow.mode === "wizard" && flow.step === 4 && flow.applyResult !== null && String(flow.applyResult.backup || "") !== "" && flow.undoResult === null
             enabled: !root.busy
@@ -203,16 +212,21 @@ Item {
           }
 
           Button {
+            id: backFooterButton
+            anchors.verticalCenter: parent.verticalCenter
+            height: buttonRow.height
             text: flow.backLabel()
             visible: flow.backLabel() !== "Close"
             opacity: flow.running ? 0.4 : 1
-            // Centre Back on the primary's vertical axis (finding 68).
             verticalPadding: Style.space(8)
             enabled: !flow.running
             onClicked: flow.back()
           }
 
           Button {
+            id: primaryFooterButton
+            anchors.verticalCenter: parent.verticalCenter
+            height: buttonRow.height
             text: flow.primaryLabel()
             // Filled accent primary action (README 12c finding 51).
             background: Color.accent
