@@ -2196,3 +2196,51 @@ test("parseSetupProgress: caps the polled progress file", () => {
   assert.equal(Model.parseSetupProgress(big), null)
   assert.equal(Model.SETUP_PROGRESS_MAX_BYTES, 262144)
 })
+
+// --- Unit 15 Group A: state and feedback (78, 80, 81) ----------------------
+
+test("setupActiveBackups: keeps only un-undone setups", () => {
+  same(Model.setupActiveBackups(null), [])
+  same(Model.setupActiveBackups([]), [])
+  const rows = Model.setupActiveBackups([
+    { id: "1", undone: true },
+    { id: "2", undone: false },
+    { id: "3" }
+  ])
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].id, "2")
+  assert.equal(rows[1].id, "3")
+})
+
+test("setupUndoSummary: plain sentence from the undo result", () => {
+  assert.equal(Model.setupUndoSummary(null), "")
+  assert.equal(Model.setupUndoSummary({ ok: false }), "")
+  assert.equal(
+    Model.setupUndoSummary({ ok: true, unstowed: [1, 2, 3], restored: [1], services_disabled: [1] }),
+    "Setup undone \u00b7 3 packages unlinked \u00b7 1 file restored \u00b7 1 service disabled"
+  )
+  assert.equal(
+    Model.setupUndoSummary({ ok: true, unstowed: [1], restored: [], services_disabled: [] }),
+    "Setup undone \u00b7 1 package unlinked"
+  )
+})
+
+test("setupMachineNotSetUp: linked packages and an undone setup decide it (81)", () => {
+  assert.equal(Model.setupMachineNotSetUp({ repos: [] }, { setupOn: false }), false)
+  assert.equal(
+    Model.setupMachineNotSetUp({ repos: [{ path: "~/.dotfiles", exists: false }] }, { setupOn: true }),
+    true
+  )
+  // A surviving stray conflict must not re-enable management after an Undo.
+  const conflict = {
+    repos: [
+      { path: "~/.dotfiles", exists: true, stowed_packages: 0, packages: [{ name: "ghostty", health: "conflicts" }] }
+    ]
+  }
+  assert.equal(Model.setupMachineNotSetUp(conflict, { setupOn: true, backups: [] }), true)
+  assert.equal(Model.setupMachineNotSetUp(conflict, { setupOn: true, backups: [{ id: "1", undone: true }] }), true)
+  assert.equal(Model.setupMachineNotSetUp(conflict, { setupOn: true, backups: [{ id: "1", undone: false }] }), false)
+  const linked = { repos: [{ path: "~/.dotfiles", exists: true, stowed_packages: 3 }] }
+  assert.equal(Model.setupMachineNotSetUp(linked, { setupOn: true, backups: [{ id: "1", undone: true }] }), false)
+})
+

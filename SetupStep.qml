@@ -28,6 +28,7 @@ Column {
   property var progress: null
   property var report: null
   property var undoResult: null
+  property string undoError: ""
   property var postChecked: ({})
   property bool busy: false
   property bool motion: true
@@ -205,6 +206,7 @@ Column {
     visible: root.step === 4
     report: root.report
     undoResult: root.undoResult
+    undoError: root.undoError
     busy: root.busy
     foreground: root.foreground
   }

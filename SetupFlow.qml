@@ -32,6 +32,7 @@ QtObject {
   property bool planLoading: false
   property var applyResult: null
   property var undoResult: null
+  property string undoError: ""
   property var backups: []
   property var postChecked: ({}); property var groupsExpanded: ({}); property string groupKey: ""; property string selectedUrl: ""
   property string errorText: ""
@@ -59,6 +60,7 @@ QtObject {
     flow.planLoading = false
     flow.applyResult = null
     flow.undoResult = null
+    flow.undoError = ""
     flow.postChecked = ({})
     flow.groupsExpanded = ({})
     flow.groupKey = ""
@@ -269,8 +271,9 @@ QtObject {
       return
     }
     if (tag === "setup-undo") {
-      if (!payload || payload.ok === false) { flow.errorText = String(payload && payload.error || "Undo failed."); return }
-      flow.undoResult = payload
+      // Failure lives in `undoError` (never `errorText`, which a status refresh clears).
+      if (!payload || payload.ok === false) { flow.undoError = String(payload && payload.error || "Undo failed."); return }
+      flow.undoResult = payload; flow.undoError = ""
       return
     }
   }

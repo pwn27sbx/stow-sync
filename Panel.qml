@@ -26,9 +26,8 @@ Panel {
   property var statusData: null; property int activeTab: 0; property var checkedPaths: ({}); property var hiddenPaths: []
   property bool showHidden: false; property bool showExisting: false; property string focusedKey: ""; property int repoCycleIndex: 0
   property string errorText: ""; property string resultText: ""; property bool started: false; property double nowMs: Date.now(); property bool settingsReady: false
-  property string busyVerb: ""; property string overlayMode: ""; property bool setupOpen: false; property bool backupsFetched: false
+  property string busyVerb: ""; property string overlayMode: ""; property bool setupOpen: false; property bool backupsFetched: false; property bool undoFromHeader: false
   property string confirmKind: ""; property var confirmPayload: ({})
-  // Publish card and cumulative batch state (publish / upload / update).
   property string publishMessage: ""; property var publishLines: []; property var publishTargets: []; property var publishSecrets: []
   property bool publishAllowSecrets: false; property string publishError: ""; property string publishRepoFilter: ""; property string publishUpstream: "origin/main"
   property int publishCommitDone: 0; property bool publishHadError: false
@@ -48,7 +47,7 @@ Panel {
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
   readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"
-  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property bool setupUndone: root.setupOn && Model.setupUndoneFromBackups(setupWizard.backups); readonly property bool setupNotSetUp: root.setupOn && (Model.allReposMissing(root.statusData) || root.setupUndone)
+  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property var activeBackups: Model.setupActiveBackups(setupWizard.backups); readonly property bool setupNotSetUp: Model.setupMachineNotSetUp(root.statusData, { setupOn: root.setupOn, backups: setupWizard.backups })
   property bool helpOpen: false
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5); readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
   Runner {
@@ -64,6 +63,9 @@ Panel {
   function refreshWithFetch() { runner.refreshStatus(true) }
   function ensureStarted() { if (root.started) return; root.started = true; root.refresh(); if (root.setupOn) root.refreshSetupBackups() }
   function refreshSetupBackups() { if (root.setupOn) runner.runAction("setup-backups", ["setup-backups"]) }
+  // Refresh the Overview and the backups list after any setup mutation and when
+  // the wizard closes, so the panel never shows a stale state (finding 78).
+  function refreshAfterSetup() { root.refresh(); root.refreshSetupBackups() }
   function dismissError() { root.errorText = "" }
   function setResult(text, isError) {
     var value = String(text === undefined || text === null ? "" : text)
@@ -79,22 +81,18 @@ Panel {
   function clearSelection() { var next = {}; for (var i = 0; i < root.changeRows.length; i++) next[root.changeRows[i].key] = false; root.checkedPaths = next }
   function selectRepoCycle() {
     var s = Model.selectRepoCycle(root.changeView, root.changeRows, root.repoCycleIndex)
-    root.repoCycleIndex = s.index; root.checkedPaths = s.checked
-    if (s.message !== "") root.setResult(s.message, false)
+    root.repoCycleIndex = s.index; root.checkedPaths = s.checked; if (s.message !== "") root.setResult(s.message, false)
   }
   function toggleHidden(row) {
     if (!row) return
     var h = Model.toggleHiddenPath(root.hiddenPaths, row)
-    root.hiddenPaths = h.paths
-    if (!h.removed) root.setChecked(row.key, false)
+    root.hiddenPaths = h.paths; if (!h.removed) root.setChecked(row.key, false)
   }
   function focusedChange() { for (var i = 0; i < root.changeRows.length; i++) if (root.changeRows[i].key === root.focusedKey) return root.changeRows[i]; return null }
   function moveCursor(dy) { root.focusedKey = Model.nextCursor(root.changeRows, root.focusedKey, dy) }
   function openConfirm(kind, payload) { root.confirmKind = kind; root.confirmPayload = payload || {}; root.overlayMode = "confirm" }
   function requestUpdate() {
-    if (Model.flowTotals(root.statusData, "behind").count > 0) {
-      root.confirmKind = "update"; root.confirmPayload = { repos: Model.repoNames(root.statusData, "behind") }; root.overlayMode = "confirm"
-    }
+    if (Model.flowTotals(root.statusData, "behind").count > 0) { root.confirmKind = "update"; root.confirmPayload = { repos: Model.repoNames(root.statusData, "behind") }; root.overlayMode = "confirm" }
   }
   function acceptConfirm() {
     if (root.busy) return
@@ -137,13 +135,11 @@ Panel {
     if (target.repo === "") { root.setResult("No repository is configured to adopt into.", true); return }
     root.adoptRepo = target.repo; root.adoptPath = String(row.path || "")
     root.adoptPackage = Model.packageFor({ key: row.path, suggestedPackage: row.suggested_package || row.package, path: row.path }, {})
-    root.adoptSuggestions = Model.pickerOptions(target.packages, root.adoptPackage, root.adoptPackage)
-    root.adoptError = ""; root.overlayMode = "adopt"
+    root.adoptSuggestions = Model.pickerOptions(target.packages, root.adoptPackage, root.adoptPackage); root.adoptError = ""; root.overlayMode = "adopt"
   }
   function adoptFirst() {
     var pick = Model.firstNewCandidate(root.statusData ? root.statusData.candidates : [])
-    if (pick) root.adoptCandidate(pick)
-    else root.setResult("No new config to adopt.", true)
+    if (pick) root.adoptCandidate(pick); else root.setResult("No new config to adopt.", true)
   }
   function adoptConfirmed() {
     if (root.busy) return
@@ -154,7 +150,7 @@ Panel {
   function applyAction(tag, payload) {
     if (String(tag).indexOf("setup-") === 0) {
       setupWizard.handleResult(tag, payload)
-      if (tag === "setup-undo" || tag === "setup-apply") { root.overlayMode = ""; root.refresh(); root.refreshSetupBackups() }
+      if (tag === "setup-undo" || tag === "setup-apply") { root.overlayMode = ""; if (tag === "setup-undo" && root.undoFromHeader) { root.undoFromHeader = false; root.setupOpen = true; setupWizard.openBackups() }; root.refreshAfterSetup() }
       return
     }
     var outcome = Model.actionOutcome(tag, payload)
@@ -188,7 +184,7 @@ Panel {
     root.finishBatch(root.batchError !== "" ? root.batchError : text, root.batchError !== ""); root.refresh()
   }
   function applyFailure(tag, message) {
-    if (String(tag).indexOf("setup-") === 0) { setupWizard.handleFailure(tag, message); return }
+    if (String(tag).indexOf("setup-") === 0) { setupWizard.handleFailure(tag, message); if (tag === "setup-apply" || tag === "setup-undo") root.refreshAfterSetup(); return }
     var outcome = Model.failureOutcome(tag, message)
     if (outcome.kind === "ignore") return
     if (outcome.kind === "status-error") { root.setResult(outcome.error, true); return }
@@ -364,7 +360,7 @@ Panel {
       busy: root.busy; motion: root.motionOn; foreground: Color.foreground
       progressPath: Model.setupProgressPath(root.stateDirPath)
       onRequested: function(tag, args) { runner.runAction(tag, args) }
-      onClosed: root.setupOpen = false
+      onClosed: { root.setupOpen = false; root.refreshAfterSetup() }
       onUndoConfirmRequested: function(backup, sentence) { root.confirmKind = "setup-undo"; root.confirmPayload = { backup: backup, sentence: sentence }; root.overlayMode = "confirm" }
     }
     // Declared after the wizard (z above) so a confirm card never opens under it.

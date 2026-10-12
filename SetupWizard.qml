@@ -250,6 +250,7 @@ Item {
       bodyHeight: bodyArea.height
       report: flow.report
       undoResult: flow.undoResult
+      undoError: flow.undoError
       postChecked: flow.postChecked
       busy: root.busy
       motion: root.motion
@@ -269,6 +270,8 @@ Item {
 
     SetupBackups {
       rows: flow.backups
+      undoResult: flow.undoResult
+      undoError: flow.undoError
       busy: root.busy
       foreground: root.foreground
       onUndoRequested: function(id) { flow.requestUndo(id) }

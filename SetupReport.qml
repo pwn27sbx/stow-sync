@@ -15,6 +15,7 @@ Column {
 
   property var report: null
   property var undoResult: null
+  property string undoError: ""
   property bool busy: false
   property color foreground: Color.foreground
   property var expanded: ({})
@@ -56,6 +57,19 @@ Column {
       ? "This setup was undone. Everything below is what it did before you undid it."
       : "Setup finished. Everything below is what Stow Sync did on this machine."
     color: Util.alpha(root.foreground, 0.72)
+    font.family: Style.font.family
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
+  // Report-path Undo failure (finding 80): always visible, never cleared by a
+  // status refresh.
+  Text {
+    width: parent.width
+    visible: root.undoError !== ""
+    textFormat: Text.PlainText
+    text: root.undoError
+    color: Color.urgent
     font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall
     wrapMode: Text.WordWrap

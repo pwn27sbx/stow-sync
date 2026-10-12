@@ -2215,6 +2215,58 @@ function setupUndoneFromBackups(backups) {
   return list[list.length - 1].undone === true
 }
 
+// Backups that have not been undone yet (README Unit 15/finding 83): the setup
+// Undo entry point is only shown, and only runs directly, while one exists.
+function setupActiveBackups(backups) {
+  var list = backups || []
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    if ((list[i] || {}).undone !== true) out.push(list[i])
+  }
+  return out
+}
+
+// Plain one-line undo summary for the backups list (finding 80), mirroring the
+// Report card: "Setup undone · 17 packages unlinked · 16 files restored · 1
+// service disabled". Empty when the undo failed or produced no result.
+function setupUndoSummary(results) {
+  var r = results || {}
+  if (results === null || results === undefined || r.ok === false) return ""
+  var parts = ["Setup undone"]
+  var pkgs = (r.unstowed || []).length
+  if (pkgs > 0) parts.push(pluralCount(pkgs, "package") + " unlinked")
+  var files = (r.restored || []).length
+  if (files > 0) parts.push(pluralCount(files, "file") + " restored")
+  var services = (r.services_disabled || []).length
+  if (services > 0) parts.push(pluralCount(services, "service") + " disabled")
+  return parts.join(" \u00b7 ")
+}
+
+// True when any configured repo already has a healthy stowed package.
+function machineHasLinkedPackages(status) {
+  var repos = (status && status.repos) || []
+  for (var i = 0; i < repos.length; i++) {
+    if (num((repos[i] || {}).stowed_packages, 0) > 0) return true
+  }
+  return false
+}
+
+// "Not set up" for the Overview (README 12a/finding 61 + Unit 15/finding 81):
+// every repo missing, or no package linked and no active (un-undone) setup.
+// A stray regular file that survives an Undo must not re-enable management —
+// the decision never depends on a clean stow dry run.
+function setupMachineNotSetUp(status, opts) {
+  var o = opts || {}
+  if (o.setupOn !== true) return false
+  if (allReposMissing(status)) return true
+  if (machineHasLinkedPackages(status)) return false
+  var backups = o.backups || []
+  for (var i = 0; i < backups.length; i++) {
+    if ((backups[i] || {}).undone !== true) return false
+  }
+  return true
+}
+
 // --- Unit 12c: approved redesign helpers ----------------------------------
 
 // Stepper state for step `index` when the wizard is on `current` (README 12c).
@@ -2552,6 +2604,14 @@ function setupUndoSentence(results) {
   for (var i = 0; i < packages.length; i++) if (String((packages[i] || {}).state || "applied") === "applied") count++
   var moved = num((r.moved || []).length, 0)
   return "Unlink the " + pluralCount(count, "package") + " and put back the " + pluralCount(moved, "original file")
+}
+
+// The same sentence from a backup row's counts (README Unit 15/finding 83): the
+// header Undo can confirm a single backup directly without an apply result.
+function setupUndoSentenceFromCounts(counts) {
+  var c = counts || {}
+  return "Unlink the " + pluralCount(num(c.packages, 0), "package") +
+    " and put back the " + pluralCount(num(c.moved, 0), "original file")
 }
 
 // Rows for the "Setup backups" list (README 10b.7/finding 27).

@@ -5137,5 +5137,40 @@ class HardeningAuditTests(unittest.TestCase):
                 ss.read_stdin_json()
 
 
+# --------------------------------------------------------------------------
+# Unit 15 (fifth VM run) wiring checks
+# --------------------------------------------------------------------------
+
+
+class Unit15SourceTests(unittest.TestCase):
+    """README Unit 15 wiring that the pure node tests cannot see."""
+
+    def test_wizard_close_and_setup_mutations_refresh_the_overview(self) -> None:
+        # Finding 78: refresh status + backups when Apply/Undo finishes and when
+        # the wizard closes, so the Overview is never stale.
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertIn("function refreshAfterSetup()", panel)
+        self.assertIn("onClosed: { root.setupOpen = false; root.refreshAfterSetup() }", panel)
+        self.assertIn('tag === "setup-undo" || tag === "setup-apply"', panel)
+        self.assertIn('tag === "setup-apply" || tag === "setup-undo"', panel)
+    def test_undo_failure_is_rendered_outside_error_text(self) -> None:
+        # Finding 80: the undo failure survives a status refresh because it lives
+        # in flow.undoError and is rendered by the backups view and the Report.
+        flow = (ROOT / "SetupFlow.qml").read_text(encoding="utf-8")
+        self.assertIn("property string undoError", flow)
+        self.assertIn("flow.undoError = String(payload && payload.error", flow)
+        backups = (ROOT / "SetupBackups.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.setupUndoSummary(root.undoResult)", backups)
+        self.assertIn("root.undoError", backups)
+        report = (ROOT / "SetupReport.qml").read_text(encoding="utf-8")
+        self.assertIn("root.undoError", report)
+        step = (ROOT / "SetupStep.qml").read_text(encoding="utf-8")
+        self.assertIn("property string undoError", step)
+        self.assertIn("undoError: root.undoError", step)
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        self.assertIn("undoError: flow.undoError", wizard)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 // "Setup backups" view (README 10b.7/finding 27): every backup from
 // setup-backups with its date and counts, plus Undo (a confirm card) or an
@@ -11,11 +12,15 @@ Column {
   id: root
 
   property var rows: []
+  property var undoResult: null
+  property string undoError: ""
   property bool busy: false
   property color foreground: Color.foreground
 
   signal undoRequested(string id)
   signal doneRequested()
+
+  readonly property string undoSummary: Model.setupUndoSummary(root.undoResult)
 
   width: parent ? parent.width : 0
   spacing: Style.spacing.lg
@@ -26,6 +31,31 @@ Column {
     text: root.rows.length > 0 ? "Every setup you ran on this machine. Undo puts the original files back."
                                  : "No setup backups yet."
     color: Util.alpha(root.foreground, 0.72)
+    font.family: Style.font.family
+    font.pixelSize: Style.font.bodySmall
+    wrapMode: Text.WordWrap
+  }
+
+  // Undo result / error (finding 80): the result card stays while the list is
+  // open, so Undo never looks like it did nothing.
+  Text {
+    width: parent.width
+    visible: root.undoSummary !== ""
+    textFormat: Text.PlainText
+    text: root.undoSummary
+    color: Color.accent
+    font.family: Style.font.family
+    font.pixelSize: Style.font.bodySmall
+    font.bold: true
+    wrapMode: Text.WordWrap
+  }
+
+  Text {
+    width: parent.width
+    visible: root.undoError !== ""
+    textFormat: Text.PlainText
+    text: root.undoError
+    color: Color.urgent
     font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall
     wrapMode: Text.WordWrap
