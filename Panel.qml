@@ -283,14 +283,12 @@ Panel {
           message: root.feedbackText
           isError: root.feedbackError
           showSetup: root.setupOn
-          showSetupBackups: root.setupOn && root.activeBackups.length > 0
           onRefreshClicked: root.refreshWithFetch()
           onEditClicked: root.editConfig()
           onCloseClicked: root.close()
           onDismissed: root.dismissError()
           onHelpToggled: root.helpOpen = !root.helpOpen
           onSetupClicked: root.openSetup()
-          onUndoSetupClicked: root.undoSetupFromHeader()
         }
 
         SegmentedTabs {
@@ -326,6 +324,7 @@ Panel {
             showExisting: root.showExisting
             setupNeeded: root.setupNeeded
             notSetUp: root.setupNotSetUp
+            setupBackups: setupWizard.backups
             focusedKey: root.focusedKey
             packages: root.packages
             onReviewRequested: root.switchTabTo(1)
@@ -341,6 +340,7 @@ Panel {
             onShowHiddenToggled: root.showHidden = !root.showHidden
             onShowExistingToggled: root.showExisting = !root.showExisting
             onSetupRequested: root.openSetup()
+            onUndoSetupRequested: root.undoSetupFromHeader()
             onChangeToggled: function(key, value) { root.setChecked(key, value) }
             onChangeHovered: function(key) { root.focusedKey = key }
             onDiffRequested: function(repo, path) { root.openDiff(repo, path) }

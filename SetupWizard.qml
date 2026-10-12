@@ -144,16 +144,6 @@ Item {
 
           Text {
             width: parent.width
-            visible: flow.mode === "backups"
-            textFormat: Text.PlainText
-            text: "Setup backups"
-            color: Util.alpha(root.foreground, 0.72)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            width: parent.width
             visible: flow.errorText !== ""
             textFormat: Text.PlainText
             text: flow.errorText

@@ -5192,14 +5192,17 @@ class Unit15SourceTests(unittest.TestCase):
         wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
         self.assertIn("undoError: flow.undoError", wizard)
 
-    def test_header_replaces_the_floppy_with_the_undo_glyph(self) -> None:
-        # Finding 83: md-undo with the "Undo setup" tooltip, Nerd Font verified.
+    def test_overview_setup_line_has_the_undo_glyph(self) -> None:
+        # Finding 83, moved to the Overview by 15d: md-undo with the "Undo setup"
+        # label; the header is icons only again.
+        line = (ROOT / "SetupLine.qml").read_text(encoding="utf-8")
+        self.assertIn('iconText: "\\u{F054C}"', line)
+        self.assertIn('text: "Undo setup"', line)
         header = (ROOT / "Header.qml").read_text(encoding="utf-8")
-        self.assertIn('iconText: "\\u{F054C}"', header)
-        self.assertIn('tooltipText: "Undo setup"', header)
         self.assertNotIn("\\uf0c7", header)
+        self.assertNotIn("Undo setup", header)
         panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
-        self.assertIn("onUndoSetupClicked: root.undoSetupFromHeader()", panel)
+        self.assertIn("onUndoSetupRequested: root.undoSetupFromHeader()", panel)
 
     def test_overview_groups_are_one_accordion(self) -> None:
         # Finding 84: one expanded key for the repo lanes and the group cards.
@@ -5235,10 +5238,8 @@ class Unit15SourceTests(unittest.TestCase):
 class Unit15bSourceTests(unittest.TestCase):
     """Sixth VM run (findings 87, 88, 85) wiring that QML must keep."""
 
-    def test_header_undo_uses_the_panel_decision(self) -> None:
-        # Finding 87: Panel called setupWizard.headerUndo(), which SetupWizard
-        # never forwarded, so the click threw and nothing appeared. The decision
-        # is now the pure Model.headerUndo over the panel's backups.
+    def test_overview_undo_uses_the_panel_decision(self) -> None:
+        # Finding 87 fixed the wiring; 15d moved the entry point to the Overview.
         panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
         self.assertIn("Model.headerUndo(setupWizard.backups)", panel)
         self.assertNotIn("setupWizard.headerUndo", panel)
@@ -5246,19 +5247,19 @@ class Unit15bSourceTests(unittest.TestCase):
         self.assertIn('root.confirmKind = "setup-undo"', panel)
         self.assertIn('root.overlayMode = "confirm"', panel)
         self.assertIn('opened: root.overlayMode !== ""', panel)
-        self.assertIn("onUndoSetupClicked: root.undoSetupFromHeader()", panel)
-        header = (ROOT / "Header.qml").read_text(encoding="utf-8")
-        self.assertIn("onClicked: root.undoSetupClicked()", header)
+        self.assertIn("onUndoSetupRequested: root.undoSetupFromHeader()", panel)
+        line = (ROOT / "SetupLine.qml").read_text(encoding="utf-8")
+        self.assertIn("onClicked: root.undoRequested()", line)
         # SetupFlow no longer carries a headerUndo the shell forgot to forward.
         flow = (ROOT / "SetupFlow.qml").read_text(encoding="utf-8")
         self.assertNotIn("function headerUndo()", flow)
 
-    def test_header_undo_is_a_labelled_button(self) -> None:
-        # Finding 88: a labelled button, not an icon-only glyph.
-        header = (ROOT / "Header.qml").read_text(encoding="utf-8")
-        self.assertIn('text: "Undo setup"', header)
-        self.assertIn('tooltipText: "Undo setup"', header)
-        self.assertIn('iconText: "\\u{F054C}"', header)
+    def test_overview_undo_is_a_labelled_button(self) -> None:
+        # Finding 88, moved to the Overview setup line by 15d.
+        line = (ROOT / "SetupLine.qml").read_text(encoding="utf-8")
+        self.assertIn('text: "Undo setup"', line)
+        self.assertIn('tooltipText: "Undo setup"', line)
+        self.assertIn('iconText: "\\u{F054C}"', line)
 
     def test_report_scroll_area_shows_a_cue(self) -> None:
         # Finding 85: a bottom fade + chevron when more content is below.
@@ -5268,6 +5269,41 @@ class Unit15bSourceTests(unittest.TestCase):
         hint = (ROOT / "ScrollHint.qml").read_text(encoding="utf-8")
         self.assertIn("contentHeight > root.flick.height", hint)
         self.assertIn("Gradient {", hint)
+
+
+class Unit15dSourceTests(unittest.TestCase):
+    """Owner decision 2026-10-11: Undo moves from the header to the Overview."""
+
+    def test_header_is_icons_only_again(self) -> None:
+        header = (ROOT / "Header.qml").read_text(encoding="utf-8")
+        self.assertNotIn("showSetupBackups", header)
+        self.assertNotIn("undoSetupClicked", header)
+        self.assertNotIn('text: "Undo setup"', header)
+        # The Setup entry point and the icon buttons remain.
+        self.assertIn('iconText: "\\uf109"', header)
+
+    def test_overview_shows_the_setup_line(self) -> None:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("SetupLine {", section)
+        self.assertIn("backups: root.setupBackups", section)
+        self.assertIn("onUndoRequested: root.undoSetupRequested()", section)
+        line = (ROOT / "SetupLine.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.setupLine(root.backups", line)
+        self.assertIn('text: "Undo setup"', line)
+        self.assertIn('iconText: "\\u{F054C}"', line)
+        self.assertIn('foreground: (hot || activeFocus) ? Color.urgent', line)
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertIn("setupBackups: setupWizard.backups", panel)
+        self.assertIn("onUndoSetupRequested: root.undoSetupFromHeader()", panel)
+        # Panel width unchanged (config-sync parity).
+        self.assertIn("Style.space(560)", panel)
+
+    def test_setup_backups_subtitle_is_not_duplicated(self) -> None:
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        # The chrome title still names the view; the duplicate subtitle Text is
+        # gone (its old `visible: flow.mode === "backups"` is removed).
+        self.assertIn('text: flow.mode === "backups" ? "Setup backups"', wizard)
+        self.assertNotIn('visible: flow.mode === "backups"', wizard)
 
 
 if __name__ == "__main__":

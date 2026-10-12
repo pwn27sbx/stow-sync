@@ -12,13 +12,13 @@ Column {
   id: root
   property var statusData: null; property int tab: 0; property string version: ""; property string now: ""
   property bool busy: false; property bool motion: true; property var checkedPaths: ({}); property var hiddenPaths: []
-  property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false; property bool notSetUp: false; property string focusedKey: ""; property var packages: []
+  property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false; property bool notSetUp: false; property string focusedKey: ""; property var packages: []; property var setupBackups: []
   property color foreground: Color.foreground
   signal reviewRequested(); signal publishRequested(); signal updateRequested()
   signal restowRequested(string repo, string packageName); signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
   signal copyRequested(string value); signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
   signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested(); signal changeToggled(string key, bool value); signal changeHovered(string key)
-  signal diffRequested(string repo, string path)
+  signal diffRequested(string repo, string path); signal undoSetupRequested()
   property var expandedPackages: ({})
   property string packageKey: ""
   // One accordion key for the Overview (finding 84): a repo lane uses
@@ -176,6 +176,7 @@ Column {
         }
       }
     }
+    SetupLine { width: parent.width; backups: root.setupBackups; busy: root.busy; notSetUp: root.notSetUp; foreground: root.foreground; onUndoRequested: root.undoSetupRequested() }
   }
   // ---- Changes ----------------------------------------------------------
   Column {

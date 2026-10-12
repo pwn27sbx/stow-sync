@@ -2370,3 +2370,37 @@ test("setupReportSteps: a skipped step says how to run it later", () => {
   assert.equal(items[0].state, "skipped: needs gowall \u2014 then run Set up again")
   assert.equal(items[1].state, "skipped: Install Zen Browser and open it once first \u2014 then run Set up again")
 })
+
+// --- Unit 15d: Overview setup line (owner decision) ------------------------
+
+test("formatSetupDate: ISO and compact timestamps render as day month", () => {
+  assert.equal(Model.formatSetupDate("2026-10-12T03:29:06+00:00"), "12 Oct")
+  assert.equal(Model.formatSetupDate("2026-01-05T00:00:00Z"), "5 Jan")
+  assert.equal(Model.formatSetupDate("20261012T032906Z"), "12 Oct")
+  assert.equal(Model.formatSetupDate(""), "")
+})
+
+test("setupLine: quiet Overview line while a real setup can be undone", () => {
+  assert.equal(Model.setupLine([], {}), null)
+  assert.equal(Model.setupLine(null, {}), null)
+  const backups = [
+    { id: "1", label: "2026-10-01T00:00:00+00:00", undone: true, counts: { packages: 3 } },
+    { id: "2", label: "2026-10-12T03:29:06+00:00", undone: false, counts: { packages: 17, moved: 16, services: 1 } }
+  ]
+  const line = Model.setupLine(backups, {})
+  assert.equal(line.id, "2")
+  assert.equal(line.label, "Set up 12 Oct \u00b7 17 packages linked")
+  assert.equal(line.multi, false)
+  // Hidden while not set up or busy.
+  assert.equal(Model.setupLine(backups, { notSetUp: true }), null)
+  assert.equal(Model.setupLine(backups, { busy: true }), null)
+  // All undone -> nothing to undo.
+  assert.equal(Model.setupLine([{ id: "1", label: "x", undone: true, counts: {} }], {}), null)
+  // Two active setups -> the newest drives the line, multi is true.
+  const two = Model.setupLine(
+    [{ id: "a", label: "2026-10-10T00:00:00Z", counts: { packages: 1 } }, { id: "b", label: "2026-10-11T00:00:00Z", counts: { packages: 2 } }],
+    {}
+  )
+  assert.equal(two.id, "b")
+  assert.equal(two.multi, true)
+})

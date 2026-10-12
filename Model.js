@@ -2252,6 +2252,37 @@ function setupActiveBackups(backups) {
   return out
 }
 
+// "2026-10-12T03:29:06+00:00" or "20261012T032906Z" -> "12 Oct" (README 15d).
+function formatSetupDate(stamp) {
+  var s = String(stamp === undefined || stamp === null ? "" : stamp)
+  var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) m = s.match(/^(\d{4})(\d{2})(\d{2})T/)
+  if (!m) return s
+  var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+  var month = months[parseInt(m[2], 10) - 1]
+  return month ? (parseInt(m[3], 10) + " " + month) : s
+}
+
+// Quiet Overview line for the latest un-undone setup (README Unit 15d):
+// "Set up 12 Oct · 17 packages linked" with the Undo setup entry point. Hidden
+// while the machine is not set up or while busy; null when nothing can be undone.
+function setupLine(backups, opts) {
+  var o = opts || {}
+  if (o.notSetUp === true || o.busy === true) return null
+  var active = setupActiveBackups(backups)
+  if (active.length === 0) return null
+  var latest = active[active.length - 1] || {}
+  var packages = num((latest.counts || {}).packages, 0)
+  var date = formatSetupDate(latest.label || latest.created || "")
+  return {
+    id: String(latest.id || ""),
+    date: date,
+    summary: pluralCount(packages, "package") + " linked",
+    label: "Set up " + date + " \u00b7 " + pluralCount(packages, "package") + " linked",
+    multi: active.length > 1
+  }
+}
+
 // Plain one-line undo summary for the backups list (finding 80), mirroring the
 // Report card: "Setup undone · 17 packages unlinked · 16 files restored · 1
 // service disabled". Empty when the undo failed or produced no result.

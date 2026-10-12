@@ -18,7 +18,6 @@ Item {
   property string message: ""
   property bool isError: false
   property bool showSetup: false
-  property bool showSetupBackups: false
   property color foreground: Color.foreground
 
   signal refreshClicked()
@@ -27,7 +26,6 @@ Item {
   signal dismissed()
   signal helpToggled()
   signal setupClicked()
-  signal undoSetupClicked()
 
   function toneColor() {
     if (root.stateTone === "urgent") return Color.urgent
@@ -100,22 +98,6 @@ Item {
         fontSize: Style.font.caption
         enabled: !root.busy
         onClicked: root.setupClicked()
-      }
-
-      Button {
-        Layout.alignment: Qt.AlignVCenter
-        Layout.preferredHeight: Style.space(32)
-        verticalPadding: 0
-        horizontalPadding: Style.spacing.md
-        visible: root.showSetupBackups
-        // Labelled action, not an icon-only glyph (finding 88). Material Design
-        // md-undo U+F054C, verified present in JetBrainsMono Nerd Font.
-        iconText: "\u{F054C}"
-        text: "Undo setup"
-        tooltipText: "Undo setup"
-        fontSize: Style.font.caption
-        enabled: !root.busy
-        onClicked: root.undoSetupClicked()
       }
 
       Button {
