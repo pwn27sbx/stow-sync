@@ -47,7 +47,7 @@ Panel {
   readonly property string feedbackText: root.errorText !== "" ? root.errorText : root.resultText
   readonly property bool feedbackError: root.errorText !== ""
   readonly property bool motionOn: String(root.setting("motion", "on")) !== "off"
-  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property var activeBackups: Model.setupActiveBackups(setupWizard.backups); readonly property bool setupNotSetUp: Model.setupMachineNotSetUp(root.statusData, { setupOn: root.setupOn, backups: setupWizard.backups })
+  readonly property bool setupOn: Model.setupVisible(root.settings, root.statusData); readonly property bool setupNeeded: root.setupOn && Model.anyRepoMissing(root.statusData); readonly property bool setupNotSetUp: Model.setupMachineNotSetUp(root.statusData, { setupOn: root.setupOn, backups: setupWizard.backups })
   property bool helpOpen: false
   readonly property int refreshMinutes: Math.max(1, Number(root.setting("refreshMinutes", 5)) || 5); readonly property int fetchMinutes: Math.max(1, Number(root.setting("fetchMinutes", 15)) || 15)
   Runner {

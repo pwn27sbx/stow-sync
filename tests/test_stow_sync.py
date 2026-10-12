@@ -5306,5 +5306,16 @@ class Unit15dSourceTests(unittest.TestCase):
         self.assertNotIn('visible: flow.mode === "backups"', wizard)
 
 
+class Unit15eSourceTests(unittest.TestCase):
+    """Finding 91: a backup that did nothing is not a setup."""
+
+    def test_backups_list_hides_undo_for_empty_backups(self) -> None:
+        backups = (ROOT / "SetupBackups.qml").read_text(encoding="utf-8")
+        self.assertIn("modelData.empty", backups)
+        self.assertIn('text: "nothing to undo"', backups)
+        # Undo is hidden for both undone and empty rows.
+        self.assertIn("visible: modelData.undone !== true && modelData.empty !== true", backups)
+
+
 if __name__ == "__main__":
     unittest.main()

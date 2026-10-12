@@ -104,9 +104,20 @@ Column {
         font.pixelSize: Style.font.caption
       }
 
+      // An empty backup did nothing, so it has nothing to undo (finding 91).
+      Text {
+        Layout.alignment: Qt.AlignVCenter
+        visible: modelData.undone !== true && modelData.empty === true
+        textFormat: Text.PlainText
+        text: "nothing to undo"
+        color: Util.alpha(root.foreground, 0.72)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
       Button {
         Layout.alignment: Qt.AlignVCenter
-        visible: modelData.undone !== true
+        visible: modelData.undone !== true && modelData.empty !== true
         text: "Undo"
         foreground: Color.urgent
         bordered: true

@@ -2241,13 +2241,22 @@ function setupUndoneFromBackups(backups) {
   return list[list.length - 1].undone === true
 }
 
+// A backup that linked nothing, moved nothing and enabled nothing is not a
+// setup (README Unit 15e/finding 91): steps-only runs before 15c left such rows.
+function setupBackupIsReal(backup) {
+  var counts = (backup || {}).counts || {}
+  return num(counts.packages, 0) + num(counts.moved, 0) + num(counts.services, 0) > 0
+}
+
 // Backups that have not been undone yet (README Unit 15/finding 83): the setup
 // Undo entry point is only shown, and only runs directly, while one exists.
+// Empty backups never count (finding 91).
 function setupActiveBackups(backups) {
   var list = backups || []
   var out = []
   for (var i = 0; i < list.length; i++) {
-    if ((list[i] || {}).undone !== true) out.push(list[i])
+    var row = list[i] || {}
+    if (row.undone !== true && setupBackupIsReal(row)) out.push(row)
   }
   return out
 }
@@ -2317,11 +2326,8 @@ function setupMachineNotSetUp(status, opts) {
   if (o.setupOn !== true) return false
   if (allReposMissing(status)) return true
   if (machineHasLinkedPackages(status)) return false
-  var backups = o.backups || []
-  for (var i = 0; i < backups.length; i++) {
-    if ((backups[i] || {}).undone !== true) return false
-  }
-  return true
+  // Only a real, un-undone setup keeps the machine set up (finding 91).
+  return setupActiveBackups(o.backups).length === 0
 }
 
 // --- Unit 12c: approved redesign helpers ----------------------------------
@@ -2712,6 +2718,7 @@ function setupBackupsRows(backups) {
       label: String(b.created || b.id || ""),
       detail: pluralCount(counts.packages, "package") + " \u00b7 " + pluralCount(counts.moved, "file") + " \u00b7 " + pluralCount(counts.services, "service"),
       undone: b.undone === true,
+      empty: !setupBackupIsReal(b),
       counts: counts
     })
   }

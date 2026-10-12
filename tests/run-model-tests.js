@@ -2203,9 +2203,9 @@ test("setupActiveBackups: keeps only un-undone setups", () => {
   same(Model.setupActiveBackups(null), [])
   same(Model.setupActiveBackups([]), [])
   const rows = Model.setupActiveBackups([
-    { id: "1", undone: true },
-    { id: "2", undone: false },
-    { id: "3" }
+    { id: "1", undone: true, counts: { packages: 1 } },
+    { id: "2", undone: false, counts: { packages: 1 } },
+    { id: "3", counts: { packages: 1 } }
   ])
   assert.equal(rows.length, 2)
   assert.equal(rows[0].id, "2")
@@ -2239,7 +2239,7 @@ test("setupMachineNotSetUp: linked packages and an undone setup decide it (81)",
   }
   assert.equal(Model.setupMachineNotSetUp(conflict, { setupOn: true, backups: [] }), true)
   assert.equal(Model.setupMachineNotSetUp(conflict, { setupOn: true, backups: [{ id: "1", undone: true }] }), true)
-  assert.equal(Model.setupMachineNotSetUp(conflict, { setupOn: true, backups: [{ id: "1", undone: false }] }), false)
+  assert.equal(Model.setupMachineNotSetUp(conflict, { setupOn: true, backups: [{ id: "1", undone: false, counts: { packages: 3 } }] }), false)
   const linked = { repos: [{ path: "~/.dotfiles", exists: true, stowed_packages: 3 }] }
   assert.equal(Model.setupMachineNotSetUp(linked, { setupOn: true, backups: [{ id: "1", undone: true }] }), false)
 })
@@ -2403,4 +2403,63 @@ test("setupLine: quiet Overview line while a real setup can be undone", () => {
   )
   assert.equal(two.id, "b")
   assert.equal(two.multi, true)
+})
+
+// --- Unit 15e: empty backups are not setups (91) ---------------------------
+
+test("setupBackupIsReal: a backup that did nothing is not a setup", () => {
+  assert.equal(Model.setupBackupIsReal({ counts: { packages: 0, moved: 0, services: 0 } }), false)
+  assert.equal(Model.setupBackupIsReal({ counts: { packages: 1 } }), true)
+  assert.equal(Model.setupBackupIsReal({ counts: { moved: 1 } }), true)
+  assert.equal(Model.setupBackupIsReal({ counts: { services: 1 } }), true)
+  assert.equal(Model.setupBackupIsReal({}), false)
+  assert.equal(Model.setupBackupIsReal(null), false)
+})
+
+test("setupActiveBackups ignores empty backups", () => {
+  const rows = Model.setupActiveBackups([
+    { id: "empty", counts: { packages: 0, moved: 0, services: 0 } },
+    { id: "real", counts: { packages: 17 } },
+    { id: "undone", undone: true, counts: { packages: 3 } }
+  ])
+  same(rows.map(function(r) { return r.id }), ["real"])
+})
+
+test("setupLine counts the real setup, not the empty one", () => {
+  const empty = { id: "empty", label: "2026-10-12T03:29:06+00:00", counts: { packages: 0, moved: 0, services: 0 } }
+  const real = { id: "real", label: "2026-10-11T10:00:00+00:00", counts: { packages: 17 } }
+  const line = Model.setupLine([empty, real], {})
+  assert.equal(line.id, "real")
+  assert.ok(line.label.indexOf("17 packages linked") !== -1)
+  // Only the empty one -> no line at all.
+  assert.equal(Model.setupLine([empty], {}), null)
+})
+
+test("headerUndo goes direct to the real setup, ignoring the empty one", () => {
+  const d = Model.headerUndo([
+    { id: "empty", counts: { packages: 0, moved: 0, services: 0 } },
+    { id: "real", counts: { packages: 17, moved: 16, services: 1 } }
+  ])
+  assert.equal(d.direct, true)
+  assert.equal(d.backup, "real")
+})
+
+test("setupMachineNotSetUp ignores an empty backup (91)", () => {
+  const status = { repos: [{ path: "~/.dotfiles", exists: true, stowed_packages: 0, packages: [{ name: "ghostty", health: "conflicts" }] }] }
+  const empty = { id: "empty", counts: { packages: 0, moved: 0, services: 0 } }
+  // real undone + empty un-undone -> still the not-set-up card
+  assert.equal(Model.setupMachineNotSetUp(status, { setupOn: true, backups: [{ id: "real", undone: true, counts: { packages: 17 } }, empty] }), true)
+  // real un-undone -> set up
+  assert.equal(Model.setupMachineNotSetUp(status, { setupOn: true, backups: [{ id: "real", counts: { packages: 17 } }, empty] }), false)
+  // only the empty one -> not set up
+  assert.equal(Model.setupMachineNotSetUp(status, { setupOn: true, backups: [empty] }), true)
+})
+
+test("setupBackupsRows flags an empty backup", () => {
+  const rows = Model.setupBackupsRows([
+    { id: "empty", created: "2026-10-12T03:29:06+00:00", counts: { packages: 0, moved: 0, services: 0 } },
+    { id: "real", created: "2026-10-11T10:00:00+00:00", counts: { packages: 17, moved: 16, services: 1 } }
+  ])
+  assert.equal(rows[0].empty, true)
+  assert.equal(rows[1].empty, false)
 })
