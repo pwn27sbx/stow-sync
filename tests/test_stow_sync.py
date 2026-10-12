@@ -3816,6 +3816,27 @@ class SetupApplyTests(SetupTestBase):
         self.assertIn("--user daemon-reload", log)
         self.assertIn("--user enable --now ai-tools-check.timer", log)
 
+    def test_steps_only_run_writes_no_backup(self) -> None:
+        # Finding 89: re-running with only post steps changes no files, so it
+        # must not create an empty, un-undoable backup entry.
+        self.connect()
+        self.env.install_script("hello", "#!/bin/sh\nexit 0\n")
+        first = self.plan_and_apply()
+        self.assertTrue(first["ok"], first)
+        self.assertNotEqual(first["backup"], "")
+        backups_dir = self.state / "setup-backups"
+        before = sorted(path.name for path in backups_dir.iterdir())
+        again = self.plan()
+        self.assertTrue(again["plan"]["summary"]["nothing_to_do"], again["plan"]["summary"])
+        self.assertEqual(again["plan"]["summary"]["packages_to_link"], 0)
+        second = self.apply(again["token"])
+        self.assertTrue(second["ok"], second)
+        self.assertTrue(second.get("steps_only"), second)
+        self.assertEqual(second["backup"], "")
+        self.assertEqual(sorted(path.name for path in backups_dir.iterdir()), before)
+        listed = ss.dispatch(["setup-backups"], None, str(self.state))
+        self.assertEqual([row["id"] for row in listed["backups"]], before)
+
     def test_post_default_selection_runs_only_defaults(self) -> None:
         self.connect()
         self.env.install_script("hello", "#!/bin/sh\nexit 0\n")

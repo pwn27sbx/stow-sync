@@ -2007,6 +2007,12 @@ function setupSelectedPostIds(plan, checked) {
   return ids
 }
 
+// How many post steps are on (README Unit 15c/finding 89); the Review wording
+// and the primary button follow this count.
+function setupSelectedPostCount(plan, checked) {
+  return setupSelectedPostIds(plan, checked).length
+}
+
 // Prerequisite rows for the Check step (README 10b.3). Labels are plain words;
 // the fix command stays in `fix` for the copy button.
 function setupPrereqRows(prereqs) {
@@ -2126,8 +2132,9 @@ function setupPlanGroups(plan) {
 }
 
 // One sentence naming exactly what Set up will do (README 8b Review).
-function setupPrimaryLabel(plan) {
+function setupPrimaryLabel(plan, steps) {
   var p = plan || {}
+  var stepCount = num(steps, 0)
   var clone = (p.clone || []).length
   var links = p.link || []
   var toLink = 0
@@ -2145,8 +2152,23 @@ function setupPrimaryLabel(plan) {
   if (toLink > 0) parts.push("link " + pluralCount(toLink, "package"))
   if (files > 0) parts.push("back up " + pluralCount(files, "file"))
   if (parts.length === 0 && blocked > 0) parts.push("review " + pluralCount(blocked, "blocked package"))
+  // A steps-only run (nothing to link, at least one post step on) is still work
+  // (README Unit 15c/finding 89).
+  if (parts.length === 0 && stepCount > 0) return "Run " + pluralCount(stepCount, "step")
   if (parts.length === 0) return "Nothing to set up"
   return "Set up \u00b7 " + parts.join(", ")
+}
+
+// True when Set up would change something: a clone, a non-already package, or
+// at least one step on. Drives the Review primary button's enabled state.
+function setupHasWork(plan, steps) {
+  var p = plan || {}
+  if ((p.clone || []).length > 0) return true
+  var links = p.link || []
+  for (var i = 0; i < links.length; i++) {
+    if (String(links[i].status || "") !== "already") return true
+  }
+  return num(steps, 0) > 0
 }
 
 // Apply step progress rows derived from the rich apply response (README 10b.6).
@@ -2404,8 +2426,9 @@ function setupDownloadSummary(entries) {
 }
 
 // One plain sentence for the whole Review step (README 12c finding 54).
-function setupReviewSummary(plan) {
+function setupReviewSummary(plan, steps) {
   var p = plan || {}
+  var stepCount = num(steps, 0)
   var links = p.link || []
   var toLink = 0
   var files = 0
@@ -2420,6 +2443,8 @@ function setupReviewSummary(plan) {
   if (clone > 0) parts.push("download " + pluralCount(clone, "repository", "repositories"))
   if (toLink > 0) parts.push("link " + pluralCount(toLink, "package"))
   if (files > 0) parts.push("keep a backup of " + pluralCount(files, "file"))
+  // Nothing to link but steps on: the run is still work (finding 89).
+  if (parts.length === 0 && stepCount > 0) return "Nothing to link. " + pluralCount(stepCount, "step") + " will run."
   if (parts.length === 0) return "Nothing to set up."
   return "Stow Sync will " + parts.join(", ") + ". Nothing is deleted, and you can undo it."
 }
@@ -2474,6 +2499,11 @@ function setupToggleLabel(checked) {
   return checked === true ? "On" : "Off"
 }
 
+// One skip line that also tells how to run the step later (finding 89).
+function setupSkipLine(reason) {
+  return "skipped: " + String(reason || "unavailable") + " \u2014 then run Set up again"
+}
+
 // One Report step row (README 11d.3/12a findings 59): every recipe step is
 // listed, its state is `ran` / `skipped: <reason>` / `not selected`, and `sub`
 // carries the cleaned last output line to render under the step name. A step the
@@ -2502,7 +2532,7 @@ function setupReportSteps(plan, results) {
       if (pe.available === false) {
         var missing = pe.missing || []
         var reason = String(pe.reason || ("needs " + missing.join(", ")) || "unavailable")
-        items.push({ label: ordered[k].label, state: "skipped: " + reason, sub: "", tone: "muted" })
+        items.push({ label: ordered[k].label, state: setupSkipLine(reason), sub: "", tone: "muted" })
       } else {
         items.push({ label: ordered[k].label, state: "not selected", sub: "", tone: "muted" })
       }
@@ -2510,7 +2540,7 @@ function setupReportSteps(plan, results) {
     }
     var st = String(res.state || (res.ok === true ? "ran" : "failed"))
     if (st === "ran") items.push({ label: ordered[k].label, state: "ran", sub: String(res.last_line || ""), tone: "muted" })
-    else if (st === "skipped") items.push({ label: ordered[k].label, state: "skipped: " + String(res.reason || "unavailable"), sub: "", tone: "muted" })
+    else if (st === "skipped") items.push({ label: ordered[k].label, state: setupSkipLine(res.reason), sub: "", tone: "muted" })
     else items.push({ label: ordered[k].label, state: "failed", sub: String(res.last_line || res.error || ""), tone: "urgent" })
   }
   return items
@@ -2592,6 +2622,8 @@ function setupReport(results, plan, undone) {
     ok: results === null ? false : r.ok === true,
     backup: String(r.backup || ""),
     backupDir: String(r.backup_dir || ""),
+    // A steps-only run changes no files (finding 89): no Undo, "Steps finished".
+    stepsOnly: r.steps_only === true,
     linked: appliedPackages.length,
     moved: moved.length,
     services: services.length,

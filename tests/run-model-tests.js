@@ -1758,7 +1758,7 @@ test("setupReport: grouped sections, counts and collapse defaults", () => {
   assert.equal(byKey.steps.count, 2)
   assert.equal(byKey.steps.items[0].state, "ran")
   assert.equal(byKey.steps.items[0].sub, "recolored")
-  assert.equal(byKey.steps.items[1].state, "skipped: needs gowall")
+  assert.equal(byKey.steps.items[1].state, "skipped: needs gowall \u2014 then run Set up again")
 })
 
 test("setupReport: every post step is listed with ran/skipped/not selected", () => {
@@ -1799,7 +1799,7 @@ test("setupReport: an unavailable step reads skipped, never not-selected", () =>
   )
   const steps = report.sections.filter(function(s) { return s.key === "steps" })[0]
   same(steps.items.map(function(i) { return [i.label, i.state] }), [
-    ["Recolor wallpapers", "skipped: needs gowall"],
+    ["Recolor wallpapers", "skipped: needs gowall \u2014 then run Set up again"],
     ["Link Zen", "not selected"]
   ])
 })
@@ -2309,4 +2309,64 @@ test("setupUndoSentenceFromCounts names the service when present", () => {
   assert.ok(s.indexOf("1 package") !== -1)
   assert.ok(s.indexOf("2 services") !== -1)
   assert.equal(Model.setupUndoSentenceFromCounts({ packages: 0, moved: 0, services: 0 }).indexOf("service"), -1)
+})
+
+// --- Unit 15c: steps-only run (89) ----------------------------------------
+
+test("setupSelectedPostCount: counts the on post steps", () => {
+  const plan = { post: [{ id: "a", default: true }, { id: "b", default: false }, { id: "c", default: true }] }
+  assert.equal(Model.setupSelectedPostCount(plan, {}), 2)
+  assert.equal(Model.setupSelectedPostCount(plan, { b: true }), 3)
+  assert.equal(Model.setupSelectedPostCount(plan, { a: false, c: false }), 0)
+  assert.equal(Model.setupSelectedPostCount(null, null), 0)
+})
+
+test("setupPrimaryLabel / setupReviewSummary: a steps-only run is work", () => {
+  const stepsPlan = setupPlan({
+    clone: [],
+    link: [{ repo: "~/.dotfiles", package: "fish", status: "already", links: [], conflicts: [], files_to_backup: 0 }],
+    post: [{ id: "a", default: true }, { id: "b", default: true }]
+  })
+  assert.equal(Model.setupPrimaryLabel(stepsPlan, 2), "Run 2 steps")
+  assert.equal(Model.setupPrimaryLabel(stepsPlan, 1), "Run 1 step")
+  assert.equal(Model.setupPrimaryLabel(stepsPlan, 0), "Nothing to set up")
+  assert.equal(Model.setupReviewSummary(stepsPlan, 2), "Nothing to link. 2 steps will run.")
+  assert.equal(Model.setupReviewSummary(stepsPlan, 1), "Nothing to link. 1 step will run.")
+  assert.equal(Model.setupReviewSummary(stepsPlan, 0), "Nothing to set up.")
+  // A run with real work keeps the normal wording, even with steps on.
+  const workPlan = setupPlan({ link: [{ repo: "~/.dotfiles", package: "fish", status: "new", links: [], conflicts: [], files_to_backup: 0 }] })
+  assert.equal(Model.setupPrimaryLabel(workPlan, 2), "Set up · link 1 package")
+  assert.equal(Model.setupReviewSummary(workPlan, 2), "Stow Sync will link 1 package. Nothing is deleted, and you can undo it.")
+})
+
+test("setupHasWork: real work or a step on enables the button", () => {
+  const already = setupPlan({ link: [{ repo: "r", package: "p", status: "already", links: [], conflicts: [], files_to_backup: 0 }] })
+  assert.equal(Model.setupHasWork(already, 0), false)
+  assert.equal(Model.setupHasWork(already, 2), true)
+  assert.equal(Model.setupHasWork(setupPlan({ clone: [{ path: "~/x" }] }), 0), true)
+  assert.equal(Model.setupHasWork(setupPlan({ link: [{ repo: "r", package: "p", status: "new", links: [], conflicts: [], files_to_backup: 0 }] }), 0), true)
+  assert.equal(Model.setupHasWork(setupPlan({ link: [{ repo: "r", package: "p", status: "blocked", links: [], conflicts: [], files_to_backup: 0 }] }), 0), true)
+})
+
+test("setupReport: a steps-only run is flagged with no backup", () => {
+  const report = Model.setupReport(
+    { ok: true, steps_only: true, backup: "", backup_dir: "", post: [{ id: "mise", state: "ran" }] },
+    { post: [{ id: "mise", label: "Install tools" }] }
+  )
+  assert.equal(report.stepsOnly, true)
+  assert.equal(report.backup, "")
+  const normal = Model.setupReport({ ok: true, backup: "20260101T000000Z" }, { post: [] })
+  assert.equal(normal.stepsOnly, false)
+})
+
+test("setupReportSteps: a skipped step says how to run it later", () => {
+  const items = Model.setupReportSteps(
+    { post: [
+      { id: "wallpaper-tint", label: "Recolor wallpapers", available: false, missing: ["gowall"] },
+      { id: "zen-sync", label: "Link Zen", available: false, requires_path: "~/.zen/*/prefs.js", reason: "Install Zen Browser and open it once first" }
+    ] },
+    []
+  )
+  assert.equal(items[0].state, "skipped: needs gowall \u2014 then run Set up again")
+  assert.equal(items[1].state, "skipped: Install Zen Browser and open it once first \u2014 then run Set up again")
 })

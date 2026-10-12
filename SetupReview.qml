@@ -53,7 +53,7 @@ Column {
     width: parent.width
     visible: !root.planLoading && root.plan !== null
     textFormat: Text.PlainText
-    text: Model.setupReviewSummary(root.plan)
+    text: Model.setupReviewSummary(root.plan, Model.setupSelectedPostCount(root.plan, root.postChecked))
     color: root.foreground
     font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall

@@ -56,7 +56,9 @@ Column {
     textFormat: Text.PlainText
     text: root.undoResult !== null
       ? "This setup was undone. Everything below is what it did before you undid it."
-      : "Setup finished. Everything below is what Stow Sync did on this machine."
+      : (root.report && root.report.stepsOnly
+        ? "Steps finished. Everything below is what Stow Sync ran on this machine."
+        : "Setup finished. Everything below is what Stow Sync did on this machine.")
     color: Util.alpha(root.foreground, 0.72)
     font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall

@@ -4438,13 +4438,18 @@ def cmd_setup_apply(
     write_setup_progress(state, "apply", "", progress_items)
 
     home = os.path.expanduser("~")
-    backup_id = _new_backup_id(state)
-    backup_root = os.path.join(state, SETUP_BACKUPS_DIRNAME, backup_id)
-    os.makedirs(backup_root, 0o700, exist_ok=True)
-    manifest_path = os.path.join(backup_root, "manifest.json")
+    # A steps-only run (nothing to clone or link) changes no files, so it needs
+    # no undoable backup (README Unit 15c/finding 89): no backup dir, no
+    # manifest, no Undo entry. Post steps and services still run.
+    steps_only = not plan.get("clone") and all(
+        str(link.get("status") or "") == "already" for link in plan.get("link", [])
+    )
+    backup_id = ""
+    backup_root = ""
+    manifest_path = ""
     manifest: dict[str, Any] = {
         "version": 1,
-        "id": backup_id,
+        "id": "",
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "home": home,
         "target": "~",
@@ -4453,7 +4458,18 @@ def cmd_setup_apply(
         "services": [],
         "post": [],
     }
-    _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+
+    def write_manifest() -> None:
+        if not steps_only:
+            _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+
+    if not steps_only:
+        backup_id = _new_backup_id(state)
+        backup_root = os.path.join(state, SETUP_BACKUPS_DIRNAME, backup_id)
+        os.makedirs(backup_root, 0o700, exist_ok=True)
+        manifest["id"] = backup_id
+        manifest_path = os.path.join(backup_root, "manifest.json")
+        write_manifest()
 
     # Apply never clones: a repo must already be on disk from Connect, so the
     # reviewed plan is the only thing that runs. A repo still missing at apply
@@ -4518,7 +4534,7 @@ def cmd_setup_apply(
             manifest["packages"].append(
                 {"repo": link["repo"], "package": link["package"], "status": "failed"}
             )
-            _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+            write_manifest()
             mark_progress("package", pid, "failed")
             continue
         actions = parse_stow_actions(_decode(real.stderr), target_dir)
@@ -4540,7 +4556,7 @@ def cmd_setup_apply(
                 "targets": [move["path"] for move in pkg_moves],
             }
         )
-        _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+        write_manifest()
         mark_progress("package", pid, "done")
 
     services_results: list[dict[str, Any]] = []
@@ -4569,7 +4585,7 @@ def cmd_setup_apply(
             )
             manifest["services"].append({"unit": unit, "ok": ok})
             mark_progress("service", unit, "done" if ok else "failed")
-    _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+    write_manifest()
 
     config_targets = {os.path.normpath(default_config_path())}
     if config_path:
@@ -4587,7 +4603,7 @@ def cmd_setup_apply(
         plan, args, home, on_step=lambda pid, state: mark_progress("post", pid, state)
     )
     manifest["post"] = [{"id": entry["id"], "ok": entry["ok"]} for entry in post_results]
-    _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+    write_manifest()
 
     moved = [
         {"path": move["path"], "backup": os.path.join(backup_root, "files", move["backup"])}
@@ -4597,6 +4613,7 @@ def cmd_setup_apply(
         "ok": True,
         "backup": backup_id,
         "backup_dir": backup_root,
+        "steps_only": steps_only,
         "applied": applied,
         "failed": failed,
         "skipped": skipped,

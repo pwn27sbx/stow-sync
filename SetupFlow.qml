@@ -154,7 +154,7 @@ QtObject {
     if (flow.mode === "backups") return "Done"
     if (flow.step === 0) return flow.checking ? "Checking\u2026" : "Continue"
     if (flow.step === 1) return flow.connectRunning ? "Connecting\u2026" : (flow.connectDone() ? "Review" : "Connect")
-    if (flow.step === 2) return flow.planLoading ? "Working\u2026" : Model.setupPrimaryLabel(flow.plan)
+    if (flow.step === 2) return flow.planLoading ? "Working\u2026" : Model.setupPrimaryLabel(flow.plan, Model.setupSelectedPostCount(flow.plan, flow.postChecked))
     if (flow.step === 3) return flow.applying ? "Setting up\u2026" : "Continue"
     return "Done"
   }
@@ -164,7 +164,7 @@ QtObject {
     if (flow.mode === "backups") return true
     if (flow.step === 0) return Model.setupPrereqReady(flow.prereqs)
     if (flow.step === 1) return !flow.connectRunning && (flow.connectDone() || Model.setupValidUrl(flow.url))
-    if (flow.step === 2) return !flow.planLoading && flow.plan !== null
+    if (flow.step === 2) return !flow.planLoading && flow.plan !== null && Model.setupHasWork(flow.plan, Model.setupSelectedPostCount(flow.plan, flow.postChecked))
     if (flow.step === 3) return !flow.applying
     return true
   }
