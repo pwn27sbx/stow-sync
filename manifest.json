@@ -5,12 +5,16 @@
   "version": "0.1.0",
   "author": "pwnsxb",
   "license": "MIT",
-  "description": "Shows whether your GNU Stow dotfiles repos are committed, pushed, stowed and complete.",
-  "kinds": ["bar-widget"],
-  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "description": "For GNU Stow dotfiles repos: shows whether they are committed, pushed and linked, and sets up a new machine from them.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
   "barWidget": {
     "displayName": "Stow Sync",
-    "description": "Shows whether your GNU Stow dotfiles repos are committed, pushed, stowed and complete.",
+    "description": "For GNU Stow dotfiles repos: shows whether they are committed, pushed and linked, and sets up a new machine from them.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"

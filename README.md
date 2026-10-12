@@ -1,8 +1,41 @@
 # Stow Sync (`pwnsxb.stow-sync`)
 
-An Omarchy bar plugin that watches your GNU Stow dotfiles repositories and tells
-you, at a glance, whether they are committed, pushed, up to date, fully stowed
-and complete.
+An Omarchy bar plugin for people who keep their dotfiles in **GNU Stow
+repositories on GitHub**. It tells you, at a glance, whether those repos are
+committed, pushed, up to date and fully linked, and it can set up a fresh
+machine from them in one guided flow.
+
+**What it does**
+
+- **Watches** each configured Stow repo (for example `~/.dotfiles`): uncommitted
+  or untracked files, commits waiting to be pushed or pulled, packages whose
+  links are pending, conflicting or dangling, and new config files that were
+  never added to a package. The bar icon only shows a badge when something
+  needs you.
+- **Lets you act** from the panel: review changes, commit and publish, pull
+  updates, and fix (re)link problems.
+- **Sets up a new machine** (opt-in): checks your tools and `gh` login, downloads your repos,
+  shows exactly what it will link and back up, links everything with
+  `stow`, runs your optional post-install steps, and can undo the whole setup.
+
+**Who it is for**
+
+- You use **Omarchy** and already manage (or want to manage) your dotfiles as
+  **GNU Stow packages in a git repo**, usually on GitHub.
+- You want to know "is everything saved and linked?" without running
+  `git status` and `stow -n` in every repo, and to move to a new laptop
+  without redoing your setup by hand.
+
+**What it is not**
+
+- Not a dotfiles manager of its own and not a replacement for Stow: it drives
+  `git` and `stow` on repos you own; no Stow repo, nothing to show.
+- Not a backup or sync service, and no server of its own: it only talks to
+  your own git remotes and to GitHub through `git` and `gh`. No telemetry.
+- Not for Omarchy's own config tree (`~/.config/hypr`, `shell.json`, hooks):
+  that is what the config-sync plugin is for. The two work side by side.
+- It never overwrites your files silently: anything in the way is moved to a
+  backup you can restore with Undo.
 
 ## Why
 
