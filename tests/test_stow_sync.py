@@ -5169,6 +5169,25 @@ class Unit15SourceTests(unittest.TestCase):
         self.assertIn("undoError: root.undoError", step)
         wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
         self.assertIn("undoError: flow.undoError", wizard)
+    def test_header_replaces_the_floppy_with_the_undo_glyph(self) -> None:
+        # Finding 83: md-undo with the "Undo setup" tooltip, Nerd Font verified.
+        header = (ROOT / "Header.qml").read_text(encoding="utf-8")
+        self.assertIn('iconText: "\\u{F054C}"', header)
+        self.assertIn('tooltipText: "Undo setup"', header)
+        self.assertNotIn("\\uf0c7", header)
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertIn("onUndoSetupClicked: root.undoSetupFromHeader()", panel)
+    def test_overview_groups_are_one_accordion(self) -> None:
+        # Finding 84: one expanded key for the repo lanes and the group cards.
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("property string expandedKey", section)
+        self.assertIn("Model.accordionKey(", section)
+        self.assertNotIn("expandedGroups", section)
+        self.assertNotIn("expandedRepos", section)
+        flow = (ROOT / "SetupFlow.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.setupAccordionToggle(", flow)
+        report = (ROOT / "SetupReport.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.setupAccordionToggle(", report)
 
 
 

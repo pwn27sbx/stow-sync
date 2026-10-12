@@ -210,7 +210,11 @@ Panel {
   }
   function editConfig() { Util.execArgv(["xdg-open", root.configPath]) }
   function openSetup() { root.overlayMode = ""; root.setupOpen = true }
-  function openSetupBackups() { root.setupOpen = true; setupWizard.openBackups(); root.refreshSetupBackups() }
+  function undoSetupFromHeader() {
+    var d = setupWizard.headerUndo()
+    if (!d.direct) { root.setupOpen = true; setupWizard.openBackups(); root.refreshSetupBackups(); return }
+    root.setupOpen = false; root.undoFromHeader = true; root.confirmKind = "setup-undo"; root.confirmPayload = { backup: d.backup, sentence: d.sentence }; root.overlayMode = "confirm"
+  }
   function overlayCancel() { if (!root.busy) root.overlayMode = "" }
   function handleEscape() {
     if (root.setupOpen) { setupWizard.back(); return }
@@ -279,14 +283,14 @@ Panel {
           message: root.feedbackText
           isError: root.feedbackError
           showSetup: root.setupOn
-          showSetupBackups: root.setupOn && setupWizard.backups.length > 0
+          showSetupBackups: root.setupOn && root.activeBackups.length > 0
           onRefreshClicked: root.refreshWithFetch()
           onEditClicked: root.editConfig()
           onCloseClicked: root.close()
           onDismissed: root.dismissError()
           onHelpToggled: root.helpOpen = !root.helpOpen
           onSetupClicked: root.openSetup()
-          onSetupBackupsClicked: root.openSetupBackups()
+          onUndoSetupClicked: root.undoSetupFromHeader()
         }
 
         SegmentedTabs {

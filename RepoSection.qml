@@ -19,8 +19,11 @@ Column {
   signal copyRequested(string value); signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
   signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested(); signal changeToggled(string key, bool value); signal changeHovered(string key)
   signal diffRequested(string repo, string path)
-  property var expandedGroups: ({}); property var expandedRepos: ({}); property var expandedPackages: ({})
+  property var expandedPackages: ({})
   property string packageKey: ""
+  // One accordion key for the Overview (finding 84): a repo lane uses
+  // "repo:<path>", a group card uses its key; opening one closes the other.
+  property string expandedKey: ""
   readonly property var repos: (root.statusData && root.statusData.repos) || []
   readonly property var groups: Model.overviewGroups(root.statusData)
   readonly property var changeView: Model.changesView(root.statusData, { hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting })
@@ -30,12 +33,11 @@ Column {
   readonly property int hiddenCount: root.hiddenPaths.length
   readonly property var firstUnhealthy: Model.firstUnhealthy(root.statusData)
   readonly property var overview: Model.overviewState(root.statusData, { notSetUp: root.notSetUp, setupNeeded: root.setupNeeded }) // finding 76
-  function setKey(map, key, value) { var next = {}; for (var k in map) next[k] = map[k]; next[key] = value; return next }
-  function groupExpanded(key) { return root.expandedGroups[key] === true }
-  function expandGroup(key) { root.expandedGroups = root.setKey(root.expandedGroups, key, true) }
-  function toggleGroup(key) { root.expandedGroups = root.setKey(root.expandedGroups, key, !root.groupExpanded(key)) }
-  function repoExpanded(path, index) { return root.expandedRepos[path] !== undefined ? root.expandedRepos[path] === true : index === 0 }
-  function toggleRepo(path) { root.expandedRepos = root.setKey(root.expandedRepos, path, !root.repoExpanded(path, -1)) }
+  function groupExpanded(key) { return root.expandedKey === String(key) }
+  function expandGroup(key) { root.expandedKey = String(key) }
+  function toggleGroup(key) { root.expandedKey = Model.accordionKey(root.expandedKey, String(key)) }
+  function repoExpanded(path, index) { return root.expandedKey === "" ? index === 0 : root.expandedKey === ("repo:" + String(path)) }
+  function toggleRepo(path) { root.expandedKey = Model.accordionKey(root.expandedKey, "repo:" + String(path)) }
   function packageExpanded(key) { return root.expandedPackages[key] === true }
   function togglePackage(key) { root.expandedPackages = root.setKey(root.expandedPackages, key, !root.packageExpanded(key)) }
   function togglePackageChip(key) { root.packageKey = root.packageKey === key ? "" : key }
@@ -152,8 +154,8 @@ Column {
               id: itemLine
               width: parent.width
               visible: modelData.type !== "candidate"
-              primary: modelData.type === "incoming" ? (String(modelData.hash) + "  " + String(modelData.subject)) : String(modelData.path)
-              secondary: modelData.type === "health" ? Model.healthLabel(modelData.health) : (modelData.type === "incoming" ? Model.repoDisplayName(modelData.repo) : String(modelData.package))
+              primary: modelData.type === "health" ? String(modelData.title) : (modelData.type === "incoming" ? (String(modelData.hash) + "  " + String(modelData.subject)) : String(modelData.path))
+              secondary: modelData.type === "health" ? String(modelData.subtitle) : (modelData.type === "incoming" ? Model.repoDisplayName(modelData.repo) : String(modelData.package))
               chip: modelData.type === "change" ? String(modelData.chip) : ""
               showAction: modelData.type === "health"
               actionText: "Fix"

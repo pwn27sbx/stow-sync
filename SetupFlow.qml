@@ -72,6 +72,13 @@ QtObject {
 
   function openBackups() { flow.mode = "backups"; flow.errorText = "" }
 
+  // Header Undo decision (finding 83): one un-undone setup confirms directly.
+  function headerUndo() {
+    var active = Model.setupActiveBackups(flow.backups)
+    if (active.length !== 1) return { direct: false }
+    return { direct: true, backup: String(active[0].id || ""), sentence: Model.setupUndoSentenceFromCounts(active[0].counts) }
+  }
+
   function runCheck() { flow.checking = true; flow.errorText = ""; flow.requested("setup-prereqs", ["setup-prereqs", "--url", flow.url]) }
   function fetchRepos() { flow.repoLoading = true; flow.repoError = ""; flow.requested("setup-candidates", ["setup-candidates"]) }
   function retryRepos() { flow.fetchRepos() }
@@ -83,7 +90,7 @@ QtObject {
 
   function toggleGroupKey(key) {
     var group = Model.groupFor(flow.reviewGroups(), String(key || flow.groupKey))
-    if (group) flow.groupsExpanded = Model.setupToggleGroup(flow.groupsExpanded, group)
+    if (group) flow.groupsExpanded = Model.setupAccordionToggle(flow.groupsExpanded, group, flow.reviewGroups())
   }
 
   function connect() {

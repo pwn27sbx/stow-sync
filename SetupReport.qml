@@ -47,7 +47,8 @@ Column {
   }
 
   function toggle(group) {
-    root.expanded = Model.setupToggleGroup(root.expanded, group)
+    // Accordion: opening one Report group collapses the others (finding 84).
+    root.expanded = Model.setupAccordionToggle(root.expanded, group, root.sections)
   }
 
   Text {

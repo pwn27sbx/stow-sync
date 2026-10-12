@@ -27,7 +27,7 @@ Item {
   signal dismissed()
   signal helpToggled()
   signal setupClicked()
-  signal setupBackupsClicked()
+  signal undoSetupClicked()
 
   function toneColor() {
     if (root.stateTone === "urgent") return Color.urgent
@@ -109,11 +109,13 @@ Item {
         horizontalPadding: 0
         verticalPadding: 0
         visible: root.showSetupBackups
-        iconText: "\uf0c7"
-        tooltipText: "Setup backups"
+        // Material Design md-undo (U+F054C); verified present in JetBrainsMono
+        // Nerd Font (finding 83). 5-digit code point -> \u{...} escape.
+        iconText: "\u{F054C}"
+        tooltipText: "Undo setup"
         fontSize: Style.font.caption
         enabled: !root.busy
-        onClicked: root.setupBackupsClicked()
+        onClicked: root.undoSetupClicked()
       }
 
       Button {

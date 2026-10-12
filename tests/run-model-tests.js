@@ -2244,3 +2244,47 @@ test("setupMachineNotSetUp: linked packages and an undone setup decide it (81)",
   assert.equal(Model.setupMachineNotSetUp(linked, { setupOn: true, backups: [{ id: "1", undone: true }] }), false)
 })
 
+// --- Unit 15 Group B: labels and interaction (79, 83, 84) ------------------
+
+test("overviewGroups: a Needs fixing row title is the package name (79)", () => {
+  const data = {
+    repos: [
+      { path: "~/.dotfiles", packages: [{ name: "ghostty", health: "conflicts" }, { name: "nvim", health: "ok" }] }
+    ]
+  }
+  const groups = Model.overviewGroups(data)
+  let fixing = null
+  for (const g of groups) if (g.key === "fixing") fixing = g
+  assert.ok(fixing, "fixing group exists")
+  assert.equal(fixing.items.length, 1)
+  assert.equal(fixing.items[0].title, "ghostty")
+  assert.ok(String(fixing.items[0].subtitle).indexOf("dotfiles") !== -1)
+  assert.ok(String(fixing.items[0].subtitle).indexOf("conflict") !== -1)
+})
+
+test("accordionKey: expanding one key replaces the previous", () => {
+  assert.equal(Model.accordionKey("", "fixing"), "fixing")
+  assert.equal(Model.accordionKey("fixing", "outgoing"), "outgoing")
+  assert.equal(Model.accordionKey("fixing", "fixing"), "")
+})
+
+test("setupAccordionToggle: one group expanded at a time", () => {
+  const groups = [{ key: "a" }, { key: "b", expandByDefault: true }, { key: "c" }]
+  const onlyA = Model.setupAccordionToggle({}, groups[0], groups)
+  assert.equal(onlyA.a, true)
+  assert.equal(onlyA.b, false)
+  assert.equal(onlyA.c, false)
+  const openC = Model.setupAccordionToggle(onlyA, groups[2], groups)
+  assert.equal(openC.a, false)
+  assert.equal(openC.b, false)
+  assert.equal(openC.c, true)
+  const closed = Model.setupAccordionToggle(openC, groups[2], groups)
+  assert.equal(closed.a, false)
+  assert.equal(closed.b, false)
+  assert.equal(closed.c, false)
+  // Toggling an expandByDefault group closes it instead of opening it again.
+  const closedB = Model.setupAccordionToggle({}, groups[1], groups)
+  assert.equal(closedB.a, false)
+  assert.equal(closedB.b, false)
+  assert.equal(closedB.c, false)
+})

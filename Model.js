@@ -1483,11 +1483,15 @@ function overviewGroups(data) {
       var pkg = packages[p] || {}
       var health = String(pkg.health || "ok")
       if (health === "ok") continue
+      var pkgName = String(pkg.name || "")
       fixing.push({
         type: "health",
         repo: String(current.path || ""),
-        package: String(pkg.name || ""),
+        package: pkgName,
         health: health,
+        // Plain title/subtitle so the row never renders "undefined" (finding 79).
+        title: pkgName,
+        subtitle: repoDisplayName(String(current.path || "")) + " \u00b7 " + healthLabel(health),
         stateColor: healthColor(health)
       })
     }
@@ -2712,6 +2716,30 @@ function setupToggleGroup(expanded, group) {
   for (var k in map) next[k] = map[k]
   next[key] = !setupGroupExpanded(map, g)
   return next
+}
+
+// One-key accordion (README Unit 15/finding 84): expanding a group collapses
+// the previously expanded one. The whole group list is materialized so a
+// section's `expandByDefault` cannot re-open behind the user's back.
+function setupAccordionToggle(expanded, group, groups) {
+  var g = group || {}
+  var key = String(g.key || "")
+  var wasOpen = setupGroupExpanded(expanded, g)
+  var list = groups || []
+  var next = {}
+  for (var i = 0; i < list.length; i++) {
+    var k = String((list[i] || {}).key || "")
+    next[k] = (!wasOpen && k === key)
+  }
+  return next
+}
+
+// The next accordion key: toggling the open key closes it (""), any other key
+// opens it. Used by the Overview repos/groups accordion.
+function accordionKey(current, key) {
+  var c = String(current === undefined || current === null ? "" : current)
+  var k = String(key === undefined || key === null ? "" : key)
+  return c === k ? "" : k
 }
 
 function groupFor(groups, key) {
