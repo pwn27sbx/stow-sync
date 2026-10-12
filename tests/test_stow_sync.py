@@ -3665,36 +3665,21 @@ class SetupPlanTests(SetupTestBase):
         self.assertTrue(requires["stow"])
         self.assertEqual(plan["plan"]["notes"], ["note one", "note two"])
 
-    def test_plan_fixture_is_read_only(self) -> None:
-        # The hidden setupFixture setting makes the backend read a recorded plan
-        # (README 8b): read-only, never writes a token and never applies.
-        plan = {
-            "version": 1,
-            "clone": [],
-            "link": [
-                {
-                    "repo": "~/.dotfiles",
-                    "package": "fish",
-                    "status": "new",
-                    "links": [],
-                    "conflicts": [],
-                    "files_to_backup": 0,
-                }
-            ],
-            "services": [],
-            "requires": [],
-            "post": [],
-            "notes": ["n"],
-            "summary": {"packages_to_link": 1},
-        }
-        fixture = self.env.root / "fixture.json"
-        fixture.write_text(json.dumps(plan), encoding="utf-8")
-        result = ss.dispatch(["setup-plan", "--fixture", str(fixture)], None, str(self.state))
+    def test_plan_builds_and_writes_a_real_token(self) -> None:
+        # Equivalent coverage for the removed hidden `setupFixture` hook
+        # (README 11): `setup-plan` always builds a real plan, writes a real
+        # token to the state dir, and returns no fixture echo. A stray
+        # `--fixture` argument is not a backend option any more.
+        self.env.clone_dotfiles()
+        stray = self.env.root / "stray-plan.json"
+        stray.write_text(json.dumps({"version": 1, "link": []}), encoding="utf-8")
+        result = ss.dispatch(["setup-plan", "--fixture", str(stray)], None, str(self.state))
         self.assertTrue(result["ok"], result)
-        self.assertEqual(result["token"], "fixture")
-        self.assertTrue(result["fixture"])
-        self.assertEqual(result["plan"]["link"][0]["package"], "fish")
-        self.assertFalse((self.state / "setup-plan.json").exists())
+        self.assertNotIn("fixture", result)
+        self.assertNotEqual(result["token"], "fixture")
+        self.assertGreaterEqual(len(result["plan"]["link"]), 1)
+        # The real token file exists and no arbitrary JSON was echoed back.
+        self.assertTrue((self.state / "setup-plan.json").exists())
 
 
 # --------------------------------------------------------------------------
@@ -4507,25 +4492,23 @@ class RunWithDeadlineTests(unittest.TestCase):
         self.assertEqual(results[3], 3)
 
 
-class SetupFixtureHookTests(SetupTestBase):
-    def test_returns_recorded_json(self) -> None:
-        path = self.env.root / "apply.json"
-        path.write_text(json.dumps({"ok": True, "backup": "x", "packages": []}), encoding="utf-8")
-        result = ss.dispatch(["setup-fixture", "--path", str(path)], None, str(self.state))
-        self.assertTrue(result["ok"], result)
-        self.assertEqual(result["data"]["backup"], "x")
+class SetupFixtureRemovalTests(SetupTestBase):
+    """The pre-release checklist removes the hidden fixture hooks (README 11).
 
-    def test_missing_and_bad_json(self) -> None:
-        missing = ss.dispatch(
-            ["setup-fixture", "--path", str(self.env.root / "nope.json")], None, str(self.state)
-        )
-        self.assertFalse(missing["ok"])
-        self.assertIn("fixture", missing["error"])
-        bad = self.env.root / "bad.json"
-        bad.write_text("{not json", encoding="utf-8")
-        result = ss.dispatch(["setup-fixture", "--path", str(bad)], None, str(self.state))
+    Equivalent coverage: the real apply result renders the Report step (node
+    `setupReport` tests plus the apply tests above); these tests pin that the
+    removed commands/options no longer exist so they cannot creep back.
+    """
+
+    def test_setup_fixture_command_is_gone(self) -> None:
+        path = self.env.root / "apply.json"
+        path.write_text(json.dumps({"ok": True, "backup": "x"}), encoding="utf-8")
+        result = ss.dispatch(["setup-fixture", "--path", str(path)], None, str(self.state))
         self.assertFalse(result["ok"])
-        self.assertIn("JSON", result["error"])
+        self.assertIn("unknown command", result["error"])
+
+    def test_setup_fixture_is_not_in_commands(self) -> None:
+        self.assertNotIn("setup-fixture", ss.COMMANDS)
 
 
 class SetupApplyProgressTests(SetupTestBase):

@@ -43,8 +43,6 @@ QtObject {
   readonly property var report: Model.setupReport(flow.applyResult, flow.plan, flow.undoResult !== null)
   readonly property string undoSentence: flow.applyResult !== null ? Model.setupUndoSentence(flow.applyResult) : ""
 
-  function fixture() { return flow.settings ? String(flow.settings.setupFixture || "") : "" }
-
   function start() {
     flow.mode = "wizard"
     flow.step = 0
@@ -67,9 +65,6 @@ QtObject {
     flow.selectedUrl = ""
     flow.errorText = ""
     flow.applying = false
-    var applyFixture = flow.settings ? String(flow.settings.setupApplyFixture || "") : ""
-    if (applyFixture !== "") { flow.step = 4; flow.requested("setup-fixture", ["setup-fixture", "--path", applyFixture]); return }
-    if (flow.fixture() !== "") { flow.loadPlan(); return }
     flow.runCheck()
   }
 
@@ -135,9 +130,7 @@ QtObject {
     flow.step = 2
     flow.planLoading = true
     flow.errorText = ""
-    var args = ["setup-plan"]
-    if (flow.fixture() !== "") args = args.concat(["--fixture", flow.fixture()])
-    flow.requested("setup-plan", args)
+    flow.requested("setup-plan", ["setup-plan"])
   }
 
   function applyPlan() {
@@ -159,7 +152,7 @@ QtObject {
     if (flow.mode === "backups") return "Done"
     if (flow.step === 0) return flow.checking ? "Checking\u2026" : "Continue"
     if (flow.step === 1) return flow.connectRunning ? "Connecting\u2026" : (flow.connectDone() ? "Review" : "Connect")
-    if (flow.step === 2) return flow.planToken === "fixture" ? "Close" : (flow.planLoading ? "Working\u2026" : Model.setupPrimaryLabel(flow.plan))
+    if (flow.step === 2) return flow.planLoading ? "Working\u2026" : Model.setupPrimaryLabel(flow.plan)
     if (flow.step === 3) return flow.applying ? "Setting up\u2026" : "Continue"
     return "Done"
   }
@@ -169,7 +162,7 @@ QtObject {
     if (flow.mode === "backups") return true
     if (flow.step === 0) return Model.setupPrereqReady(flow.prereqs)
     if (flow.step === 1) return !flow.connectRunning && (flow.connectDone() || Model.setupValidUrl(flow.url))
-    if (flow.step === 2) return !flow.planLoading && (flow.planToken === "fixture" || flow.plan !== null)
+    if (flow.step === 2) return !flow.planLoading && flow.plan !== null
     if (flow.step === 3) return !flow.applying
     return true
   }
@@ -179,7 +172,7 @@ QtObject {
     if (flow.mode === "backups") { flow.closed(); return }
     if (flow.step === 0) { flow.goConnect(); return }
     if (flow.step === 1) { if (flow.connectDone()) flow.loadPlan(); else flow.connect(); return }
-    if (flow.step === 2) { if (flow.planToken === "fixture") { flow.closed(); return } flow.applyPlan(); return }
+    if (flow.step === 2) { flow.applyPlan(); return }
     if (flow.step === 3) { if (flow.applyResult) flow.step = 4; return }
     flow.closed()
   }
@@ -217,11 +210,6 @@ QtObject {
         flow.candidates = null
         flow.repoError = String((payload && payload.error) || "Could not load your GitHub repos.")
       }
-      return
-    }
-    if (tag === "setup-fixture") {
-      if (payload && payload.ok === true) { flow.applyResult = payload.data; flow.step = 4 }
-      else { flow.errorText = String(payload && payload.error || "Could not read the fixture.") }
       return
     }
     if (tag === "setup-connect") {

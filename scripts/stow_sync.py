@@ -3575,33 +3575,6 @@ def cmd_setup_candidates(
     }
 
 
-def cmd_setup_fixture(
-    args: list[str],
-    config_path: str | None = None,
-    state_dir: str | None = None,
-) -> dict[str, Any]:
-    """Hidden live-check hook: return a recorded JSON file verbatim, read-only.
-
-    Mirrors ``setup-plan --fixture`` (README 8b/11): the panel uses it to render
-    the Report step from a recorded apply result without ever running a setup on
-    the real ``$HOME``. Removed before the marketplace submission.
-    """
-    path_arg = opt_value(args, "--path")
-    if not _setup_str(path_arg):
-        raise CommandError("missing --path")
-    path = expand_path(path_arg)
-    if not os.path.isfile(path):
-        raise CommandError("fixture not found: " + to_tilde(path))
-    if os.path.getsize(path) > MAX_RESPONSE_BYTES:
-        raise CommandError("fixture is too large")
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError) as exc:
-        raise CommandError("fixture is not valid JSON: " + _shorten(str(exc)))
-    return {"ok": True, "data": data}
-
-
 def _classify_conflict(entry: dict[str, str]) -> dict[str, Any]:
     """Classify one parsed stow conflict as identical / different / blocked."""
     base = {"target": entry["target"], "source": entry["source"], "message": entry["message"]}
@@ -3829,27 +3802,6 @@ def cmd_setup_plan(
     state_dir: str | None = None,
 ) -> dict[str, Any]:
     """Build the setup plan and store its 10-minute token (README 8.1/8a)."""
-    fixture = opt_value(args, "--fixture")
-    if _setup_str(fixture):
-        # Hidden setupFixture setting (README 8b live check): read a recorded
-        # plan, never write a token and never apply.
-        try:
-            with open(expand_path(fixture), "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, ValueError) as exc:
-            raise CommandError("fixture read failed: " + _shorten(str(exc)))
-        if not isinstance(data, dict):
-            raise CommandError("fixture is not a plan object")
-        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
-        return {
-            "ok": True,
-            "token": "fixture",
-            "created": None,
-            "recipe": None,
-            "plan": data,
-            "summary": summary,
-            "fixture": True,
-        }
     recipe_arg = opt_value(args, "--recipe")
     recipe_path = expand_path(recipe_arg) if recipe_arg else _default_recipe_path()
     recipe = load_setup_recipe_file(recipe_path)
@@ -4643,7 +4595,6 @@ COMMANDS = {
     "setup-prereqs": cmd_setup_prereqs,
     "setup-repos": cmd_setup_repos,
     "setup-candidates": cmd_setup_candidates,
-    "setup-fixture": cmd_setup_fixture,
     "setup-connect": cmd_setup_connect,
     "setup-clone": cmd_setup_clone,
     "setup-plan": cmd_setup_plan,
