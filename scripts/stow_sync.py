@@ -27,7 +27,6 @@ import signal
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -55,6 +54,118 @@ def _shorten(text: str, limit: int = 300) -> str:
     return collapsed[:limit]
 
 
+# --------------------------------------------------------------------------
+# Hardened file IO (README 11 hardening audit)
+#
+# Every on-disk read is capped and bound to the opened inode (O_NOFOLLOW, a
+# regular-file check and an owner check via fstat); every write is atomic
+# through a directory fd, with an exclusive 0600 temp file, fsync and rename.
+# A symlinked *leaf* is refused unless a caller explicitly allows the config
+# file to be Stow-managed.
+# --------------------------------------------------------------------------
+
+MAX_CONFIG_BYTES = 64 * 1024
+MAX_RECIPE_BYTES = 256 * 1024
+MAX_STATE_BYTES = 4 * 1024 * 1024
+MAX_STDIN_BYTES = 4 * 1024 * 1024
+
+
+def _read_fd_capped(fd: int, max_bytes: int) -> bytes | None:
+    """Read at most ``max_bytes + 1`` from ``fd``.
+
+    Returns ``None`` when the file still has data after the cap, so a file that
+    is swapped or grown after the size check is rejected instead of slurped.
+    """
+    chunks: list[bytes] = []
+    remaining = max_bytes + 1
+    while remaining > 0:
+        try:
+            chunk = os.read(fd, min(65536, remaining))
+        except OSError:
+            return None
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    if remaining <= 0:
+        return None
+    return b"".join(chunks)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of ``data`` to ``fd`` (POSIX allows short writes)."""
+    view = memoryview(data)
+    total = 0
+    while total < len(view):
+        written = os.write(fd, view[total:])
+        if written <= 0:
+            raise OSError(errno.EIO, "short write: no progress")
+        total += written
+
+
+def _open_owned_regular(path: str, max_bytes: int) -> int | None:
+    """Open ``path`` with O_NOFOLLOW and return its fd only when the *opened
+    inode* is a regular file owned by the current user and within ``max_bytes``.
+
+    ``None`` on any failure (missing, symlink, wrong type, wrong owner,
+    oversized, unreadable), so no path is re-statted after the open.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        if info.st_uid != os.geteuid():
+            raise OSError(errno.EPERM, "not owned by the current user")
+        if info.st_size > max_bytes:
+            raise OSError(errno.EFBIG, "exceeds the read limit")
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
+def read_text_bounded(path: str, max_bytes: int, allow_symlink: bool = False) -> str | None:
+    """Read a user-owned regular file with a hard size cap, or return ``None``.
+
+    Returns ``None`` only when ``path`` does not exist. A present file that is
+    not a user-owned regular file, is oversized or is not valid UTF-8 raises
+    :class:`CommandError` so the caller can report it. ``allow_symlink``
+    follows exactly one user-owned symlink whose real target stays inside
+    ``$HOME`` (the Stow-managed config file); every other symlink leaf is
+    refused.
+    """
+    if not os.path.lexists(path):
+        return None
+    fd = _open_owned_regular(path, max_bytes)
+    if fd is None and allow_symlink:
+        try:
+            real = os.path.realpath(path)
+        except OSError:
+            real = ""
+        home = os.path.realpath(os.path.expanduser("~"))
+        if real and (real == home or real.startswith(home + os.sep)):
+            fd = _open_owned_regular(real, max_bytes)
+    if fd is None:
+        raise CommandError(
+            "cannot read " + to_tilde(path) + ": not a user-owned regular file"
+        )
+    try:
+        data = _read_fd_capped(fd, max_bytes)
+    finally:
+        os.close(fd)
+    if data is None:
+        raise CommandError(to_tilde(path) + " is larger than the read limit")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise CommandError(to_tilde(path) + " is not valid UTF-8")
+
+
 # Userinfo inside a scheme:// URL (``user:pass@`` or ``token@``). The
 # conventional SSH username ``git@`` is not a credential and is preserved.
 _CREDENTIAL_URL = re.compile(
@@ -77,6 +188,18 @@ def sanitize_url(url: Any) -> str:
     if ":" in userinfo or userinfo != "git":
         return match.group("scheme") + match.group("rest")
     return text
+
+
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://)[^/@\s]+@")
+
+
+def scrub_credentials(text: str) -> str:
+    """Strip ``user:token@`` userinfo from any URL in a diagnostic string.
+
+    Git and gh echo the remote URL in their error output; a URL that carries
+    embedded credentials must never reach the panel, a log or ``push_error``.
+    """
+    return _URL_USERINFO_RE.sub(r"\1", text or "")
 
 
 # Defaults from the handoff README section 4. Stored verbatim (with ``~``);
@@ -145,9 +268,14 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     The returned config has ``~`` expanded on every path field.
     """
     path = expand_path(config_path) if config_path else default_config_path()
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
+    if os.path.lexists(path):
+        # The config may be a Stow-managed symlink into the dotfiles repo, so
+        # the leaf symlink is followed once when it stays inside $HOME.
+        text = read_text_bounded(path, MAX_CONFIG_BYTES, allow_symlink=True)
+        try:
+            data = json.loads(text) if text else {}
+        except ValueError as exc:
+            raise CommandError("config is not valid JSON: " + _shorten(str(exc)))
         if not isinstance(data, dict):
             data = {}
     else:
@@ -155,9 +283,7 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
         if parent:
             os.makedirs(parent, exist_ok=True)
         data = copy.deepcopy(DEFAULT_CONFIG)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
+        _write_json_atomic(path, data, 0o644, prefix=".config-", indent=2)
     return expand_config_paths(data)
 
 
@@ -200,36 +326,61 @@ def _write_json_atomic(
     mode: int = 0o600,
     prefix: str = ".baseline-",
     fsync: bool = False,
+    indent: int | None = None,
 ) -> None:
-    """Write JSON to ``path`` atomically with a fixed permission mode.
+    """Write JSON to ``path`` atomically through a directory fd.
 
-    With ``fsync=True`` the temp file and its directory are flushed to disk
-    before the atomic rename, so an append-and-fsync manifest survives a crash
-    (README section 8a apply).
+    The parent directory is opened once and the exclusive 0600 temp file and
+    the final rename are both relative to that descriptor, so a symlink planted
+    at ``path`` is replaced rather than followed. With ``fsync=True`` the temp
+    file and its directory are flushed before returning, so an append-and-fsync
+    manifest survives a crash (README 8a apply).
     """
     directory = os.path.dirname(path) or "."
-    fd, tmp_path = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=directory)
+    name = os.path.basename(path)
+    dir_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
+    payload = (json.dumps(data, ensure_ascii=False, indent=indent) + "\n").encode("utf-8")
+    tmp_name = prefix + str(os.getpid()) + "-" + os.urandom(4).hex() + ".tmp"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False)
-            handle.write("\n")
-            if fsync:
-                handle.flush()
-                os.fsync(handle.fileno())
-        os.chmod(tmp_path, mode)
-        os.replace(tmp_path, path)
+        tmp_fd = os.open(
+            tmp_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=dir_fd,
+        )
+    except OSError:
+        os.close(dir_fd)
+        raise
+    try:
+        _write_all(tmp_fd, payload)
+        os.fchmod(tmp_fd, mode)
         if fsync:
-            dir_fd = os.open(directory, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+            os.fsync(tmp_fd)
+    except BaseException:
+        os.close(tmp_fd)
+        try:
+            os.unlink(tmp_name, dir_fd=dir_fd)
+        except OSError:
+            pass
+        os.close(dir_fd)
+        raise
+    os.close(tmp_fd)
+    try:
+        os.replace(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        if fsync:
+            os.fsync(dir_fd)
     except BaseException:
         try:
-            os.unlink(tmp_path)
+            os.unlink(tmp_name, dir_fd=dir_fd)
         except OSError:
             pass
         raise
+    finally:
+        os.close(dir_fd)
 
 
 def write_baseline(state_dir: str, paths: list[str]) -> str:
@@ -258,14 +409,14 @@ def load_baseline(
     """
     result: dict[str, Any] = {"paths": set(), "created": None, "error": None}
     path = baseline_path(state_dir)
-    if os.path.exists(path):
+    if os.path.lexists(path):
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
+            text = read_text_bounded(path, MAX_STATE_BYTES)
+            data = json.loads(text) if text else {}
             raw_paths = data.get("paths", []) if isinstance(data, dict) else []
             result["paths"] = {str(p) for p in raw_paths if isinstance(p, str)}
             result["created"] = data.get("created") if isinstance(data, dict) else None
-        except (OSError, ValueError, TypeError) as exc:
+        except (CommandError, ValueError, TypeError) as exc:
             result["error"] = _baseline_error("baseline read failed", exc)
             result["paths"] = set()
         return result
@@ -296,9 +447,9 @@ def publish_path(state_dir: str) -> str:
 def load_publish_times(state_dir: str) -> dict[str, str]:
     """Read ``{repo path: iso}`` from ``publish.json``; ``{}`` when unreadable."""
     try:
-        with open(publish_path(state_dir), "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError, TypeError):
+        text = read_text_bounded(publish_path(state_dir), MAX_STATE_BYTES)
+        data = json.loads(text) if text else None
+    except (CommandError, ValueError, TypeError):
         return {}
     if not isinstance(data, dict):
         return {}
@@ -346,9 +497,9 @@ def load_notify_state(state_dir: str) -> dict[str, dict[str, Any]]:
     decision can simply rebuild it.
     """
     try:
-        with open(notify_state_path(state_dir), "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError, TypeError):
+        text = read_text_bounded(notify_state_path(state_dir), MAX_STATE_BYTES)
+        data = json.loads(text) if text else None
+    except (CommandError, ValueError, TypeError):
         return {}
     if not isinstance(data, dict):
         return {}
@@ -520,14 +671,13 @@ def _package_ignores_everything(package_path: str) -> bool:
     every name, so such a package is not a Stow package (e.g. ``odd/``).
     """
     ignore_file = os.path.join(package_path, ".stow-local-ignore")
-    if not os.path.isfile(ignore_file):
+    if not os.path.lexists(ignore_file):
         return False
     try:
-        with open(ignore_file, "r", encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-    except OSError:
+        text = read_text_bounded(ignore_file, MAX_CONFIG_BYTES)
+    except CommandError:
         return False
-    for line in lines:
+    for line in (text or "").splitlines():
         pattern = line.strip()
         if not pattern or pattern.startswith("#"):
             continue
@@ -918,9 +1068,8 @@ def _git_dir(repo_path: str) -> str | None:
         return dot_git
     if os.path.isfile(dot_git):
         try:
-            with open(dot_git, "r", encoding="utf-8") as handle:
-                content = handle.read().strip()
-        except OSError:
+            content = (read_text_bounded(dot_git, MAX_CONFIG_BYTES) or "").strip()
+        except CommandError:
             return None
         if content.startswith("gitdir:"):
             target = content[len("gitdir:"):].strip()
@@ -1033,7 +1182,7 @@ def _short_error(result: subprocess.CompletedProcess[bytes]) -> str:
     text = result.stderr or result.stdout or b""
     if isinstance(text, bytes):
         text = text.decode("utf-8", "replace")
-    text = " ".join(str(text).split())
+    text = scrub_credentials(" ".join(str(text).split()))
     if not text:
         return "git command failed"
     return text[:300]
@@ -1995,11 +2144,13 @@ def scan_secrets(diff_text: str) -> list[dict[str, Any]]:
 def read_stdin_json() -> Any:
     """Read and parse a JSON payload from stdin; ``None`` when empty."""
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.read(MAX_STDIN_BYTES + 1)
     except (OSError, ValueError):
         return None
     if raw is None or not raw.strip():
         return None
+    if len(raw) > MAX_STDIN_BYTES:
+        raise CommandError("stdin payload exceeds the " + str(MAX_STDIN_BYTES) + " byte limit")
     try:
         return json.loads(raw)
     except ValueError as exc:
@@ -2068,7 +2219,7 @@ def _push_error_text(text: str) -> str:
         or "behind" in lowered
     ):
         return "Push rejected: the remote has new commits. Pull first."
-    short = _shorten(text)
+    short = _shorten(scrub_credentials(text))
     return short or "Push failed."
 
 
@@ -2345,10 +2496,13 @@ def normalize_path_list(payload: Any) -> list[str]:
 
 def _read_raw_config(path: str) -> dict[str, Any]:
     """Read the on-disk config verbatim (defaults created first if missing)."""
-    if not os.path.exists(path):
+    if not os.path.lexists(path):
         load_config(path)
-    with open(path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
+    text = read_text_bounded(path, MAX_CONFIG_BYTES, allow_symlink=True)
+    try:
+        data = json.loads(text) if text else {}
+    except ValueError as exc:
+        raise CommandError("config is not valid JSON: " + _shorten(str(exc)))
     return data if isinstance(data, dict) else {}
 
 
@@ -2360,19 +2514,7 @@ def _write_config_atomic(path: str, data: dict[str, Any]) -> None:
         mode = os.stat(path).st_mode & 0o777
     except OSError:
         mode = 0o644
-    fd, tmp_path = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-        os.chmod(tmp_path, mode)
-        os.replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _write_json_atomic(path, data, mode, prefix=".config-", indent=2)
 
 
 def _update_ignore(args: list[str], config_path: str | None, add: bool) -> dict[str, Any]:
@@ -2622,6 +2764,39 @@ def _setup_str(value: Any) -> bool:
     return isinstance(value, str) and value != ""
 
 
+_ALLOWED_CLONE_SCHEMES = ("https://", "http://", "ssh://", "git://", "file://")
+
+
+def validate_clone_url(url: Any) -> str:
+    """Return a clone URL that is safe to place in a fixed argv element.
+
+    The URL is passed to ``git clone`` as an argument, so a leading dash would
+    be read as an option and an embedded credential (``token@`` or
+    ``user:pass@``) would be visible in the process list. Rejects both, plus
+    whitespace/control characters and unsupported forms. An absolute local
+    path is allowed (local clones and tests); everything else must be a
+    supported scheme or the scp ``user@host:path`` form.
+    """
+    text = str(url or "").strip()
+    if not text:
+        raise CommandError("missing --url")
+    if text.startswith("-"):
+        raise CommandError("the repository URL must not start with '-'")
+    if "\x00" in text or any(ch.isspace() for ch in text):
+        raise CommandError("the repository URL must not contain whitespace")
+    userinfo = re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://([^@/]+)@", text)
+    if userinfo and (":" in userinfo.group(1) or userinfo.group(1) != "git"):
+        raise CommandError(
+            "remove the credentials from the repository URL; use gh auth login instead"
+        )
+    if os.path.isabs(text):
+        return text
+    scp = re.match(r"^[A-Za-z0-9_.\-]+@[A-Za-z0-9_.\-]+:[^@\s]+$", text)
+    if text.startswith(_ALLOWED_CLONE_SCHEMES) or scp:
+        return text
+    raise CommandError("unsupported repository URL: " + _shorten(text))
+
+
 def validate_setup_recipe(data: Any) -> dict[str, Any]:
     """Strictly validate a setup recipe and return its normalized copy.
 
@@ -2650,8 +2825,19 @@ def validate_setup_recipe(data: Any) -> dict[str, Any]:
             raise CommandError("recipe: " + where + " has unknown key: " + unknown[0])
         if not _setup_str(repo.get("path")):
             raise CommandError("recipe: " + where + ".path must be a non-empty string")
+        expanded_path = os.path.normpath(expand_path(repo["path"]))
+        if not _under(expanded_path, os.path.normpath(os.path.expanduser("~"))):
+            raise CommandError(
+                "recipe: " + where + ".path must resolve inside $HOME: " + repo["path"]
+            )
         if not _setup_str(repo.get("url")):
             raise CommandError("recipe: " + where + ".url must be a non-empty string")
+        try:
+            validate_clone_url(repo["url"])
+        except CommandError as exc:
+            raise CommandError(
+                "recipe: " + where + ".url is not a safe clone URL: " + _shorten(str(exc))
+            )
         order = repo.get("order")
         if not isinstance(order, int) or isinstance(order, bool):
             raise CommandError("recipe: " + where + ".order must be an integer")
@@ -2779,12 +2965,12 @@ def validate_setup_recipe(data: Any) -> dict[str, Any]:
 
 def load_setup_recipe_file(path: str) -> dict[str, Any]:
     """Read and strictly validate a recipe file, or raise :class:`CommandError`."""
-    if not os.path.isfile(path):
+    if not os.path.lexists(path):
         raise CommandError("recipe not found: " + to_tilde(path))
+    text = read_text_bounded(path, MAX_RECIPE_BYTES)
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError) as exc:
+        data = json.loads(text) if text else None
+    except ValueError as exc:
         raise CommandError("recipe is not valid JSON: " + _shorten(str(exc)))
     return validate_setup_recipe(data)
 
@@ -2956,9 +3142,9 @@ def _setup_connect_recipe(path: str) -> tuple[Any, str | None]:
         hint = "No setup recipe found. Add " + to_tilde(recipe_path) + " to the repository."
         return None, hint
     try:
-        with open(recipe_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError) as exc:
+        text = read_text_bounded(recipe_path, MAX_RECIPE_BYTES)
+        data = json.loads(text) if text else None
+    except (CommandError, ValueError) as exc:
         raise CommandError("recipe is not valid JSON: " + _shorten(str(exc)))
     return validate_setup_recipe(data), None
 
@@ -2974,11 +3160,11 @@ def cmd_setup_connect(
     returned (with url and privacy) so the caller clones them one request at a
     time with ``setup-clone`` and its longer timeout (README 10a.2).
     """
-    url = opt_value(args, "--url")
-    if not _setup_str(url):
-        raise CommandError("missing --url")
+    url = validate_clone_url(opt_value(args, "--url"))
     raw_path = opt_value(args, "--path") or DEFAULT_SETUP_PATH
-    path = expand_path(raw_path)
+    path = os.path.normpath(expand_path(raw_path))
+    if not _under(path, os.path.normpath(os.path.expanduser("~"))):
+        raise CommandError("setup path must be inside $HOME: " + raw_path)
     dotfiles_state = _setup_repo_state(
         path, url, False, timeout=300, state_dir=resolve_state_dir(state_dir), item=to_tilde(path)
     )
@@ -3782,12 +3968,12 @@ def save_setup_plan(state_dir: str, recipe_path: str, plan: dict[str, Any]) -> t
 
 def _load_setup_plan(state_dir: str) -> dict[str, Any] | None:
     path = setup_plan_path(state_dir)
-    if not os.path.isfile(path):
+    if not os.path.lexists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
+        text = read_text_bounded(path, MAX_STATE_BYTES)
+        data = json.loads(text) if text else None
+    except (CommandError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -4447,9 +4633,9 @@ def cmd_setup_undo(
     if not os.path.isfile(manifest_path):
         return {"ok": False, "error": "unknown backup: " + str(backup_id)}
     try:
-        with open(manifest_path, "r", encoding="utf-8") as handle:
-            manifest = json.load(handle)
-    except (OSError, ValueError) as exc:
+        text = read_text_bounded(manifest_path, MAX_STATE_BYTES)
+        manifest = json.loads(text) if text else {}
+    except (CommandError, ValueError) as exc:
         return {"ok": False, "error": "cannot read backup: " + _shorten(str(exc))}
     home = manifest.get("home") or os.path.expanduser("~")
     target_dir = expand_path(manifest.get("target", "~")) or home
@@ -4571,9 +4757,9 @@ def cmd_setup_backups(
             if not os.path.isfile(manifest_path):
                 continue
             try:
-                with open(manifest_path, "r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-            except (OSError, ValueError):
+                text = read_text_bounded(manifest_path, MAX_STATE_BYTES)
+                data = json.loads(text) if text else {}
+            except (CommandError, ValueError):
                 continue
             backups.append(
                 {
@@ -4684,7 +4870,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         result = dispatch(rest, config_path, state_dir)
     except Exception as exc:  # noqa: BLE001 - CLI must never print a traceback to QML
-        result = {"ok": False, "error": (str(exc) or exc.__class__.__name__)}
+        result = {"ok": False, "error": _shorten(scrub_credentials(str(exc) or exc.__class__.__name__))}
     text = json.dumps(result, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_RESPONSE_BYTES:
         result = {"ok": False, "error": "response exceeds the 2 MB limit"}

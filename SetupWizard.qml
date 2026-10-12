@@ -56,9 +56,9 @@ Item {
   }
 
   function parseProgress(text) {
-    var raw = String(text || "").trim()
-    if (raw === "") return null
-    try { return JSON.parse(raw) } catch (error) { return null }
+    // Bounded parse (README 11 hardening audit): the settled value never
+    // carries a file larger than the cap.
+    return Model.parseSetupProgress(text, Model.SETUP_PROGRESS_MAX_BYTES)
   }
 
   visible: opened

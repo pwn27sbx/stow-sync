@@ -4933,5 +4933,209 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(len(ss._last_nonempty_line("x" * 500)), 200)
 
 
+# --------------------------------------------------------------------------
+# Pre-release hardening audit (README 11)
+# --------------------------------------------------------------------------
+
+
+class HardeningAuditTests(unittest.TestCase):
+    """Every fix from the README 11 hardening audit, pinned by a test.
+
+    Covers: atomic dir-fd writes that never follow a planted symlink, bounded
+    and owner-checked reads, argv-safe clone URLs, recipe path containment and
+    credential scrubbing in diagnostics.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="stow-sync-hard-")
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self._home = patch.dict(os.environ, {"HOME": str(self.root)})
+        self._home.start()
+        self.addCleanup(self._home.stop)
+
+    # --- atomic, directory-fd relative writes ------------------------------
+
+    def test_atomic_write_replaces_a_symlink_leaf(self) -> None:
+        target = self.root / "target.json"
+        target.write_text('{"old": true}\n', encoding="utf-8")
+        link = self.root / "link.json"
+        link.symlink_to(target)
+        ss._write_json_atomic(str(link), {"new": 1}, 0o600)
+        self.assertFalse(link.is_symlink())
+        self.assertEqual(json.loads(link.read_text(encoding="utf-8")), {"new": 1})
+        # The symlink target was replaced, never written through.
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"old": True})
+
+    def test_atomic_write_through_a_symlinked_parent_dir(self) -> None:
+        real_dir = self.root / "real"
+        real_dir.mkdir()
+        link_dir = self.root / "linked"
+        link_dir.symlink_to(real_dir)
+        ss._write_json_atomic(str(link_dir / "f.json"), {"v": 2}, 0o600)
+        self.assertEqual(
+            json.loads((real_dir / "f.json").read_text(encoding="utf-8")), {"v": 2}
+        )
+
+    def test_atomic_write_is_owner_only_and_leaves_no_temp(self) -> None:
+        path = self.root / "f.json"
+        ss._write_json_atomic(str(path), {"a": 1}, 0o600)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.assertEqual([p.name for p in self.root.iterdir() if ".tmp" in p.name], [])
+
+    # --- bounded, owner-checked reads --------------------------------------
+
+    def test_read_text_bounded_refuses_a_symlink_leaf(self) -> None:
+        target = self.root / "t.txt"
+        target.write_text("hi", encoding="utf-8")
+        link = self.root / "l.txt"
+        link.symlink_to(target)
+        with self.assertRaises(ss.CommandError):
+            ss.read_text_bounded(str(link), 100)
+
+    def test_read_text_bounded_follows_a_user_symlink_inside_home(self) -> None:
+        target = self.root / "real.txt"
+        target.write_text("hello", encoding="utf-8")
+        link = self.root / "cfg.json"
+        link.symlink_to(target)
+        self.assertEqual(ss.read_text_bounded(str(link), 100, allow_symlink=True), "hello")
+
+    def test_read_text_bounded_rejects_oversized(self) -> None:
+        big = self.root / "big.txt"
+        big.write_text("x" * 200, encoding="utf-8")
+        with self.assertRaises(ss.CommandError):
+            ss.read_text_bounded(str(big), 100)
+
+    def test_read_text_bounded_missing_is_none(self) -> None:
+        self.assertIsNone(ss.read_text_bounded(str(self.root / "nope"), 100))
+
+    def test_read_text_bounded_rejects_a_directory(self) -> None:
+        sub = self.root / "sub"
+        sub.mkdir()
+        with self.assertRaises(ss.CommandError):
+            ss.read_text_bounded(str(sub), 100)
+
+    def test_read_text_bounded_rejects_a_foreign_owner(self) -> None:
+        owned = self.root / "owned.txt"
+        owned.write_text("x", encoding="utf-8")
+        with patch.object(ss.os, "geteuid", return_value=os.geteuid() + 12345):
+            with self.assertRaises(ss.CommandError):
+                ss.read_text_bounded(str(owned), 100)
+
+    def test_config_read_through_a_symlinked_directory(self) -> None:
+        # Mirrors the owner's machine: ~/.config/stow-sync is a dir symlink
+        # into the dotfiles repo and config.json is a regular file inside.
+        repo_dir = self.root / ".dotfiles" / "stow-sync" / ".config" / "stow-sync"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / "config.json").write_text(
+            json.dumps({"version": 1, "repos": [{"path": "~/.dotfiles"}]}), encoding="utf-8"
+        )
+        cfg = self.root / ".config" / "stow-sync"
+        cfg.parent.mkdir(parents=True)
+        cfg.symlink_to(repo_dir)
+        config = ss.load_config()
+        self.assertEqual(len(config["repos"]), 1)
+
+    def test_config_symlink_leaf_inside_home_is_followed(self) -> None:
+        real = self.root / "real-config.json"
+        real.write_text(json.dumps({"version": 1, "repos": []}), encoding="utf-8")
+        cfg = self.root / ".config" / "stow-sync"
+        cfg.mkdir(parents=True)
+        (cfg / "config.json").symlink_to(real)
+        self.assertEqual(ss.load_config()["repos"], [])
+
+    def test_config_symlink_outside_home_is_refused(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            handle.write('{"version": 1, "repos": []}')
+            outside = handle.name
+        self.addCleanup(lambda: os.path.exists(outside) and os.unlink(outside))
+        cfg = self.root / ".config" / "stow-sync"
+        cfg.mkdir(parents=True)
+        (cfg / "config.json").symlink_to(outside)
+        with self.assertRaises(ss.CommandError):
+            ss.load_config()
+
+    def test_recipe_over_cap_is_refused(self) -> None:
+        big = self.root / "recipe.json"
+        big.write_text("{" + " " * (ss.MAX_RECIPE_BYTES + 10) + "}", encoding="utf-8")
+        with self.assertRaises(ss.CommandError):
+            ss.load_setup_recipe_file(str(big))
+
+    # --- argv safety -------------------------------------------------------
+
+    def test_validate_clone_url_allows_and_refuses(self) -> None:
+        self.assertEqual(
+            ss.validate_clone_url("https://github.com/a/b.git"), "https://github.com/a/b.git"
+        )
+        self.assertEqual(
+            ss.validate_clone_url("git@github.com:a/b.git"), "git@github.com:a/b.git"
+        )
+        local = str(self.root / "x.git")
+        self.assertEqual(ss.validate_clone_url(local), local)
+        for bad in (
+            "--upload-pack=/evil",
+            "-x",
+            "https://tok@github.com/a/b.git",
+            "https://user:pw@github.com/a/b.git",
+            "https://x y/z",
+            "ftp://github.com/a/b",
+        ):
+            with self.assertRaises(ss.CommandError, msg=bad):
+                ss.validate_clone_url(bad)
+
+    def test_recipe_rejects_path_outside_home_and_unsafe_url(self) -> None:
+        base = {
+            "version": 1,
+            "repos": [
+                {
+                    "path": "~/ok",
+                    "url": "https://github.com/a/b.git",
+                    "packages": "auto",
+                    "order": 1,
+                }
+            ],
+        }
+        ss.validate_setup_recipe(copy.deepcopy(base))
+        outside = copy.deepcopy(base)
+        outside["repos"][0]["path"] = "/etc"
+        with self.assertRaises(ss.CommandError):
+            ss.validate_setup_recipe(outside)
+        bad_url = copy.deepcopy(base)
+        bad_url["repos"][0]["url"] = "--evil"
+        with self.assertRaises(ss.CommandError):
+            ss.validate_setup_recipe(bad_url)
+        creds = copy.deepcopy(base)
+        creds["repos"][0]["url"] = "https://tok@github.com/a/b.git"
+        with self.assertRaises(ss.CommandError):
+            ss.validate_setup_recipe(creds)
+
+    def test_setup_connect_rejects_a_path_outside_home(self) -> None:
+        result = ss.dispatch(
+            ["setup-connect", "--url", "https://github.com/a/b.git", "--path", "/etc"],
+            None,
+            str(self.root / "state"),
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("inside $HOME", result["error"])
+
+    def test_scrub_credentials_removes_userinfo(self) -> None:
+        cleaned = ss.scrub_credentials(
+            "fatal: could not read from https://ghp_SECRET@github.com/a/b.git"
+        )
+        self.assertNotIn("ghp_SECRET", cleaned)
+        self.assertIn("https://github.com/a/b.git", cleaned)
+        result = subprocess.CompletedProcess(
+            [], 1, b"", b"clone https://user:pw@host/x failed"
+        )
+        self.assertNotIn("user:pw", ss._short_error(result))
+        self.assertNotIn("tok@", ss._push_error_text("error: https://tok@host/x"))
+
+    def test_stdin_payload_over_cap_is_refused(self) -> None:
+        payload = io.StringIO("x" * (ss.MAX_STDIN_BYTES + 1))
+        with patch.object(ss.sys, "stdin", payload):
+            with self.assertRaises(ss.CommandError):
+                ss.read_stdin_json()
+
+
 if __name__ == "__main__":
     unittest.main()

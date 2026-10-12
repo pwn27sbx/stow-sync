@@ -2182,3 +2182,17 @@ test("selectRepoCycle / toggleHiddenPath / nextCursor: pure panel helpers", () =
   assert.equal(Model.nextCursor(rows, "a", -3), "a")
   assert.equal(Model.nextCursor([], "a", 1), "a")
 })
+
+// --- hardening: bounded progress parse (README 11) ------------------------
+
+test("parseSetupProgress: caps the polled progress file", () => {
+  const obj = Model.parseSetupProgress('{"phase":"apply","done":1}', 262144)
+  assert.equal(obj.phase, "apply")
+  assert.equal(Model.setupProgressPath("/tmp/s"), "/tmp/s/setup-progress.json")
+  assert.equal(Model.parseSetupProgress("   ", 262144), null)
+  assert.equal(Model.parseSetupProgress("{not json", 262144), null)
+  const big = '{"pad":"' + "x".repeat(300000) + '"}'
+  assert.equal(Model.parseSetupProgress(big, 262144), null)
+  assert.equal(Model.parseSetupProgress(big), null)
+  assert.equal(Model.SETUP_PROGRESS_MAX_BYTES, 262144)
+})

@@ -2194,6 +2194,19 @@ function setupProgressPath(stateDir) {
   return dir + "/setup-progress.json"
 }
 
+// Hard byte cap for the polled progress file (README 11 hardening audit): the
+// QML FileView buffers whatever the file holds, so refuse anything larger
+// before JSON.parse instead of letting a planted huge file reach the model.
+var SETUP_PROGRESS_MAX_BYTES = 262144
+
+function parseSetupProgress(text, maxBytes) {
+  var cap = num(maxBytes, SETUP_PROGRESS_MAX_BYTES)
+  var raw = String(text === undefined || text === null ? "" : text).trim()
+  if (raw === "") return null
+  if (raw.length > cap) return null
+  try { return JSON.parse(raw) } catch (error) { return null }
+}
+
 // True when the newest setup backup is marked undone (README 12a/finding 61):
 // the machine is back to the not-set-up state. Backups are oldest-first.
 function setupUndoneFromBackups(backups) {
