@@ -187,6 +187,8 @@ Item {
           }
         }
 
+        ScrollHint { anchors.left: bodyArea.left; anchors.right: bodyArea.right; anchors.bottom: bodyArea.bottom; flick: bodyArea; foreground: root.foreground }
+
         Row {
           id: buttonRow
           anchors.right: parent.right

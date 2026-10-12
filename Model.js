@@ -2607,15 +2607,34 @@ function setupUndoSentence(results) {
   var count = 0
   for (var i = 0; i < packages.length; i++) if (String((packages[i] || {}).state || "applied") === "applied") count++
   var moved = num((r.moved || []).length, 0)
-  return "Unlink the " + pluralCount(count, "package") + " and put back the " + pluralCount(moved, "original file")
+  var services = num((r.services || []).length, 0)
+  var sentence = "Unlink the " + pluralCount(count, "package") + " and put back the " + pluralCount(moved, "original file")
+  if (services > 0) sentence += ", and disable the " + pluralCount(services, "service")
+  return sentence
 }
 
 // The same sentence from a backup row's counts (README Unit 15/finding 83): the
 // header Undo can confirm a single backup directly without an apply result.
 function setupUndoSentenceFromCounts(counts) {
   var c = counts || {}
-  return "Unlink the " + pluralCount(num(c.packages, 0), "package") +
+  var services = num(c.services, 0)
+  var sentence = "Unlink the " + pluralCount(num(c.packages, 0), "package") +
     " and put back the " + pluralCount(num(c.moved, 0), "original file")
+  if (services > 0) sentence += ", and disable the " + pluralCount(services, "service")
+  return sentence
+}
+
+// Header Undo decision (README Unit 15b/finding 87): with exactly one
+// un-undone setup the confirm card opens directly; with none or several the
+// backups list opens first. Pure so the header click is unit-tested.
+function headerUndo(backups) {
+  var active = setupActiveBackups(backups)
+  if (active.length !== 1) return { direct: false }
+  return {
+    direct: true,
+    backup: String(active[0].id || ""),
+    sentence: setupUndoSentenceFromCounts(active[0].counts)
+  }
 }
 
 // Rows for the "Setup backups" list (README 10b.7/finding 27).

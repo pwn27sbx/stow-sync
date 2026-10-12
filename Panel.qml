@@ -211,7 +211,7 @@ Panel {
   function editConfig() { Util.execArgv(["xdg-open", root.configPath]) }
   function openSetup() { root.overlayMode = ""; root.setupOpen = true }
   function undoSetupFromHeader() {
-    var d = setupWizard.headerUndo()
+    var d = Model.headerUndo(setupWizard.backups)
     if (!d.direct) { root.setupOpen = true; setupWizard.openBackups(); root.refreshSetupBackups(); return }
     root.setupOpen = false; root.undoFromHeader = true; root.confirmKind = "setup-undo"; root.confirmPayload = { backup: d.backup, sentence: d.sentence }; root.overlayMode = "confirm"
   }

@@ -104,14 +104,14 @@ Item {
 
       Button {
         Layout.alignment: Qt.AlignVCenter
-        Layout.preferredWidth: Style.space(32)
         Layout.preferredHeight: Style.space(32)
-        horizontalPadding: 0
         verticalPadding: 0
+        horizontalPadding: Style.spacing.md
         visible: root.showSetupBackups
-        // Material Design md-undo (U+F054C); verified present in JetBrainsMono
-        // Nerd Font (finding 83). 5-digit code point -> \u{...} escape.
+        // Labelled action, not an icon-only glyph (finding 88). Material Design
+        // md-undo U+F054C, verified present in JetBrainsMono Nerd Font.
         iconText: "\u{F054C}"
+        text: "Undo setup"
         tooltipText: "Undo setup"
         fontSize: Style.font.caption
         enabled: !root.busy

@@ -5211,5 +5211,43 @@ class Unit15SourceTests(unittest.TestCase):
         self.assertEqual(wizard.count("anchors.verticalCenter: parent.verticalCenter"), 3)
 
 
+class Unit15bSourceTests(unittest.TestCase):
+    """Sixth VM run (findings 87, 88, 85) wiring that QML must keep."""
+
+    def test_header_undo_uses_the_panel_decision(self) -> None:
+        # Finding 87: Panel called setupWizard.headerUndo(), which SetupWizard
+        # never forwarded, so the click threw and nothing appeared. The decision
+        # is now the pure Model.headerUndo over the panel's backups.
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.headerUndo(setupWizard.backups)", panel)
+        self.assertNotIn("setupWizard.headerUndo", panel)
+        # The handler sets the confirm card state, and the overlay opens on it.
+        self.assertIn('root.confirmKind = "setup-undo"', panel)
+        self.assertIn('root.overlayMode = "confirm"', panel)
+        self.assertIn('opened: root.overlayMode !== ""', panel)
+        self.assertIn("onUndoSetupClicked: root.undoSetupFromHeader()", panel)
+        header = (ROOT / "Header.qml").read_text(encoding="utf-8")
+        self.assertIn("onClicked: root.undoSetupClicked()", header)
+        # SetupFlow no longer carries a headerUndo the shell forgot to forward.
+        flow = (ROOT / "SetupFlow.qml").read_text(encoding="utf-8")
+        self.assertNotIn("function headerUndo()", flow)
+
+    def test_header_undo_is_a_labelled_button(self) -> None:
+        # Finding 88: a labelled button, not an icon-only glyph.
+        header = (ROOT / "Header.qml").read_text(encoding="utf-8")
+        self.assertIn('text: "Undo setup"', header)
+        self.assertIn('tooltipText: "Undo setup"', header)
+        self.assertIn('iconText: "\\u{F054C}"', header)
+
+    def test_report_scroll_area_shows_a_cue(self) -> None:
+        # Finding 85: a bottom fade + chevron when more content is below.
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        self.assertIn("ScrollHint {", wizard)
+        self.assertIn("flick: bodyArea", wizard)
+        hint = (ROOT / "ScrollHint.qml").read_text(encoding="utf-8")
+        self.assertIn("contentHeight > root.flick.height", hint)
+        self.assertIn("Gradient {", hint)
+
+
 if __name__ == "__main__":
     unittest.main()

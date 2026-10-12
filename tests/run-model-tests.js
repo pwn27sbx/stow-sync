@@ -2288,3 +2288,25 @@ test("setupAccordionToggle: one group expanded at a time", () => {
   assert.equal(closedB.b, false)
   assert.equal(closedB.c, false)
 })
+
+// --- Unit 15b: header undo decision (87) -----------------------------------
+
+test("headerUndo: one un-undone setup confirms directly", () => {
+  assert.equal(Model.headerUndo(null).direct, false)
+  assert.equal(Model.headerUndo([]).direct, false)
+  assert.equal(Model.headerUndo([{ id: "1", undone: true }]).direct, false)
+  assert.equal(Model.headerUndo([{ id: "1" }, { id: "2", undone: false }]).direct, false)
+  const one = Model.headerUndo([{ id: "9", undone: false, counts: { packages: 17, moved: 16, services: 1 } }])
+  assert.equal(one.direct, true)
+  assert.equal(one.backup, "9")
+  assert.ok(one.sentence.indexOf("17 packages") !== -1)
+  assert.ok(one.sentence.indexOf("16 original files") !== -1)
+  assert.ok(one.sentence.indexOf("1 service") !== -1)
+})
+
+test("setupUndoSentenceFromCounts names the service when present", () => {
+  const s = Model.setupUndoSentenceFromCounts({ packages: 1, moved: 0, services: 2 })
+  assert.ok(s.indexOf("1 package") !== -1)
+  assert.ok(s.indexOf("2 services") !== -1)
+  assert.equal(Model.setupUndoSentenceFromCounts({ packages: 0, moved: 0, services: 0 }).indexOf("service"), -1)
+})
