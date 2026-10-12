@@ -1791,6 +1791,70 @@ class CommitCommandTests(unittest.TestCase):
         self.assertEqual(retry["secrets"], [])
         self.assertEqual(git(self.repo, "log", "-1", "--format=%s").stdout.strip(), "chore: leak")
 
+    # --- Unit 16 (marketplace #11141): fail closed on an incomplete scan -----
+
+    def _commit_count(self) -> str:
+        return git(self.repo, "rev-list", "--count", "HEAD").stdout.strip()
+
+    def _big_file_with_trailing_secret(self) -> None:
+        # > 2 MiB of staged diff, with a secret after the cap.
+        filler = "\n".join("line %d" % i for i in range(400000))
+        write(self.repo / "big.txt", filler + "\nghp_" + "A" * 36 + "\n")
+
+    def test_secret_beyond_the_scan_cap_blocks_the_commit(self) -> None:
+        before = self._commit_count()
+        self._big_file_with_trailing_secret()
+        result = self.run_stdin({"message": "chore: big", "paths": ["big.txt"]})
+        self.assertFalse(result["ok"])
+        self.assertIn("blocked", result["error"].lower())
+        self.assertEqual(self._commit_count(), before)
+
+    def test_allow_secrets_does_not_bypass_an_incomplete_scan(self) -> None:
+        before = self._commit_count()
+        self._big_file_with_trailing_secret()
+        result = self.run_stdin(
+            {"message": "chore: big", "paths": ["big.txt"], "allow_secrets": True}
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("blocked", result["error"].lower())
+        self.assertEqual(self._commit_count(), before)
+
+    def test_failed_diff_blocks_the_commit(self) -> None:
+        write(self.repo / "small.txt", "hello\n")
+        before = self._commit_count()
+        real = ss.run_git
+
+        def fake(repo, argv, *args, **kwargs):
+            if list(argv[:2]) == ["diff", "--cached"]:
+                return subprocess.CompletedProcess(argv, 128, b"", b"fatal: diff failed")
+            return real(repo, argv, *args, **kwargs)
+
+        with patch.object(ss, "run_git", side_effect=fake):
+            result = self.run_stdin({"message": "chore: small", "paths": ["small.txt"]})
+        self.assertFalse(result["ok"])
+        self.assertIn("blocked", result["error"].lower())
+        self.assertEqual(self._commit_count(), before)
+
+    def test_unselected_staged_secret_is_not_committed(self) -> None:
+        # A secret staged outside the selection must not be committed, and the
+        # selection itself must commit normally (Unit 16 scope fix).
+        write(self.repo / "other.txt", "ghp_" + "A" * 36 + "\n")
+        git(self.repo, "add", "other.txt")
+        write(self.repo / "sel.txt", "safe\n")
+        result = self.run_stdin({"message": "chore: sel", "paths": ["sel.txt"]})
+        self.assertTrue(result["ok"], result)
+        committed = git(self.repo, "show", "--stat", "--oneline", "HEAD").stdout
+        self.assertIn("sel.txt", committed)
+        self.assertNotIn("other.txt", committed)
+        staged = git(self.repo, "diff", "--cached", "--name-only").stdout
+        self.assertIn("other.txt", staged)
+
+    def test_small_commit_still_works(self) -> None:
+        write(self.repo / "small.txt", "hello\n")
+        result = self.run_stdin({"message": "chore: small", "paths": ["small.txt"]})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%s").stdout.strip(), "chore: small")
+
 
 # --------------------------------------------------------------------------
 # Unit 3: push and pull

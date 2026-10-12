@@ -828,6 +828,13 @@ def run_bounded(
         thread.join(timeout=5)
     close_pipes()
 
+    # The reader threads run until EOF, so the overflow flag is authoritative
+    # even when the child exited before the poll loop saw it (README Unit 16 /
+    # marketplace #11141): a fast command can exceed the cap and finish in the
+    # same 50 ms window, which used to return a truncated stdout with code 0.
+    if overflow.is_set():
+        truncated = True
+
     returncode = proc.returncode
     out = b"".join(out_chunks)
     err = b"".join(err_chunks)
@@ -2185,8 +2192,23 @@ def cmd_commit(
     if added.returncode != 0:
         raise CommandError(_short_error(added))
     staged = run_git(
-        repo_path, ["diff", "--cached", "-U0"], timeout=20, max_output=_SECRET_DIFF_CAP
+        repo_path,
+        ["diff", "--cached", "-U0", "--", *rel_paths],
+        timeout=20,
+        max_output=_SECRET_DIFF_CAP,
     )
+    if staged.returncode != 0:
+        # Fail closed: a failed or truncated diff (the 2 MiB cap) never commits
+        # unscanned changes. allow_secrets only overrides real detections on a
+        # complete scan (README Unit 16 / marketplace #11141).
+        return {
+            "ok": False,
+            "error": (
+                "Staged changes are too large or could not be read for the secret "
+                "check; commit was blocked. Commit them from a terminal after "
+                "checking them."
+            ),
+        }
     secrets = scan_secrets(_decode(staged.stdout))
     if secrets and not payload.get("allow_secrets"):
         return {
@@ -2194,8 +2216,13 @@ def cmd_commit(
             "error": "Secret detected in staged changes; commit blocked.",
             "secrets": secrets,
         }
+    # Commit exactly the scanned paths, so nothing staged outside the selection
+    # is committed unscanned (#11141).
     committed = run_git(
-        repo_path, ["commit", "-F", "-"], timeout=30, stdin=message.rstrip("\n") + "\n"
+        repo_path,
+        ["commit", "--only", "-F", "-", "--", *rel_paths],
+        timeout=30,
+        stdin=message.rstrip("\n") + "\n",
     )
     if committed.returncode != 0:
         raise CommandError(_short_error(committed))
