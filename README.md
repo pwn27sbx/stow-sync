@@ -298,6 +298,50 @@ anything.
   inspection commands, and a bounded, killable process group, so a hung command
   can never freeze the bar.
 
+## Data and privacy
+
+Stow Sync is a local helper: it talks only to your own repositories and your
+own machine. It has no account, no telemetry and no analytics, and no network
+code of its own — the only network traffic is `git fetch`/`clone`/`push`/`pull`
+and, when you use the wizard, `gh`.
+
+- **What it reads.** Your repositories read-only (`git status`, `git log`,
+  `stow -n` dry runs), `~/.config/stow-sync/config.json`, the optional setup
+  recipe `.stow-sync/setup.json` inside a repo, and its own state directory
+  `~/.local/state/stow-sync/`. Every read is size-capped and opened with
+  `O_NOFOLLOW`; the opened inode itself is checked to be a regular file owned
+  by you, so a planted symlink, a foreign-owned file or an oversized file is
+  refused instead of read.
+- **What it writes.** Only your config (created once, never overwritten) and the
+  plugin's own state directory (`baseline.json`, `publish.json`, `notify.json`,
+  `setup-plan.json`, `setup-progress.json`, `setup-backups/`). Every write is
+  atomic: an exclusive `0600` temp file inside the target directory, `fsync`,
+  then `os.replace`; the state directory is `0700`. The plugin never writes to a
+  repository or to a tracked config unless you press a mutating action.
+- **Processes.** Every external command runs as a fixed argument vector, never
+  through a shell, with a hard timeout and a bounded, killable process group.
+  Git runs with terminal prompts disabled, `GIT_ASKPASS=true` and
+  `ssh -oBatchMode=yes`; `gh` runs with prompts disabled. Commit messages and
+  other payloads go on **stdin**, never in `argv`, and a repository URL that
+  embeds a credential is rejected before it reaches `git`.
+- **Secrets.** Nothing sensitive is logged or stored. The pre-commit secret scan
+  reports only the file, line and rule, never the matched value, and
+  credential-bearing URLs are stripped from every diagnostic string.
+  Authentication is delegated entirely to your existing Git/`gh` configuration.
+- **The setup wizard.** It runs only when you turn it on, changes nothing until
+  you review the plan and confirm, backs up every file it replaces (with an
+  on-disk manifest) and can undo the whole apply. Every post step's `argv[0]`
+  must resolve inside `$HOME`, and post commands run as a fixed vector, never a
+  shell string.
+
+### Dependencies
+
+Shipped with Omarchy: `python3` and `git`. GNU Stow (`stow`) is required to read
+and change Stow state and is installed by the [New machine](#new-machine) guide.
+`github-cli` (`gh`) is optional and only needed when the wizard has to clone a
+private repository. `notify-send` is optional and only used when
+`notify_after_hours` is greater than zero.
+
 ## Notifications
 
 Set `notify_after_hours` to a value greater than zero to be reminded when a
