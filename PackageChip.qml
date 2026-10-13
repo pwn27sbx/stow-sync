@@ -36,7 +36,11 @@ BorderSurface {
 
   RowLayout {
     id: row
-    anchors.centerIn: parent
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.verticalCenter: parent.verticalCenter
+    anchors.leftMargin: Style.spacing.xxl
+    anchors.rightMargin: Style.spacing.xxl
     spacing: Style.spacing.sm
 
     Text {
@@ -49,6 +53,7 @@ BorderSurface {
     }
 
     Text {
+      Layout.fillWidth: true
       Layout.alignment: Qt.AlignVCenter
       textFormat: Text.PlainText
       text: String(root.chip.name || "")
@@ -56,10 +61,11 @@ BorderSurface {
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall
       font.bold: true
+      elide: Text.ElideRight
     }
 
     Text {
-      Layout.alignment: Qt.AlignVCenter
+      Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
       textFormat: Text.PlainText
       text: String(root.chip.count === undefined ? 0 : root.chip.count)
       color: Util.alpha(root.foreground, 0.72)

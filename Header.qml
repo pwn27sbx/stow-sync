@@ -166,7 +166,9 @@ Item {
 
       RowLayout {
         id: messageRow
-        width: parent.width
+        x: parent.contentLeftInset
+        y: parent.contentTopInset
+        width: parent.width - parent.contentLeftInset - parent.contentRightInset
         spacing: Style.spacing.lg
         Text {
           Layout.alignment: Qt.AlignVCenter

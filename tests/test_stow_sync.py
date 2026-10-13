@@ -5461,11 +5461,13 @@ class Unit17aSourceTests(unittest.TestCase):
         self.assertIn('expanded: root.groupExpanded("repo:" + modelData.key)', section)
         self.assertIn('onToggled: root.toggleGroup("repo:" + modelData.key)', section)
 
-    def test_changes_tab_reserves_the_scrollbar_gutter(self) -> None:
-        # Finding 97: the Changes body ends before the scrollbar gutter.
+    def test_changes_tab_body_ends_on_the_tab_edge(self) -> None:
+        # Findings 97/102: the body ends on the tab bar's right edge (the Unit 17
+        # gutter is gone); the scrollbar lives in the panel inset.
         section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
-        self.assertIn("id: changesBody", section)
-        self.assertIn("width: root.width - Style.space(12)", section)
+        body = section[section.index("id: changesBody") :][:400]
+        self.assertIn("width: root.width", body)
+        self.assertNotIn("Style.space(12)", body)
 
     def test_publish_message_field_is_not_clipped(self) -> None:
         # Finding 98: the card height reserves the content insets and the gap
@@ -5508,6 +5510,39 @@ class Unit17ChangesPolishTests(unittest.TestCase):
     def test_untracked_card_has_standard_padding(self) -> None:
         section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
         self.assertIn("implicitHeight: toggleRow.implicitHeight + Style.spacing.xxl * 2", section)
+
+
+class Unit17cSourceTests(unittest.TestCase):
+    """Finding 101: BorderSurface.padding does not inset children by itself."""
+
+    def test_toggle_card_positions_its_row_with_the_content_insets(self) -> None:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        window = section[section.index("implicitHeight: toggleRow.implicitHeight") :][:420]
+        self.assertIn("x: parent.contentLeftInset", window)
+        self.assertIn("y: parent.contentTopInset", window)
+        self.assertIn(
+            "width: parent.width - parent.contentLeftInset - parent.contentRightInset",
+            window,
+        )
+
+    def test_header_banner_positions_its_row_with_the_content_insets(self) -> None:
+        header = (ROOT / "Header.qml").read_text(encoding="utf-8")
+        window = header[header.index("id: messageRow") :][:320]
+        self.assertIn("x: parent.contentLeftInset", window)
+        self.assertIn("y: parent.contentTopInset", window)
+        self.assertIn(
+            "width: parent.width - parent.contentLeftInset - parent.contentRightInset",
+            window,
+        )
+
+    def test_package_chips_are_a_uniform_grid(self) -> None:
+        # Finding 103: equal columns stretched to the width, not a ragged Flow.
+        grid = (ROOT / "PackageGrid.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.packageGrid(root.packages", grid)
+        self.assertIn("width: root.gridLayout.chipWidth", grid)
+        chip = (ROOT / "PackageChip.qml").read_text(encoding="utf-8")
+        self.assertIn("Layout.fillWidth: true", chip)
+        self.assertIn("anchors.right: parent.right", chip)
 
 
 if __name__ == "__main__":

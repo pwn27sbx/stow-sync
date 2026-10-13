@@ -46,6 +46,13 @@ Item {
     return null
   }
 
+  // Uniform chip grid (finding 103): equal columns that fill the width.
+  readonly property var gridLayout: Model.packageGrid(root.packages, {
+    width: root.width,
+    minChipWidth: Style.space(150),
+    gap: Style.spacing.sm
+  })
+
   implicitHeight: column.implicitHeight
 
   Column {
@@ -53,21 +60,32 @@ Item {
     width: parent.width
     spacing: Style.spacing.lg
 
-    Flow {
+    Column {
       width: parent.width
-      spacing: Style.spacing.sm
+      spacing: root.gridLayout.gap
 
       Repeater {
-        model: root.packages
+        model: root.gridLayout.rows
 
-        PackageChip {
+        Row {
           required property var modelData
-          card: modelData
-          state: Model.packageChipState(modelData)
-          expanded: root.keyOf(modelData) === root.expandedKey
-          motion: root.motion
-          foreground: root.foreground
-          onToggled: root.expandRequested(root.keyOf(modelData))
+          width: parent.width
+          spacing: root.gridLayout.gap
+
+          Repeater {
+            model: modelData
+
+            PackageChip {
+              required property var modelData
+              width: root.gridLayout.chipWidth
+              card: modelData
+              state: Model.packageChipState(modelData)
+              expanded: root.keyOf(modelData) === root.expandedKey
+              motion: root.motion
+              foreground: root.foreground
+              onToggled: root.expandRequested(root.keyOf(modelData))
+            }
+          }
         }
       }
     }

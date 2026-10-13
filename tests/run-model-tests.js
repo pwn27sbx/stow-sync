@@ -2499,3 +2499,19 @@ test("anyChecked: true while any change row is still checked (100)", () => {
   assert.equal(Model.anyChecked([], {}), false)
   assert.equal(Model.anyChecked(null, null), false)
 })
+
+// --- Unit 17c: Packages grid columns (103) ---------------------------------
+
+test("packageGrid: uniform columns fill the width (103)", () => {
+  const pkgs = [1, 2, 3, 4, 5, 6, 7].map(function(i) { return { name: "p" + i } })
+  const g = Model.packageGrid(pkgs, { width: 478, minChipWidth: 150, gap: 8 })
+  assert.equal(g.cols, 3)
+  assert.equal(g.chipWidth, (478 - 2 * 8) / 3)
+  assert.equal(g.rows.length, 3)
+  assert.equal(g.rows[0].length, 3)
+  assert.equal(g.rows[2].length, 1)
+  assert.equal(g.gap, 8)
+  assert.equal(Model.packageGrid(pkgs, { width: 100, minChipWidth: 150, gap: 8 }).cols, 1)
+  assert.equal(Model.packageGrid([], { width: 478 }).rows.length, 0)
+  assert.equal(Model.packageGrid(null, {}).cols, 1)
+})

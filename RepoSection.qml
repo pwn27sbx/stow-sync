@@ -180,9 +180,8 @@ Column {
   // ---- Changes ----------------------------------------------------------
   Column {
     id: changesBody
-    // Reserve the scrollbar gutter so no row, toggle or count sits under it
-    // (finding 97), like the Overview body.
-    width: root.width - Style.space(12)
+    // Ends on the tab bar's right edge like the other tabs (findings 97/102).
+    width: root.width
     visible: root.tab === 1
     spacing: Style.spacing.xxl
     Text {
@@ -211,7 +210,8 @@ Column {
       padding: Style.spacing.xxl
       RowLayout {
         id: toggleRow
-        width: parent.width
+        x: parent.contentLeftInset; y: parent.contentTopInset
+        width: parent.width - parent.contentLeftInset - parent.contentRightInset
         spacing: Style.spacing.lg
         ColumnLayout {
           Layout.fillWidth: true

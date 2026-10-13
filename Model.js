@@ -2905,6 +2905,23 @@ function anyChecked(rows, checked) {
   return false
 }
 
+// Uniform grid layout for the Packages tab (README Unit 17c/finding 103):
+// columns = floor((width + gap) / (minChip + gap)) and every chip is stretched
+// to the column width, so a full row ends exactly on the tab edge instead of a
+// ragged Flow.
+function packageGrid(packages, opts) {
+  var list = packages || []
+  var o = opts || {}
+  var width = num(o.width, 0)
+  var minChip = num(o.minChipWidth, 120)
+  var gap = num(o.gap, 8)
+  var cols = width > 0 ? Math.max(1, Math.floor((width + gap) / (minChip + gap))) : 1
+  var chipWidth = width > 0 ? (width - (cols - 1) * gap) / cols : minChip
+  var rows = []
+  for (var i = 0; i < list.length; i += cols) rows.push(list.slice(i, i + cols))
+  return { cols: cols, chipWidth: chipWidth, gap: gap, rows: rows }
+}
+
 // Move the cursor by `dy` rows and return the new focused key.
 function nextCursor(rows, focusedKey, dy) {
   if (!rows || rows.length === 0) return focusedKey
