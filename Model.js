@@ -2892,6 +2892,19 @@ function toggleHiddenPath(hiddenPaths, row) {
   return { paths: next, removed: removed }
 }
 
+// True when at least one change row is still checked (finding 100): Publish
+// selected is disabled when nothing is selected. Follows isChecked semantics
+// (an explicit false hides a row).
+function anyChecked(rows, checked) {
+  var list = rows || []
+  var map = checked || {}
+  for (var i = 0; i < list.length; i++) {
+    var key = String((list[i] || {}).key || "")
+    if (map[key] !== false) return true
+  }
+  return false
+}
+
 // Move the cursor by `dy` rows and return the new focused key.
 function nextCursor(rows, focusedKey, dy) {
   if (!rows || rows.length === 0) return focusedKey

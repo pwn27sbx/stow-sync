@@ -32,6 +32,7 @@ Column {
   readonly property int hiddenCount: root.hiddenPaths.length
   readonly property var firstUnhealthy: Model.firstUnhealthy(root.statusData)
   readonly property var overview: Model.overviewState(root.statusData, { notSetUp: root.notSetUp, setupNeeded: root.setupNeeded }) // finding 76
+  readonly property bool anySelected: Model.anyChecked(root.changeView.rows, root.checkedPaths)
   function groupExpanded(key) { return root.expandedKey === String(key) }
   function expandGroup(key) { root.expandedKey = String(key) }
   function toggleGroup(key) { root.expandedKey = Model.accordionKey(root.expandedKey, String(key)) }
@@ -185,37 +186,36 @@ Column {
     visible: root.tab === 1
     spacing: Style.spacing.xxl
     Text {
-      width: parent.width
-      textFormat: Text.PlainText
-      text: Model.explain(root.statusData, { notSetUp: root.notSetUp })
-      color: Util.alpha(root.foreground, 0.72)
-      font.family: Style.font.family
-      font.pixelSize: Style.font.bodySmall
-      wrapMode: Text.WordWrap
+      width: parent.width; textFormat: Text.PlainText; text: Model.explain(root.statusData, { notSetUp: root.notSetUp })
+      color: Util.alpha(root.foreground, 0.72); font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
     }
     Row {
       width: parent.width
       spacing: Style.spacing.lg
-      Button { text: "Select all"; fontSize: Style.font.caption; onClicked: root.selectAllRequested() }
-      Button { text: "Select repo \u25b8"; fontSize: Style.font.caption; onClicked: root.selectRepoRequested() }
-      Button { text: "Clear"; fontSize: Style.font.caption; onClicked: root.clearSelectionRequested() }
+      Button { text: "Select all"; bordered: true; fontSize: Style.font.caption; onClicked: root.selectAllRequested() }
+      Button { text: "Select repo \u25b8"; bordered: true; fontSize: Style.font.caption; onClicked: root.selectRepoRequested() }
+      Button { text: "Clear"; bordered: true; fontSize: Style.font.caption; onClicked: root.clearSelectionRequested() }
       Button { text: "Hidden (" + root.hiddenCount + ")"; iconText: "\uf070"; fontSize: Style.font.caption; bordered: true; onClicked: root.showHiddenToggled() }
     }
-    Button { text: "Publish selected"; iconText: "\uf0ee"; fontSize: Style.font.caption; enabled: !root.busy; onClicked: root.publishRequested() }
+    Button {
+      text: "Publish selected"; iconText: "\uf0ee"; background: Color.accent; foreground: Color.background; horizontalPadding: Style.space(16); fontSize: Style.font.caption
+      enabled: root.anySelected && !root.busy
+      onClicked: root.publishRequested()
+    }
     BorderSurface {
       width: parent.width
-      implicitHeight: toggleRow.implicitHeight + Style.spacing.lg * 2
+      implicitHeight: toggleRow.implicitHeight + Style.spacing.xxl * 2
       color: Util.alpha(Color.foreground, 0.04)
       borderSpec: Border.none()
       radius: Style.cornerRadius
-      padding: Style.spacing.lg
+      padding: Style.spacing.xxl
       RowLayout {
         id: toggleRow
         width: parent.width
         spacing: Style.spacing.lg
         ColumnLayout {
           Layout.fillWidth: true
-          spacing: 0
+          spacing: Style.spacing.xxs
           Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Show existing untracked files"; color: Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
           Text {
             Layout.fillWidth: true

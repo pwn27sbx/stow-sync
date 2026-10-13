@@ -2488,3 +2488,14 @@ test("credentials are flagged and kept out of the new-config count (94)", () => 
     { path: "~/.config/new.conf", credential: false, known: false }
   ]).path, "~/.config/new.conf")
 })
+
+// --- Unit 17b: Publish selected disabled state (100) -----------------------
+
+test("anyChecked: true while any change row is still checked (100)", () => {
+  const rows = [{ key: "a" }, { key: "b" }]
+  assert.equal(Model.anyChecked(rows, {}), true)
+  assert.equal(Model.anyChecked(rows, { a: false }), true)
+  assert.equal(Model.anyChecked(rows, { a: false, b: false }), false)
+  assert.equal(Model.anyChecked([], {}), false)
+  assert.equal(Model.anyChecked(null, null), false)
+})

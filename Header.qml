@@ -154,9 +154,13 @@ Item {
     BorderSurface {
       Layout.fillWidth: true
       visible: root.message !== ""
-      implicitHeight: messageRow.implicitHeight + Style.spacing.lg
-      color: Util.alpha(root.isError ? Color.urgent : Color.accent, 0.10)
-      borderSpec: Border.controlSpec(root.isError ? "selected" : "normal", root.isError ? Color.urgent : Color.accent, Color.accent)
+      // Full padding on both sides (finding 99): the old height added one side
+      // only, which clipped the row.
+      implicitHeight: messageRow.implicitHeight + Style.spacing.lg * 2
+      // Success uses the neutral foreground tone (the theme has no dedicated
+      // success token); errors keep the danger tone (finding 99).
+      color: Util.alpha(root.isError ? Color.urgent : Color.foreground, 0.08)
+      borderSpec: Border.controlSpec(root.isError ? "selected" : "normal", root.isError ? Color.urgent : Util.alpha(root.foreground, 0.18), Color.accent)
       radius: Style.cornerRadius
       padding: Style.spacing.lg
 
@@ -165,10 +169,18 @@ Item {
         width: parent.width
         spacing: Style.spacing.lg
         Text {
+          Layout.alignment: Qt.AlignVCenter
+          textFormat: Text.PlainText
+          text: root.isError ? "\uf00d" : "\uf00c"
+          color: root.isError ? Color.urgent : root.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
           Layout.fillWidth: true
           textFormat: Text.PlainText
           text: root.message
-          color: root.isError ? Color.urgent : Color.accent
+          color: root.isError ? Color.urgent : root.foreground
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
           wrapMode: Text.WordWrap

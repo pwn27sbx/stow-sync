@@ -5486,5 +5486,29 @@ class Unit17bSourceTests(unittest.TestCase):
         self.assertIn("if (!root.credential) root.adoptRequested()", row)
 
 
+class Unit17ChangesPolishTests(unittest.TestCase):
+    """Findings 99-101: Result banner, Publish selected button, untracked card."""
+
+    def test_result_banner_is_a_padded_status_line(self) -> None:
+        header = (ROOT / "Header.qml").read_text(encoding="utf-8")
+        # Full padding on both sides (was + one side, so it clipped).
+        self.assertIn("messageRow.implicitHeight + Style.spacing.lg * 2", header)
+        # An icon marks success vs error.
+        self.assertIn('text: root.isError ? "\\uf00d" : "\\uf00c"', header)
+        # Success uses the neutral foreground tone, not the accent orange.
+        self.assertIn("Util.alpha(root.isError ? Color.urgent : Color.foreground, 0.08)", header)
+
+    def test_publish_selected_reads_as_a_button(self) -> None:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.anyChecked(root.changeView.rows, root.checkedPaths)", section)
+        window = section[section.index('text: "Publish selected"') :][:300]
+        self.assertIn("background: Color.accent", window)
+        self.assertIn("enabled: root.anySelected", window)
+
+    def test_untracked_card_has_standard_padding(self) -> None:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("implicitHeight: toggleRow.implicitHeight + Style.spacing.xxl * 2", section)
+
+
 if __name__ == "__main__":
     unittest.main()
