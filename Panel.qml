@@ -21,7 +21,7 @@ Panel {
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
   readonly property string scriptPath: String(Qt.resolvedUrl("scripts/stow_sync.py")).replace(/^file:\/\//, "")
-  readonly property string version: "0.1.0"
+  readonly property string version: "0.2.0"
   readonly property string configPath: String(root.setting("configPath", "")) !== "" ? String(root.setting("configPath", "")) : (Quickshell.env("HOME") + "/.config/stow-sync/config.json")
   property var statusData: null; property int activeTab: 0; property var checkedPaths: ({}); property var hiddenPaths: []
   property bool showHidden: false; property bool showExisting: false; property string focusedKey: ""; property int repoCycleIndex: 0

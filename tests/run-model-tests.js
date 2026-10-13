@@ -1052,7 +1052,7 @@ test("repoInfoRows renders the info table with relative times", () => {
     ahead: 0, behind: 0, head_time: "2026-10-09T15:00:00-05:00",
     last_publish: "2026-10-08T15:00:00-05:00", stowed_packages: 16
   }
-  const rows = Model.repoInfoRows(repo, "0.1.0", "2026-10-09T18:00:00-05:00")
+  const rows = Model.repoInfoRows(repo, "0.2.0", "2026-10-09T18:00:00-05:00")
   same(rows.map((r) => r.label), [
     "Repo", "Remote", "Branch", "Sync", "Last commit", "Last publish", "Packages", "Plugin"
   ])
@@ -1064,7 +1064,7 @@ test("repoInfoRows renders the info table with relative times", () => {
   assert.equal(rows[4].value, "3h ago")
   assert.equal(rows[5].value, "1d ago")
   assert.equal(rows[6].value, "16 packages")
-  assert.equal(rows[7].value, "stow-sync 0.1.0")
+  assert.equal(rows[7].value, "stow-sync 0.2.0")
 })
 
 test("repoInfoRows shows never for an unknown last publish", () => {
@@ -1072,7 +1072,7 @@ test("repoInfoRows shows never for an unknown last publish", () => {
     path: "~/x", branch: "main", head: "abc", ahead: 0, behind: 0,
     head_time: "2026-10-09T15:00:00Z", last_publish: null, stowed_packages: 1
   }
-  const rows = Model.repoInfoRows(repo, "0.1.0", "2026-10-09T18:00:00Z")
+  const rows = Model.repoInfoRows(repo, "0.2.0", "2026-10-09T18:00:00Z")
   assert.equal(rows[5].label, "Last publish")
   assert.equal(rows[5].value, "never")
 })
@@ -1096,9 +1096,9 @@ test("pluralCount pluralizes 0, 1, 2 and keeps irregular forms", () => {
 })
 
 test("repoInfoRows pluralizes the stowed package count", () => {
-  const one = Model.repoInfoRows({ path: "~/x", stowed_packages: 1 }, "0.1.0")
+  const one = Model.repoInfoRows({ path: "~/x", stowed_packages: 1 }, "0.2.0")
   assert.equal(one.find((r) => r.label === "Packages").value, "1 package")
-  const many = Model.repoInfoRows({ path: "~/x", stowed_packages: 16 }, "0.1.0")
+  const many = Model.repoInfoRows({ path: "~/x", stowed_packages: 16 }, "0.2.0")
   assert.equal(many.find((r) => r.label === "Packages").value, "16 packages")
 })
 

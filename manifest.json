@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "pwnsxb.stow-sync",
   "name": "Stow Sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "pwnsxb",
   "license": "MIT",
   "description": "For GNU Stow dotfiles repos: shows whether they are committed, pushed and linked, and sets up a new machine from them.",

@@ -1515,7 +1515,7 @@ class CliTests(unittest.TestCase):
     def test_version_prints_json_and_exits_zero(self) -> None:
         code, out = self.run_main(["version"])
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out), {"ok": True, "version": "0.1.0"})
+        self.assertEqual(json.loads(out), {"ok": True, "version": "0.2.0"})
 
     def test_unknown_command_exits_one(self) -> None:
         code, out = self.run_main(["bogus"])

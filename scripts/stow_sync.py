@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # Per-stream output cap for a child process; the response as a whole is capped
 # at 2 MB by the writer.
