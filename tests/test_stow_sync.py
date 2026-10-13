@@ -5409,5 +5409,30 @@ class Unit15fSourceTests(unittest.TestCase):
         )
 
 
+class Unit17aSourceTests(unittest.TestCase):
+    """Findings 96-98: Changes tab expansion + gutter, Publish message field."""
+
+    def test_changes_group_expands_without_a_missing_helper(self) -> None:
+        # Finding 96: togglePackage still called the removed setKey helper, so
+        # the click threw and the Changes group never expanded.
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertNotIn("setKey", section)
+        self.assertIn('expanded: root.groupExpanded("repo:" + modelData.key)', section)
+        self.assertIn('onToggled: root.toggleGroup("repo:" + modelData.key)', section)
+
+    def test_changes_tab_reserves_the_scrollbar_gutter(self) -> None:
+        # Finding 97: the Changes body ends before the scrollbar gutter.
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("id: changesBody", section)
+        self.assertIn("width: root.width - Style.space(12)", section)
+
+    def test_publish_message_field_is_not_clipped(self) -> None:
+        # Finding 98: the card height reserves the content insets and the gap
+        # above the buttons, so the message field is never cut off.
+        card = (ROOT / "ConfirmCard.qml").read_text(encoding="utf-8")
+        self.assertIn("card.contentTopInset + card.contentBottomInset", card)
+        self.assertNotIn("buttonRow.implicitHeight + Style.space(28)", card)
+
+
 if __name__ == "__main__":
     unittest.main()

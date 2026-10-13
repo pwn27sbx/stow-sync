@@ -19,7 +19,6 @@ Column {
   signal copyRequested(string value); signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
   signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested(); signal changeToggled(string key, bool value); signal changeHovered(string key)
   signal diffRequested(string repo, string path); signal undoSetupRequested()
-  property var expandedPackages: ({})
   property string packageKey: ""
   // One accordion key for the Overview (finding 84): a repo lane uses
   // "repo:<path>", a group card uses its key; opening one closes the other.
@@ -38,8 +37,6 @@ Column {
   function toggleGroup(key) { root.expandedKey = Model.accordionKey(root.expandedKey, String(key)) }
   function repoExpanded(path, index) { return root.expandedKey === "" ? index === 0 : root.expandedKey === ("repo:" + String(path)) }
   function toggleRepo(path) { root.expandedKey = Model.accordionKey(root.expandedKey, "repo:" + String(path)) }
-  function packageExpanded(key) { return root.expandedPackages[key] === true }
-  function togglePackage(key) { root.expandedPackages = root.setKey(root.expandedPackages, key, !root.packageExpanded(key)) }
   function togglePackageChip(key) { root.packageKey = root.packageKey === key ? "" : key }
   function isChecked(key) { return root.checkedPaths[key] !== false }
   width: parent ? parent.width : 0
@@ -181,7 +178,9 @@ Column {
   // ---- Changes ----------------------------------------------------------
   Column {
     id: changesBody
-    width: root.width
+    // Reserve the scrollbar gutter so no row, toggle or count sits under it
+    // (finding 97), like the Overview body.
+    width: root.width - Style.space(12)
     visible: root.tab === 1
     spacing: Style.spacing.xxl
     Text {
@@ -239,9 +238,9 @@ Column {
         subtitle: modelData.subtitle
         count: String(modelData.count)
         unit: modelData.unit
-        expanded: root.packageExpanded("repo:" + modelData.key)
+        expanded: root.groupExpanded("repo:" + modelData.key)
         motion: root.motion
-        onToggled: root.togglePackage("repo:" + modelData.key)
+        onToggled: root.toggleGroup("repo:" + modelData.key)
         Repeater {
           model: modelData.packages
           Column {
