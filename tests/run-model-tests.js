@@ -2463,3 +2463,28 @@ test("setupBackupsRows flags an empty backup", () => {
   assert.equal(rows[0].empty, true)
   assert.equal(rows[1].empty, false)
 })
+
+// --- Unit 17 Group B: candidate suggestions and credentials (94) -----------
+
+test("candidateSuggestion: new package when there is no real match (94)", () => {
+  assert.equal(Model.candidateSuggestion({ suggested_package: "ai-tools" }), "ai-tools")
+  assert.equal(Model.candidateSuggestion({ suggested_package: "" }), "new package")
+  assert.equal(Model.candidateSuggestion({ credential: true, suggested_package: "x" }), "")
+  assert.equal(Model.candidateSuggestion(null), "new package")
+})
+
+test("credentials are flagged and kept out of the new-config count (94)", () => {
+  const rows = Model.candidateTabRows({ candidates: [
+    { path: "~/.config/gh", group: "other", credential: true, known: false, suggested_package: "" },
+    { path: "~/.config/new.conf", group: "other", credential: false, known: false, suggested_package: "" }
+  ] }, {})
+  const cred = rows.rows.filter(function(r) { return r.path === "~/.config/gh" })[0]
+  assert.equal(cred.credential, true)
+  assert.equal(Model.newCandidateCount({ candidates: [
+    { credential: true, known: false }, { credential: false, known: false }
+  ] }), 1)
+  assert.equal(Model.firstNewCandidate([
+    { path: "~/.config/gh", credential: true, known: false },
+    { path: "~/.config/new.conf", credential: false, known: false }
+  ]).path, "~/.config/new.conf")
+})

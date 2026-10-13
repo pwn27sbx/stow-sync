@@ -164,7 +164,8 @@ Column {
               width: parent.width
               visible: modelData.type === "candidate"
               row: modelData
-              packageName: Model.packageFor({ key: modelData.path, suggestedPackage: modelData.package, path: modelData.path }, {})
+              credential: modelData.credential === true
+              packageName: Model.candidateSuggestion({ suggested_package: modelData.package, credential: modelData.credential })
               foreground: root.foreground
               onAdoptRequested: root.adoptRequested(modelData)
               onIgnoreRequested: root.ignoreRequested(modelData)

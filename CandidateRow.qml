@@ -12,6 +12,7 @@ Item {
 
   property var row: null
   property bool focused: false
+  property bool credential: false
   property string packageName: ""
   property color foreground: Color.foreground
 
@@ -34,9 +35,9 @@ Item {
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
+      cursorShape: root.credential ? Qt.ArrowCursor : Qt.PointingHandCursor
       onEntered: root.hovered()
-      onClicked: root.adoptRequested()
+      onClicked: if (!root.credential) root.adoptRequested()
     }
 
     RowLayout {
@@ -53,7 +54,7 @@ Item {
         Layout.preferredWidth: Style.space(8)
         Layout.preferredHeight: Style.space(8)
         radius: width / 2
-        color: Color.accent
+        color: root.credential ? Util.alpha(root.foreground, 0.5) : Color.accent
       }
 
       ColumnLayout {
@@ -73,7 +74,9 @@ Item {
         Text {
           Layout.fillWidth: true
           textFormat: Text.PlainText
-          text: String(root.candidate.group || "watched") + "  \u00b7  package: " + root.packageName
+          text: root.credential
+            ? (String(root.candidate.group || "watched") + "  \u00b7  contains credentials")
+            : (String(root.candidate.group || "watched") + "  \u00b7  package: " + root.packageName)
           color: Util.alpha(root.foreground, 0.8)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
@@ -83,6 +86,7 @@ Item {
 
       Button {
         Layout.alignment: Qt.AlignVCenter
+        visible: !root.credential
         text: "Adopt"
         fontSize: Style.font.caption
         horizontalPadding: Style.spacing.sm

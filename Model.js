@@ -295,6 +295,7 @@ function candidateRow(candidate, index) {
     group: String(c.group || "watched"),
     known: known,
     suggestedPackage: String(c.suggested_package || ""),
+    credential: c.credential === true,
     size: num(c.size, 0),
     sizeText: formatSize(c.size),
     itemType: String(c.type || "file"),
@@ -715,11 +716,16 @@ function overviewState(data, opts) {
   }
 }
 
-// Candidates the owner has not acknowledged yet (the "New configs" list).
+// How many candidates the owner has not acknowledged yet, excluding credential
+// stores (they never count toward the badge).
 function newCandidateCount(data) {
   var candidates = (data && data.candidates) || []
   var count = 0
-  for (var i = 0; i < candidates.length; i++) if (!candidates[i] || candidates[i].known !== true) count++
+  for (var i = 0; i < candidates.length; i++) {
+    var c = candidates[i]
+    if (!c || c.credential === true) continue
+    if (c.known !== true) count++
+  }
   return count
 }
 
@@ -730,10 +736,21 @@ function firstNewCandidate(candidates) {
   var fallback = null
   for (var i = 0; i < list.length; i++) {
     if (!list[i]) continue
+    if (list[i].credential === true) continue // never adopt a credential store
     if (list[i].known !== true) return list[i]
     if (fallback === null) fallback = list[i]
   }
   return fallback
+}
+
+// The package label shown on a candidate row: the real suggestion, or
+// "new package" when the backend found no match (finding 94). Credential stores
+// show nothing here (the row says "contains credentials" instead).
+function candidateSuggestion(candidate) {
+  var c = candidate || {}
+  if (c.credential === true) return ""
+  var s = String(c.suggested_package || "")
+  return s !== "" ? s : "new package"
 }
 
 // "https://github.com/pwn27sbx/dotfiles.git" -> "pwn27sbx/dotfiles" and
@@ -1466,7 +1483,8 @@ function overviewGroups(data) {
       type: "candidate",
       path: String((candidates[f] && candidates[f].path) || ""),
       package: String((candidates[f] && candidates[f].suggested_package) || ""),
-      group: String((candidates[f] && candidates[f].group) || "watched")
+      group: String((candidates[f] && candidates[f].group) || "watched"),
+      credential: !!(candidates[f] && candidates[f].credential)
     })
   }
   if (newConfigs.length > 0) {

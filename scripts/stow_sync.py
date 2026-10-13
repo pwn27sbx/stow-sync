@@ -1605,39 +1605,65 @@ def _inside_stowed_dir(path: str, repo_reals: list[str]) -> bool:
     return False
 
 
-def suggest_package(path: str, repo_reals: list[str]) -> str:
-    """Suggest a package for a candidate (README section 5.3).
+# Credential stores that must never be offered for adoption (finding 94).
+_CREDENTIAL_PATHS = (
+    ".config/gh", ".config/bitwarden", ".config/bitwarden cli",
+    ".config/proton", ".config/nordvpn", ".config/github-copilot",
+    ".config/keyrings", ".local/share/keyrings",
+)
+_CREDENTIAL_TOKENS = ("bitwarden", "proton", "nordvpn", "github-copilot", "token", "secret", "keyring")
 
-    A directory candidate (e.g. ``~/.config/stow-sync``) suggests its own
-    lowercased basename: the sibling rule only helps a regular file that a
-    package already stows next to it, and scanning ``~/.config`` would
-    otherwise hijack every directory with whatever stowed app sorts first
-    (``cava``). A regular file keeps the sibling rule, then falls back to its
-    parent's basename (``user`` -> ``systemd``).
+
+def _is_credential_candidate(path: str) -> bool:
+    """True when ``path`` is a known credential store (README Unit 17/finding 94)."""
+    rel = to_tilde(path).lower()
+    for entry in _CREDENTIAL_PATHS:
+        if rel == "~/" + entry or rel.startswith("~/" + entry + "/"):
+            return True
+    name = os.path.basename(path).lower()
+    return any(token in name for token in _CREDENTIAL_TOKENS)
+
+
+def _is_git_checkout(path: str) -> bool:
+    """True when ``path`` is a directory holding its own ``.git`` (finding 95)."""
+    if not os.path.isdir(path):
+        return False
+    return os.path.lexists(os.path.join(path, ".git"))
+
+
+def suggest_package(path: str, repo_reals: list[str]) -> str:
+    """Suggest a package for a candidate (README section 5.3 / Unit 17 finding 94).
+
+    A directory candidate suggests its own lowercased basename (a new package).
+    A regular file suggests a package only on a **real name match** with a
+    sibling the package already stows; an unrelated stowed sibling (``cava`` in
+    ``~/.config``, ``ai-tools`` in ``~/.local/bin``) yields ``""`` and the UI
+    shows "new package".
     """
     if os.path.isdir(path):
-        base = os.path.basename(path)
-    else:
-        parent = os.path.dirname(path)
-        try:
-            siblings = sorted(os.listdir(parent))
-        except OSError:
-            siblings = []
-        for name in siblings:
-            sibling = os.path.join(parent, name)
-            if sibling == path or not os.path.islink(sibling):
-                continue
-            real = os.path.realpath(sibling)
-            for repo in repo_reals:
-                if _under(real, repo):
-                    segment = os.path.relpath(real, repo).split(os.sep, 1)[0]
-                    if segment and segment != "..":
-                        return segment
-        base = os.path.basename(parent)
-    base = base.lower()
-    if base == "user":
-        return "systemd"
-    return base
+        base = os.path.basename(path).lower()
+        return "systemd" if base == "user" else base
+    parent = os.path.dirname(path)
+    try:
+        siblings = sorted(os.listdir(parent))
+    except OSError:
+        siblings = []
+    base_name = os.path.basename(path).lower()
+    stem = base_name.split(".", 1)[0]
+    for name in siblings:
+        sibling = os.path.join(parent, name)
+        if sibling == path or not os.path.islink(sibling):
+            continue
+        real = os.path.realpath(sibling)
+        for repo in repo_reals:
+            if _under(real, repo):
+                segment = os.path.relpath(real, repo).split(os.sep, 1)[0]
+                if not segment or segment == "..":
+                    continue
+                pkg = segment.lower()
+                if base_name.startswith(pkg) or pkg.startswith(stem):
+                    return segment
+    return ""
 
 
 def is_compiled_binary(path: str) -> bool:
@@ -1682,6 +1708,8 @@ def _build_candidate(
         return None
     if not (os.path.islink(path) or os.path.isfile(path) or os.path.isdir(path)):
         return None  # socket / FIFO / device
+    if _is_git_checkout(path):
+        return None  # an app checkout with its own .git (finding 95)
     if is_compiled_binary(path):
         return None  # compiled executable, never an owner-made config
     if _is_ignored(path, ignore_patterns):
@@ -1693,13 +1721,15 @@ def _build_candidate(
         mtime = os.path.getmtime(path)
     except OSError:
         return None
+    credential = _is_credential_candidate(path)
     return {
         "path": to_tilde(path),
         "type": "dir" if os.path.isdir(path) else "file",
         "size": size,
         "mtime": datetime.fromtimestamp(mtime).astimezone().isoformat(timespec="seconds"),
         "group": group,
-        "suggested_package": suggest_package(path, repo_reals),
+        "suggested_package": "" if credential else suggest_package(path, repo_reals),
+        "credential": credential,
     }
 
 
@@ -1750,12 +1780,17 @@ def compute_candidates(
 
 
 def compute_badge(candidates: list[dict[str, Any]]) -> int:
-    """Badge count: number of candidates that are not in the baseline.
+    """Badge count: candidates not in the baseline and not credential stores.
 
     README section 5.3b item 4: the badge counts only ``known: false``
-    candidates, regardless of group.
+    candidates; credential stores are informational and never badged
+    (README Unit 17/finding 94).
     """
-    return sum(1 for candidate in candidates if not candidate.get("known"))
+    return sum(
+        1
+        for candidate in candidates
+        if not candidate.get("known") and not candidate.get("credential")
+    )
 
 
 

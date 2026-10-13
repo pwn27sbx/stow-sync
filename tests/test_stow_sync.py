@@ -803,6 +803,45 @@ class CandidateTests(unittest.TestCase):
         )
         self.assertEqual([c["path"] for c in candidates], ["~/.config/systemd/user/app.service"])
 
+    def test_git_checkout_directory_is_not_a_candidate(self) -> None:
+        # Finding 95: an app checkout with its own .git is not a new config.
+        write(self.home / ".config" / "app" / ".git" / "HEAD", "ref: refs/heads/main\n")
+        write(self.home / ".config" / "app" / "main.js", "x\n")
+        write(self.home / ".config" / "real.conf", "x\n")
+        candidates = self._candidates(["~/.config/*"])
+        self.assertEqual([c["path"] for c in candidates], ["~/.config/real.conf"])
+
+    def test_suggest_package_only_on_a_real_name_match(self) -> None:
+        # Finding 94: an unrelated stowed sibling must not produce a guess.
+        write(self.repo / "ai-tools" / ".local" / "bin" / "ai-tools-check", "#!/bin/sh\n")
+        write(self.home / ".local" / "bin" / "other-tool", "#!/bin/sh\n")
+        stow_apply(self.repo, self.home, "ai-tools")
+        repos = [{"path": str(self.repo), "target": str(self.home), "packages": ["ai-tools"]}]
+        by_path = {c["path"]: c for c in self._candidates(["~/.local/bin"], repos=repos)}
+        self.assertEqual(by_path["~/.local/bin/other-tool"]["suggested_package"], "")
+        write(self.home / ".local" / "bin" / "ai-tools-extra", "#!/bin/sh\n")
+        by2 = {c["path"]: c for c in self._candidates(["~/.local/bin"], repos=repos)}
+        self.assertEqual(by2["~/.local/bin/ai-tools-extra"]["suggested_package"], "ai-tools")
+
+    def test_directory_candidate_still_suggests_its_basename(self) -> None:
+        write(self.home / ".config" / "stow-sync" / "config.json", "{}\n")
+        by_path = {c["path"]: c for c in self._candidates(["~/.config/*"])}
+        self.assertEqual(by_path["~/.config/stow-sync"]["suggested_package"], "stow-sync")
+
+    def test_credential_paths_are_flagged_and_not_badged(self) -> None:
+        # Finding 94: credential dirs are never suggested for adoption and stay
+        # out of the badge.
+        write(self.home / ".config" / "gh" / "hosts.yml", "x\n")
+        write(self.home / ".config" / "Bitwarden" / "data.json", "x\n")
+        write(self.home / ".config" / "newtool.conf", "x\n")
+        candidates = self._candidates(["~/.config/*"])
+        by_path = {c["path"]: c for c in candidates}
+        self.assertTrue(by_path["~/.config/gh"]["credential"])
+        self.assertEqual(by_path["~/.config/gh"]["suggested_package"], "")
+        self.assertTrue(by_path["~/.config/Bitwarden"]["credential"])
+        self.assertFalse(by_path["~/.config/newtool.conf"]["credential"])
+        self.assertEqual(ss.compute_badge(candidates), 1)
+
     def test_symlink_into_repo_is_not_a_candidate(self) -> None:
         write(self.repo / "ai-tools" / ".config" / "systemd" / "user" / "ai-tools-check.timer", "t\n")
         # real file first so stow links the .timer individually (no tree folding)
@@ -833,22 +872,24 @@ class CandidateTests(unittest.TestCase):
         ]
         self.assertEqual(ss.compute_badge(candidates), 2)
 
-    def test_sibling_package_suggestion_wins(self) -> None:
+    def test_sibling_package_suggestion_requires_a_name_match(self) -> None:
+        # Finding 94: an unrelated stowed sibling no longer produces a guess.
         write(self.repo / "ai-tools" / ".config" / "systemd" / "user" / "ai-tools-check.timer", "t\n")
+        write(self.home / ".config" / "systemd" / "user" / "ai-tools-extra.timer", "x\n")
         write(self.home / ".config" / "systemd" / "user" / "easyeffects.service", "x\n")
         stow_apply(self.repo, self.home, "ai-tools")
-        candidates = self._candidates(
-            ["~/.config/systemd/user"],
-            repos=[{"path": str(self.repo), "target": str(self.home), "packages": ["ai-tools"]}],
-        )
-        self.assertEqual([c["path"] for c in candidates], ["~/.config/systemd/user/easyeffects.service"])
-        self.assertEqual(candidates[0]["suggested_package"], "ai-tools")
+        repos = [{"path": str(self.repo), "target": str(self.home), "packages": ["ai-tools"]}]
+        by_path = {c["path"]: c for c in self._candidates(["~/.config/systemd/user"], repos=repos)}
+        self.assertEqual(by_path["~/.config/systemd/user/ai-tools-extra.timer"]["suggested_package"], "ai-tools")
+        self.assertEqual(by_path["~/.config/systemd/user/easyeffects.service"]["suggested_package"], "")
 
-    def test_suggestion_fallback_user_becomes_systemd(self) -> None:
+    def test_file_without_a_real_match_has_no_suggestion(self) -> None:
+        # Finding 94: otherwise the UI shows "new package", never the parent's
+        # basename.
         write(self.home / ".config" / "systemd" / "user" / "easyeffects.service", "x\n")
         candidates = self._candidates(["~/.config/systemd/user"])
         self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0]["suggested_package"], "systemd")
+        self.assertEqual(candidates[0]["suggested_package"], "")
 
     def test_suggestion_fallback_for_directory_is_basename(self) -> None:
         write(self.home / ".config" / "kitty" / "kitty.conf", "k\n")
@@ -880,7 +921,7 @@ class CandidateTests(unittest.TestCase):
         candidate = candidates[0]
         self.assertEqual(
             set(candidate),
-            {"path", "type", "size", "mtime", "group", "suggested_package", "known"},
+            {"path", "type", "size", "mtime", "group", "suggested_package", "credential", "known"},
         )
         self.assertFalse(candidate["known"])
         self.assertEqual(candidate["size"], len(content.encode("utf-8")))
@@ -5432,6 +5473,17 @@ class Unit17aSourceTests(unittest.TestCase):
         card = (ROOT / "ConfirmCard.qml").read_text(encoding="utf-8")
         self.assertIn("card.contentTopInset + card.contentBottomInset", card)
         self.assertNotIn("buttonRow.implicitHeight + Style.space(28)", card)
+
+
+class Unit17bSourceTests(unittest.TestCase):
+    """Finding 94: credential candidates are never offered for adoption."""
+
+    def test_credential_candidates_hide_adopt(self) -> None:
+        row = (ROOT / "CandidateRow.qml").read_text(encoding="utf-8")
+        self.assertIn("property bool credential", row)
+        self.assertIn("contains credentials", row)
+        self.assertIn("visible: !root.credential", row)
+        self.assertIn("if (!root.credential) root.adoptRequested()", row)
 
 
 if __name__ == "__main__":
