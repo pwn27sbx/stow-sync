@@ -1954,6 +1954,24 @@ class CommitCommandTests(unittest.TestCase):
         self.assertIn("D\tleak.txt", self._show_name_status())
         self.assertEqual(self._clean_status(), "")
 
+    # --- Unit 18: renames commit whole (S2) ---------------------------------
+
+    def test_status_reports_the_original_path_of_a_rename(self) -> None:
+        git(self.repo, "mv", "a.txt", "b.txt")
+        status = ss.dispatch(["status"], str(self.config))
+        self.assertTrue(status["ok"], status)
+        change = next(c for c in status["repos"][0]["changes"] if c["path"] == "b.txt")
+        self.assertEqual(change["orig_path"], "a.txt")
+        self.assertEqual(change["kind"], "renamed")
+
+    def test_publishing_a_rename_commits_both_paths(self) -> None:
+        git(self.repo, "mv", "a.txt", "b.txt")
+        result = self.run_stdin({"message": "chore: rename a", "paths": ["b.txt"]})
+        self.assertTrue(result["ok"], result)
+        shown = git(self.repo, "show", "-M", "--name-status", "--format=", "HEAD").stdout
+        self.assertIn("R100\ta.txt\tb.txt", shown)
+        self.assertEqual(self._clean_status(), "")
+
 
 # --------------------------------------------------------------------------
 # Unit 3: push and pull

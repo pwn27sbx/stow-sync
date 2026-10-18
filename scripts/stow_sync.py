@@ -1033,10 +1033,12 @@ def parse_porcelain_v2(data: bytes) -> dict[str, Any]:
                 continue
             xy = _decode(parts[1])
             path = _decode(parts[9])
+            orig_path = ""
             if index < len(fields):
                 # The original path is a separate NUL field of this record.
+                orig_path = _decode(fields[index])
                 index += 1
-            changes.append(_change(path, xy, _kind_for_xy(xy[0:1], xy[1:2])))
+            changes.append(_change(path, xy, _kind_for_xy(xy[0:1], xy[1:2]), orig_path))
             continue
         if record == b"u":
             parts = field.split(b" ", 10)
@@ -1058,14 +1060,17 @@ def parse_porcelain_v2(data: bytes) -> dict[str, Any]:
     }
 
 
-def _change(path: str, xy: str, kind: str) -> dict[str, str]:
-    return {
+def _change(path: str, xy: str, kind: str, orig_path: str = "") -> dict[str, str]:
+    change = {
         "path": path,
         "package": _package_of(path),
         "x": xy[0:1] or " ",
         "y": xy[1:2] or " ",
         "kind": kind,
     }
+    if orig_path:
+        change["orig_path"] = orig_path
+    return change
 
 
 def _git_dir(repo_path: str) -> str | None:
@@ -2250,6 +2255,34 @@ def _addable_paths(repo_path: str, rel_paths: list[str]) -> list[str]:
     return addable
 
 
+def _rename_paths(repo_path: str, rel_paths: list[str]) -> list[str]:
+    """Selected rename records expanded to their original path.
+
+    ``git commit --only <new>`` records a plain add and leaves the original
+    path's deletion staged, so both paths must reach the scan and the commit
+    for git to record a real rename (README Unit 18 / S2).
+    """
+    try:
+        changes = git_status(repo_path)["changes"]
+    except RuntimeError as exc:
+        raise CommandError(_shorten(str(exc)) or "git status failed")
+    selected = set(rel_paths)
+    seen = set(rel_paths)
+    extras: list[str] = []
+    for change in changes:
+        orig = change.get("orig_path", "")
+        if not orig:
+            continue
+        new_path = change["path"]
+        if new_path not in selected and orig not in selected:
+            continue
+        for path in (new_path, orig):
+            if path not in seen:
+                seen.add(path)
+                extras.append(path)
+    return extras
+
+
 def cmd_commit(
     args: list[str],
     config_path: str | None = None,
@@ -2286,14 +2319,15 @@ def cmd_commit(
             "error": _invalid_selection_error(invalid),
             "invalid_paths": invalid,
         }
-    staged_inputs = _addable_paths(repo_path, rel_paths)
+    commit_paths = rel_paths + _rename_paths(repo_path, rel_paths)
+    staged_inputs = _addable_paths(repo_path, commit_paths)
     if staged_inputs:
         added = run_git(repo_path, ["add", "--", *staged_inputs], timeout=20)
         if added.returncode != 0:
             raise CommandError(_short_error(added))
     staged = run_git(
         repo_path,
-        ["diff", "--cached", "-U0", "--", *rel_paths],
+        ["diff", "--cached", "-U0", "--", *commit_paths],
         timeout=20,
         max_output=_SECRET_DIFF_CAP,
     )
@@ -2320,7 +2354,7 @@ def cmd_commit(
     # is committed unscanned (#11141).
     committed = run_git(
         repo_path,
-        ["commit", "--only", "-F", "-", "--", *rel_paths],
+        ["commit", "--only", "-F", "-", "--", *commit_paths],
         timeout=30,
         stdin=message.rstrip("\n") + "\n",
     )
