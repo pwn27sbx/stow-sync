@@ -5681,5 +5681,26 @@ class Unit17cSourceTests(unittest.TestCase):
         self.assertIn("anchors.right: parent.right", chip)
 
 
+class HiddenButtonHeightTests(unittest.TestCase):
+    """Round 3 / S8: the Hidden button must not outgrow its text-only siblings."""
+
+    def _line_with(self, label: str) -> str:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        start = section.index('text: "' + label)
+        return section[start : section.index("\n", start)]
+
+    def test_hidden_button_icon_cannot_drive_its_height(self) -> None:
+        # Button.implicitHeight is driven by its tallest child Text. The icon
+        # stays, but at the caption size its line box equals the label's.
+        line = self._line_with("Hidden (")
+        self.assertIn('iconText: "\\uf070"', line)
+        self.assertIn("fontSize: Style.font.caption", line)
+        self.assertIn("iconSize: Style.font.caption", line)
+
+    def test_sibling_buttons_keep_their_size(self) -> None:
+        for label in ("Select all", "Select repo", "Clear"):
+            self.assertIn("fontSize: Style.font.caption", self._line_with(label))
+
+
 if __name__ == "__main__":
     unittest.main()

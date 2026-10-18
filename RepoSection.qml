@@ -194,7 +194,7 @@ Column {
       Button { text: "Select all"; bordered: true; fontSize: Style.font.caption; onClicked: root.selectAllRequested() }
       Button { text: "Select repo \u25b8"; bordered: true; fontSize: Style.font.caption; onClicked: root.selectRepoRequested() }
       Button { text: "Clear"; bordered: true; fontSize: Style.font.caption; onClicked: root.clearSelectionRequested() }
-      Button { text: "Hidden (" + root.hiddenCount + ")"; iconText: "\uf070"; fontSize: Style.font.caption; bordered: true; onClicked: root.showHiddenToggled() }
+      Button { text: "Hidden (" + root.hiddenCount + ")"; iconText: "\uf070"; iconSize: Style.font.caption; fontSize: Style.font.caption; bordered: true; onClicked: root.showHiddenToggled() }
     }
     Button {
       text: "Publish selected"; iconText: "\uf0ee"; background: Color.accent; foreground: Color.background; horizontalPadding: Style.space(16); fontSize: Style.font.caption
