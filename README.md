@@ -318,6 +318,9 @@ anything.
 - **Confirm cards.** Every mutating action (Publish, Upload, Update, Restow,
   Adopt, Ignore) opens a confirm card that names exactly what will happen — the
   paths, the package and the repository involved — before anything runs.
+- **Deletions and renames publish.** A selected deletion commits the removal, and
+  a selected rename commits as a real rename (`old → new`) instead of leaving a
+  stray staged deletion behind.
 - **Secret scan.** Before a commit, the staged diff is scanned for private keys
   and common token/password patterns. If anything matches, the commit is
   blocked and the matched value is never shown; you can review the file and
@@ -325,8 +328,11 @@ anything.
 - **Refusals instead of guesses.** Pull is `--ff-only` and refuses a dirty
   worktree, untracked files, a diverged branch or a missing upstream. Restow
   runs a dry run first and refuses on conflicts. Adopt refuses when the
-  destination already exists and rolls back if stowing conflicts. There is no
-  discard or revert action.
+  destination already exists and rolls back if stowing conflicts. Publish
+  refuses a selected path that no longer exists and that git does not track — it
+  names every invalid path and commits nothing (`Can't publish 1 selected file:
+  it no longer exists and git doesn't track it — <path>. Refresh the list and
+  try again.`). There is no discard or revert action.
 - **Git hygiene.** Git runs with prompts disabled, hooks bypassed for
   inspection commands, and a bounded, killable process group, so a hung command
   can never freeze the bar.
