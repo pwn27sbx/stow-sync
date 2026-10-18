@@ -1972,6 +1972,30 @@ class CommitCommandTests(unittest.TestCase):
         self.assertIn("R100\ta.txt\tb.txt", shown)
         self.assertEqual(self._clean_status(), "")
 
+    def test_pure_rename_with_secret_looking_content_commits(self) -> None:
+        # Scanning only the new path would report the whole renamed file as
+        # added and false-positive; both paths make the staged diff a rename.
+        token = "ghp_" + "A" * 36
+        write(self.repo / "secret.txt", "token = " + token + "\n")
+        commit_all(self.repo, "c2")
+        git(self.repo, "mv", "secret.txt", "public.txt")
+        result = self.run_stdin({"message": "chore: rename secret", "paths": ["public.txt"]})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["secrets"], [])
+        shown = git(self.repo, "show", "-M", "--name-status", "--format=", "HEAD").stdout
+        self.assertIn("R100\tsecret.txt\tpublic.txt", shown)
+        self.assertEqual(self._clean_status(), "")
+
+    def test_rename_with_an_added_secret_is_blocked(self) -> None:
+        token = "ghp_" + "A" * 36
+        git(self.repo, "mv", "a.txt", "b.txt")
+        write(self.repo / "b.txt", "a\n" + token + "\n")
+        before = self._commit_count()
+        result = self.run_stdin({"message": "chore: rename leak", "paths": ["b.txt"]})
+        self.assertFalse(result["ok"])
+        self.assertEqual([entry["rule"] for entry in result["secrets"]], ["github-token"])
+        self.assertEqual(self._commit_count(), before)
+
 
 # --------------------------------------------------------------------------
 # Unit 3: push and pull
