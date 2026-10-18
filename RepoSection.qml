@@ -152,7 +152,7 @@ Column {
               id: itemLine
               width: parent.width
               visible: modelData.type !== "candidate"
-              primary: modelData.type === "health" ? String(modelData.title) : (modelData.type === "incoming" ? (String(modelData.hash) + "  " + String(modelData.subject)) : String(modelData.path))
+              primary: modelData.type === "health" ? String(modelData.title) : (modelData.type === "incoming" ? (String(modelData.hash) + "  " + String(modelData.subject)) : String(modelData.pathLabel || modelData.path))
               secondary: modelData.type === "health" ? String(modelData.subtitle) : (modelData.type === "incoming" ? Model.repoDisplayName(modelData.repo) : String(modelData.package))
               chip: modelData.type === "change" ? String(modelData.chip) : ""
               showAction: modelData.type === "health"
@@ -262,7 +262,7 @@ Column {
               ItemRow {
                 required property var modelData
                 width: parent ? parent.width : 0
-                primary: String(modelData.path)
+                primary: String(modelData.pathLabel || modelData.path)
                 chip: String(modelData.chip)
                 splitPath: true
                 showCheckbox: true

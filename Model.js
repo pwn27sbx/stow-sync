@@ -224,6 +224,13 @@ function repoRow(repo, index) {
   }
 }
 
+function changePathLabel(change) {
+  var c = change || {}
+  var path = String(c.path || "")
+  var orig = String(c.orig_path || "")
+  return orig !== "" && orig !== path ? orig + " \u2192 " + path : path
+}
+
 function changeRow(repoPath, change, index) {
   var c = change || {}
   var path = String(c.path || "")
@@ -234,6 +241,8 @@ function changeRow(repoPath, change, index) {
     index: index,
     repo: repoPath,
     path: path,
+    pathLabel: changePathLabel(c),
+    origPath: String(c.orig_path || ""),
     package: c.package ? String(c.package) : "",
     packageLabel: packageLabel(c.package),
     kind: String(c.kind || (untracked ? "untracked" : "modified")),
@@ -1418,6 +1427,8 @@ function changeItem(repoPath, change, untracked) {
     type: "change",
     repo: repoPath,
     path: String(c.path || ""),
+    pathLabel: changePathLabel(c),
+    origPath: String(c.orig_path || ""),
     package: c.package ? String(c.package) : "",
     chip: changeChip(c, untracked),
     untracked: !!untracked,
@@ -1567,6 +1578,8 @@ function changesGroups(data, options) {
       if (entries[e].untracked && change.known === true && !showExisting) isHidden = true
       current.items.push({
         path: path,
+        pathLabel: changePathLabel(change),
+        origPath: String(change.orig_path || ""),
         package: name,
         chip: changeChip(change, entries[e].untracked),
         checked: true,
@@ -1618,6 +1631,8 @@ function changesView(data, options) {
           package: pkg.package,
           label: pkg.label,
           path: item.path,
+          pathLabel: item.pathLabel,
+          origPath: item.origPath,
           chip: item.chip,
           hidden: item.hidden === true,
           checked: item.checked !== false,

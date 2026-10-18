@@ -934,6 +934,38 @@ test("changesGroups hides known untracked rows unless showExisting", () => {
   assert.equal(Model.changesGroups(status, { showExisting: false })[0].packages[0].items[0].hidden, true)
 })
 
+test("changesGroups shows renames as old → new and deletions with a D chip", () => {
+  const status = {
+    repos: [{
+      path: "~/a", exists: true, packages: [], untracked: [],
+      changes: [
+        { path: "p/new", package: "p", x: "R", y: " ", kind: "renamed", orig_path: "p/old" },
+        { path: "p/gone", package: "p", x: " ", y: "D", kind: "deleted" }
+      ]
+    }],
+    candidates: []
+  }
+  const items = Model.changesGroups(status, {})[0].packages[0].items
+  const renamed = items.find((i) => i.path === "p/new")
+  assert.equal(renamed.origPath, "p/old")
+  assert.equal(renamed.pathLabel, "p/old \u2192 p/new")
+  assert.equal(renamed.chip, "R")
+  const deleted = items.find((i) => i.path === "p/gone")
+  assert.equal(deleted.chip, "D")
+  assert.equal(deleted.pathLabel, "p/gone")
+
+  const row = Model.changesView(status, {}).rows.find((r) => r.path === "p/new")
+  assert.equal(row.pathLabel, "p/old \u2192 p/new")
+  assert.equal(row.key, "change:~/a:p/new")
+
+  const outgoing = Model.overviewGroups(status)[0].items
+  assert.equal(outgoing.find((i) => i.path === "p/new").pathLabel, "p/old \u2192 p/new")
+
+  // Publishing still sends the row's (new) path; the backend expands the rename.
+  const plan = Model.publishPlan(status, {}, "m", false)
+  same(JSON.parse(plan[0].stdin).paths, ["p/gone", "p/new"])
+})
+
 test("packageCards describes each package and maps a real icon", () => {
   const status = {
     repos: [{
