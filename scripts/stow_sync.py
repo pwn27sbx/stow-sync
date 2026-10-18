@@ -873,18 +873,24 @@ def run_git(
     cwd: str | None = None,
     stdin: str | None = None,
     max_output: int = MAX_OUTPUT,
+    literal_pathspecs: bool = False,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run git with the shared hooks/color/env hardening.
 
     ``stdin`` is forwarded verbatim (used for ``git commit -F -``), and
-    ``max_output`` overrides the per-stream cap.
+    ``max_output`` overrides the per-stream cap. ``literal_pathspecs`` sets
+    ``GIT_LITERAL_PATHSPECS=1`` so a selected path is never read as a glob or
+    magic pathspec (README round 2 / #11141).
     """
+    env = git_env()
+    if literal_pathspecs:
+        env["GIT_LITERAL_PATHSPECS"] = "1"
     return run_bounded(
         build_git_argv(repo, args),
         timeout,
         max_output=max_output,
         cwd=str(cwd) if cwd else None,
-        env=git_env(),
+        env=env,
         stdin=stdin,
     )
 
@@ -2210,7 +2216,12 @@ def _git_knows_path(repo_path: str, rel: str) -> bool:
     A deleted file never exists on disk, so publishing a deletion must accept
     it when git still knows it (README Unit 18 / owner report).
     """
-    in_index = run_git(repo_path, ["ls-files", "--error-unmatch", "--", rel], timeout=20)
+    in_index = run_git(
+        repo_path,
+        ["ls-files", "--error-unmatch", "--", rel],
+        timeout=20,
+        literal_pathspecs=True,
+    )
     if in_index.returncode == 0:
         return True
     in_head = run_git(repo_path, ["cat-file", "-e", "HEAD:" + rel], timeout=20)
@@ -2245,7 +2256,12 @@ def _addable_paths(repo_path: str, rel_paths: list[str]) -> list[str]:
         else:
             missing.append(rel)
     if missing:
-        listed = run_git(repo_path, ["ls-files", "-z", "--", *missing], timeout=20)
+        listed = run_git(
+            repo_path,
+            ["ls-files", "-z", "--", *missing],
+            timeout=20,
+            literal_pathspecs=True,
+        )
         if listed.returncode != 0:
             raise CommandError(_short_error(listed))
         known = set(_decode(listed.stdout).split("\x00"))
@@ -2322,7 +2338,12 @@ def cmd_commit(
     commit_paths = rel_paths + _rename_paths(repo_path, rel_paths)
     staged_inputs = _addable_paths(repo_path, commit_paths)
     if staged_inputs:
-        added = run_git(repo_path, ["add", "--", *staged_inputs], timeout=20)
+        added = run_git(
+            repo_path,
+            ["add", "--", *staged_inputs],
+            timeout=20,
+            literal_pathspecs=True,
+        )
         if added.returncode != 0:
             raise CommandError(_short_error(added))
     staged = run_git(
@@ -2330,6 +2351,7 @@ def cmd_commit(
         ["diff", "--cached", "-U0", "--", *commit_paths],
         timeout=20,
         max_output=_SECRET_DIFF_CAP,
+        literal_pathspecs=True,
     )
     if staged.returncode != 0:
         # Fail closed: a failed or truncated diff (the 2 MiB cap) never commits
@@ -2357,6 +2379,7 @@ def cmd_commit(
         ["commit", "--only", "-F", "-", "--", *commit_paths],
         timeout=30,
         stdin=message.rstrip("\n") + "\n",
+        literal_pathspecs=True,
     )
     if committed.returncode != 0:
         raise CommandError(_short_error(committed))

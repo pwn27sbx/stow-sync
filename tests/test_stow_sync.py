@@ -1996,6 +1996,42 @@ class CommitCommandTests(unittest.TestCase):
         self.assertEqual([entry["rule"] for entry in result["secrets"]], ["github-token"])
         self.assertEqual(self._commit_count(), before)
 
+    # --- Round 2: selected paths are literal pathspecs, never globs ---------
+
+    def test_glob_path_selection_is_invalid_and_commits_nothing(self) -> None:
+        # `*.txt` is not a file; as a pathspec it would match the modified,
+        # secret-bearing a.txt, skip the staged scan and commit it unscanned.
+        token = "ghp_" + "A" * 36
+        write(self.repo / "a.txt", token + "\n")
+        before = self._commit_count()
+        result = self.run_stdin({"message": "chore: glob", "paths": ["*.txt"]})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["invalid_paths"], ["*.txt"])
+        self.assertIn("Refresh the list and try again", result["error"])
+        self.assertEqual(self._commit_count(), before)
+        self.assertIn(" M a.txt", self._clean_status())
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-only").stdout, "")
+
+    def test_magic_pathspec_selection_is_invalid_and_commits_nothing(self) -> None:
+        write(self.repo / "a.txt", "changed\n")
+        before = self._commit_count()
+        result = self.run_stdin({"message": "chore: magic", "paths": [":/"]})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["invalid_paths"], [":"])
+        self.assertEqual(self._commit_count(), before)
+        self.assertIn(" M a.txt", self._clean_status())
+
+    def test_bracketed_filename_commits_only_that_file(self) -> None:
+        # `[a].txt` as a pathspec matches a.txt; it must be a literal filename.
+        write(self.repo / "a.txt", "changed\n")
+        write(self.repo / "[a].txt", "bracket\n")
+        result = self.run_stdin({"message": "chore: bracket", "paths": ["[a].txt"]})
+        self.assertTrue(result["ok"], result)
+        shown = git(self.repo, "show", "--name-status", "--format=", "HEAD").stdout
+        self.assertIn("A\t[a].txt", shown)
+        self.assertNotIn("a.txt", shown)
+        self.assertIn(" M a.txt", self._clean_status())
+
 
 # --------------------------------------------------------------------------
 # Unit 3: push and pull
