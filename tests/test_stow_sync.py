@@ -1896,6 +1896,64 @@ class CommitCommandTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(git(self.repo, "log", "-1", "--format=%s").stdout.strip(), "chore: small")
 
+    # --- Unit 18: deleted paths publish (S1/S3/S6) --------------------------
+
+    def _show_name_status(self) -> str:
+        return git(self.repo, "show", "--name-status", "--format=", "HEAD").stdout
+
+    def _clean_status(self) -> str:
+        return git(self.repo, "status", "--porcelain").stdout
+
+    def test_unstaged_deletion_commits(self) -> None:
+        os.remove(self.repo / "a.txt")
+        self.assertIn(" D a.txt", self._clean_status())
+        result = self.run_stdin({"message": "chore: drop a", "paths": ["a.txt"]})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["secrets"], [])
+        self.assertIn("D\ta.txt", self._show_name_status())
+        self.assertEqual(self._clean_status(), "")
+
+    def test_staged_deletion_commits(self) -> None:
+        git(self.repo, "rm", "a.txt")
+        self.assertIn("D  a.txt", self._clean_status())
+        result = self.run_stdin({"message": "chore: drop a", "paths": ["a.txt"]})
+        self.assertTrue(result["ok"], result)
+        self.assertIn("D\ta.txt", self._show_name_status())
+        self.assertEqual(self._clean_status(), "")
+
+    def test_mixed_selection_with_invalid_path_fails_closed(self) -> None:
+        write(self.repo / "a.txt", "changed\n")
+        before = self._commit_count()
+        result = self.run_stdin({"message": "chore: mixed", "paths": ["a.txt", "ghost.txt"]})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["invalid_paths"], ["ghost.txt"])
+        self.assertIn("ghost.txt", result["error"])
+        self.assertIn("Refresh the list and try again", result["error"])
+        self.assertEqual(self._commit_count(), before)
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-only").stdout, "")
+        self.assertIn(" M a.txt", self._clean_status())
+
+    def test_error_lists_every_invalid_path(self) -> None:
+        result = self.run_stdin(
+            {"message": "chore: ghosts", "paths": ["ghost-1.txt", "ghost-2.txt"]}
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["invalid_paths"], ["ghost-1.txt", "ghost-2.txt"])
+        self.assertIn("ghost-1.txt", result["error"])
+        self.assertIn("ghost-2.txt", result["error"])
+        self.assertIn("2 selected files", result["error"])
+
+    def test_deleted_file_with_secret_content_still_commits(self) -> None:
+        token = "ghp_" + "A" * 36
+        write(self.repo / "leak.txt", "token = " + token + "\n")
+        commit_all(self.repo, "c2")
+        os.remove(self.repo / "leak.txt")
+        result = self.run_stdin({"message": "chore: drop leak", "paths": ["leak.txt"]})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["secrets"], [])
+        self.assertIn("D\tleak.txt", self._show_name_status())
+        self.assertEqual(self._clean_status(), "")
+
 
 # --------------------------------------------------------------------------
 # Unit 3: push and pull

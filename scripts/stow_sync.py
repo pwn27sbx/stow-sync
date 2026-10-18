@@ -2199,6 +2199,57 @@ def read_stdin_json() -> Any:
         raise CommandError("invalid JSON on stdin: " + _shorten(str(exc)))
 
 
+def _git_knows_path(repo_path: str, rel: str) -> bool:
+    """True when git tracks ``rel``: it is in the index or in ``HEAD``.
+
+    A deleted file never exists on disk, so publishing a deletion must accept
+    it when git still knows it (README Unit 18 / owner report).
+    """
+    in_index = run_git(repo_path, ["ls-files", "--error-unmatch", "--", rel], timeout=20)
+    if in_index.returncode == 0:
+        return True
+    in_head = run_git(repo_path, ["cat-file", "-e", "HEAD:" + rel], timeout=20)
+    return in_head.returncode == 0
+
+
+def _invalid_selection_error(paths: list[str]) -> str:
+    """The fail-closed message naming every selected path git cannot resolve."""
+    if len(paths) == 1:
+        headline = "Can't publish 1 selected file: it no longer exists and git doesn't track it"
+    else:
+        headline = (
+            "Can't publish "
+            + str(len(paths))
+            + " selected files: they no longer exist and git doesn't track them"
+        )
+    return headline + " \u2014 " + ", ".join(paths) + ". Refresh the list and try again."
+
+
+def _addable_paths(repo_path: str, rel_paths: list[str]) -> list[str]:
+    """The subset of ``rel_paths`` that ``git add`` accepts.
+
+    A staged deletion (``D ``) or a rename's original path exists only in
+    ``HEAD``, and ``git add`` rejects such a pathspec; those paths are still
+    scanned and committed directly below.
+    """
+    addable: list[str] = []
+    missing: list[str] = []
+    for rel in rel_paths:
+        if os.path.lexists(os.path.join(repo_path, rel)):
+            addable.append(rel)
+        else:
+            missing.append(rel)
+    if missing:
+        listed = run_git(repo_path, ["ls-files", "-z", "--", *missing], timeout=20)
+        if listed.returncode != 0:
+            raise CommandError(_short_error(listed))
+        known = set(_decode(listed.stdout).split("\x00"))
+        for rel in missing:
+            if rel in known:
+                addable.append(rel)
+    return addable
+
+
 def cmd_commit(
     args: list[str],
     config_path: str | None = None,
@@ -2218,14 +2269,28 @@ def cmd_commit(
         raise CommandError("no paths selected")
     repo_path = repo["path"]
     rel_paths: list[str] = []
+    invalid: list[str] = []
     for raw in raw_paths:
         rel = validate_repo_relpath(raw)
-        if not os.path.lexists(os.path.join(repo_path, rel)):
-            raise CommandError("path not found in repo: " + rel)
+        if not os.path.lexists(os.path.join(repo_path, rel)) and not _git_knows_path(
+            repo_path, rel
+        ):
+            invalid.append(rel)
+            continue
         rel_paths.append(rel)
-    added = run_git(repo_path, ["add", "--", *rel_paths], timeout=20)
-    if added.returncode != 0:
-        raise CommandError(_short_error(added))
+    if invalid:
+        # Fail closed with every invalid path named; nothing is staged or
+        # committed (README Unit 18 / S3).
+        return {
+            "ok": False,
+            "error": _invalid_selection_error(invalid),
+            "invalid_paths": invalid,
+        }
+    staged_inputs = _addable_paths(repo_path, rel_paths)
+    if staged_inputs:
+        added = run_git(repo_path, ["add", "--", *staged_inputs], timeout=20)
+        if added.returncode != 0:
+            raise CommandError(_short_error(added))
     staged = run_git(
         repo_path,
         ["diff", "--cached", "-U0", "--", *rel_paths],
