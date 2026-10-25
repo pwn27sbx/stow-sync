@@ -2547,3 +2547,179 @@ test("packageGrid: uniform columns fill the width (103)", () => {
   assert.equal(Model.packageGrid([], { width: 478 }).rows.length, 0)
   assert.equal(Model.packageGrid(null, {}).cols, 1)
 })
+
+// --- Candidate verdicts: the panel decides what to show (readme 0.2.2) ------
+
+function verdictCandidate(path, verdict, extra) {
+  const base = {
+    path: path, type: "file", size: 120, group: "other",
+    suggested_package: "", credential: false, known: false,
+    verdict: verdict, reason: verdict + " reason"
+  }
+  return Object.assign(base, extra || {})
+}
+
+test("countsAsNewCandidate counts upload and review only", () => {
+  assert.equal(Model.countsAsNewCandidate(verdictCandidate("~/.config/a", "upload")), true)
+  assert.equal(Model.countsAsNewCandidate(verdictCandidate("~/.config/b", "review")), true)
+  assert.equal(Model.countsAsNewCandidate(verdictCandidate("~/.config/c", "ignore")), false)
+  assert.equal(Model.countsAsNewCandidate(verdictCandidate("~/.config/d", "never")), false)
+  assert.equal(Model.countsAsNewCandidate(verdictCandidate("~/.config/e", "never", { credential: true })), false)
+  assert.equal(Model.countsAsNewCandidate(verdictCandidate("~/.config/f", "upload", { known: true })), false)
+  // An older payload has no verdict and keeps counting, as before.
+  assert.equal(Model.countsAsNewCandidate({ path: "~/.config/g", known: false }), true)
+  assert.equal(Model.countsAsNewCandidate(null), true)
+})
+
+test("newCandidateCount ignores hidden verdicts and credentials", () => {
+  const data = { candidates: [
+    verdictCandidate("~/.config/a", "upload"),
+    verdictCandidate("~/.config/b", "review"),
+    verdictCandidate("~/.config/c", "ignore"),
+    verdictCandidate("~/.config/d", "never"),
+    verdictCandidate("~/.config/e", "never", { credential: true }),
+    { path: "~/.config/f", known: false }
+  ] }
+  assert.equal(Model.newCandidateCount(data), 3)
+  assert.equal(Model.newCandidateCount({ candidates: [] }), 0)
+})
+
+test("recommendedCandidates lists the upload verdicts only", () => {
+  const data = { candidates: [
+    verdictCandidate("~/.config/review", "review"),
+    verdictCandidate("~/.config/nuncio", "upload"),
+    verdictCandidate("~/.config/cockpit", "upload"),
+    verdictCandidate("~/.config/big", "review"),
+    verdictCandidate("~/.config/old", "upload", { known: true })
+  ] }
+  same(Model.recommendedCandidates(data).map((c) => c.path), ["~/.config/nuncio", "~/.config/cockpit"])
+  same(Model.recommendedCandidates(null), [])
+})
+
+test("recommendationPlan builds one adopt step per recommendation", () => {
+  const data = { candidates: [
+    verdictCandidate("~/.config/nuncio", "upload", { suggested_package: "nuncio" }),
+    verdictCandidate("~/.config/review-me", "review"),
+    verdictCandidate("~/.config/cockpit", "upload", { suggested_package: "" })
+  ] }
+  const repos = [{ path: "~/.dotfiles", exists: true, packages: [] }]
+  const plan = Model.recommendationPlan(data, repos)
+  assert.equal(plan.repo, "~/.dotfiles")
+  assert.equal(plan.count, 2)
+  same(plan.steps.map((s) => s.tag), ["adopt", "adopt"])
+  same(plan.steps[0].args, ["adopt", "--repo", "~/.dotfiles", "--package", "nuncio", "--path", "~/.config/nuncio"])
+  // No suggestion falls back to the basename, exactly like the Adopt card.
+  assert.equal(plan.steps[1].args[4], "cockpit")
+  assert.equal(plan.lines[0], "~/.config/nuncio \u2192 package nuncio (upload reason)")
+  // No repository: nothing to plan, so the button reports it.
+  assert.equal(Model.recommendationPlan(data, []).count, 0)
+  assert.equal(Model.recommendationPlan(data, []).repo, "")
+  assert.equal(Model.recommendationPlan({ candidates: [] }, repos).count, 0)
+})
+
+test("adoptSummaryText tells the partial story", () => {
+  assert.equal(Model.adoptSummaryText(2, 2), "Adopted 2 configs.")
+  assert.equal(Model.adoptSummaryText(1, 1), "Adopted 1 config.")
+  assert.equal(Model.adoptSummaryText(1, 2), "Adopted 1 of 2 configs.")
+  assert.equal(Model.adoptSummaryText(0, 0), "Nothing adopted.")
+})
+
+test("confirmSpec accept-recommendations names the list and the count", () => {
+  const spec = Model.confirmSpec("accept-recommendations", {
+    repo: "~/.dotfiles", count: 2, lines: ["a", "b"]
+  })
+  assert.equal(spec.title, "Accept recommendations")
+  assert.equal(spec.message, "Adopt every recommended config into ~/.dotfiles. Nothing is uploaded until you Publish.")
+  same(spec.lines, ["a", "b"])
+  assert.equal(spec.confirmText, "Adopt 2 configs")
+  assert.equal(spec.destructive, false)
+  assert.equal(Model.confirmSpec("accept-recommendations", { count: 1 }).confirmText, "Adopt 1 config")
+})
+
+test("firstNewCandidate prefers a recommendation and never a hidden one", () => {
+  const review = verdictCandidate("~/.config/review", "review")
+  const upload = verdictCandidate("~/.config/nuncio", "upload")
+  const ignored = verdictCandidate("~/.config/launcher", "ignore")
+  const never = verdictCandidate("~/.config/secrets", "never")
+  assert.equal(Model.firstNewCandidate([review, upload]), upload)
+  assert.equal(Model.firstNewCandidate([review]), review)
+  assert.equal(Model.firstNewCandidate([ignored, never]), null)
+  assert.equal(Model.firstNewCandidate([ignored, upload]), upload)
+})
+
+test("candidateRow carries the verdict and the reason", () => {
+  const row = Model.candidateRow(verdictCandidate("~/.config/nuncio", "upload", { reason: "Small text config; no private data found" }), 0)
+  assert.equal(row.verdict, "upload")
+  assert.equal(row.reason, "Small text config; no private data found")
+  assert.equal(Model.candidateRow(null, 0).verdict, "")
+  assert.equal(Model.candidateRow(null, 0).reason, "")
+})
+
+test("worstState ignores hidden verdicts", () => {
+  const hidden = { summary: { state: "clean", count: 0 }, repos: [], candidates: [verdictCandidate("~/.config/x", "ignore")] }
+  assert.equal(Model.badgeColor(hidden), "muted")
+  const shown = { summary: { state: "clean", count: 1 }, repos: [], candidates: [verdictCandidate("~/.config/x", "upload")] }
+  assert.equal(Model.badgeColor(shown), "accent")
+})
+
+test("overviewGroups splits counted configs from hidden ones", () => {
+  const data = {
+    repos: [],
+    candidates: [
+      verdictCandidate("~/.config/review-me", "review"),
+      verdictCandidate("~/.config/nuncio", "upload"),
+      verdictCandidate("~/.config/launcher", "ignore"),
+      verdictCandidate("~/.config/secrets", "never", { credential: true }),
+      verdictCandidate("~/.config/old", "upload", { known: true })
+    ]
+  }
+  const groups = Model.overviewGroups(data)
+  same(groups.map((g) => g.key), ["newConfigs", "hiddenConfigs"])
+  const fresh = groups[0]
+  assert.equal(fresh.title, "New config files")
+  assert.equal(fresh.count, 2)
+  same(fresh.items.map((i) => i.path), ["~/.config/nuncio", "~/.config/review-me"])
+  assert.equal(fresh.actionText, "Accept recommendations (1)")
+  const hidden = groups[1]
+  assert.equal(hidden.title, "Hidden")
+  assert.equal(hidden.count, 2)
+  assert.equal(hidden.subtitle, "Not counted; adopt one by hand if it belongs in Stow")
+  same(hidden.items.map((i) => i.path), ["~/.config/launcher", "~/.config/secrets"])
+  same(hidden.items.map((i) => i.verdict), ["ignore", "never"])
+  assert.equal(hidden.items[0].reason, "ignore reason")
+  assert.equal(hidden.actionText, undefined)
+})
+
+test("overviewGroups adds no accept action without a recommendation", () => {
+  const data = { repos: [], candidates: [verdictCandidate("~/.config/review-me", "review")] }
+  const fresh = Model.overviewGroups(data)[0]
+  assert.equal(fresh.count, 1)
+  assert.equal(fresh.actionText, undefined)
+})
+
+test("overviewGroups hides a config group with no counted candidate", () => {
+  const data = { repos: [], candidates: [verdictCandidate("~/.config/launcher", "ignore")] }
+  const groups = Model.overviewGroups(data)
+  same(groups.map((g) => g.key), ["hiddenConfigs"])
+})
+
+test("confirmationSteps replays the frozen plan, not a later scan", () => {
+  const repos = [{ path: "~/.dotfiles", exists: true, packages: [] }]
+  const plan = Model.recommendationPlan(
+    { candidates: [verdictCandidate("~/.config/nuncio", "upload", { suggested_package: "nuncio" })] },
+    repos
+  )
+  const frozen = { repo: plan.repo, count: plan.count, lines: plan.lines, steps: plan.steps }
+  const later = Model.recommendationPlan(
+    { candidates: [verdictCandidate("~/.config/newer", "upload")] },
+    repos
+  )
+  same(Model.confirmationSteps(frozen).map((s) => s.args[6]), ["~/.config/nuncio"])
+  same(later.steps.map((s) => s.args[6]), ["~/.config/newer"])
+  // A copy, so a caller cannot edit the frozen payload through the result.
+  const copy = Model.confirmationSteps(frozen)
+  copy.pop()
+  assert.equal(Model.confirmationSteps(frozen).length, 1)
+  same(Model.confirmationSteps({}).map((s) => s.args), [])
+  same(Model.confirmationSteps(null).map((s) => s.args), [])
+})

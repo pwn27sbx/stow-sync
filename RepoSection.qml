@@ -18,7 +18,7 @@ Column {
   signal restowRequested(string repo, string packageName); signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
   signal copyRequested(string value); signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
   signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested(); signal changeToggled(string key, bool value); signal changeHovered(string key)
-  signal diffRequested(string repo, string path); signal undoSetupRequested()
+  signal diffRequested(string repo, string path); signal undoSetupRequested(); signal acceptRecommendationsRequested()
   property string packageKey: ""
   // One accordion key for the Overview (finding 84): a repo lane uses
   // "repo:<path>", a group card uses its key; opening one closes the other.
@@ -29,6 +29,7 @@ Column {
   readonly property int changes: Model.changeTotals(root.statusData).count
   readonly property int behind: Model.flowTotals(root.statusData, "behind").count
   readonly property int fresh: Model.newCandidateCount(root.statusData)
+  readonly property int recommended: Model.recommendedCandidates(root.statusData).length
   readonly property int hiddenCount: root.hiddenPaths.length
   readonly property var firstUnhealthy: Model.firstUnhealthy(root.statusData)
   readonly property var overview: Model.overviewState(root.statusData, { notSetUp: root.notSetUp, setupNeeded: root.setupNeeded }) // finding 76
@@ -68,6 +69,9 @@ Column {
       color: Util.alpha(Color.accent, 0.10)
       borderSpec: Border.none()
       radius: Style.cornerRadius
+      // Declared before the row so the row's buttons still get the click and
+      // only the empty space opens the group.
+      MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleGroup("newConfigs") }
       RowLayout {
         id: bannerRow
         anchors.left: parent.left
@@ -94,8 +98,19 @@ Column {
           font.pixelSize: Style.font.caption
           font.bold: true
         }
+        // One click adopts every `upload` candidate; the confirm card lists
+        // them with their reasons first, and nothing is uploaded.
+        Button {
+          Layout.alignment: Qt.AlignVCenter
+          visible: root.recommended > 0
+          text: "Accept recommendations (" + root.recommended + ")"
+          fontSize: Style.font.caption
+          horizontalPadding: Style.spacing.sm
+          verticalPadding: Style.spacing.xxs
+          enabled: !root.busy
+          onClicked: root.acceptRecommendationsRequested()
+        }
       }
-      MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleGroup("newConfigs") }
     }
     Row {
       width: parent.width
@@ -141,7 +156,10 @@ Column {
         expanded: root.groupExpanded(modelData.key)
         motion: root.motion
         foreground: root.foreground
+        hasAction: String(modelData.actionText || "") !== ""
+        actionText: String(modelData.actionText || "")
         onToggled: root.toggleGroup(modelData.key)
+        onActionClicked: root.acceptRecommendationsRequested()
         Repeater {
           model: modelData.items
           Item {
@@ -166,6 +184,11 @@ Column {
               visible: modelData.type === "candidate"
               row: modelData
               credential: modelData.credential === true
+              // A hidden `never` has no Adopt button at all; a hidden `ignore`
+              // can still be adopted by hand. Neither offers Ignore: the verdict
+              // is recomputed each scan.
+              showAdopt: modelData.hidden !== true || modelData.verdict === "ignore"
+              showIgnore: modelData.hidden !== true
               packageName: Model.candidateSuggestion({ suggested_package: modelData.package, credential: modelData.credential })
               foreground: root.foreground
               onAdoptRequested: root.adoptRequested(modelData)

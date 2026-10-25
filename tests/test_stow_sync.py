@@ -5983,3 +5983,51 @@ class HiddenButtonHeightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CandidateVerdictSourceTests(unittest.TestCase):
+    """Candidate verdicts: the panel shows, hides and accepts from Model.js."""
+
+    def read(self, name: str) -> str:
+        return (ROOT / name).read_text(encoding="utf-8")
+
+    def test_candidate_row_shows_the_reason(self) -> None:
+        row = self.read("CandidateRow.qml")
+        self.assertIn("root.candidate.reason", row)
+        # A hidden `never` offers no Adopt button and no Ignore button.
+        self.assertIn("property bool showAdopt", row)
+        self.assertIn("property bool showIgnore", row)
+        self.assertIn("visible: !root.credential && root.showAdopt", row)
+        self.assertIn("visible: root.showIgnore", row)
+
+    def test_repo_section_wires_the_hidden_group_and_the_action(self) -> None:
+        section = self.read("RepoSection.qml")
+        self.assertIn("Model.newCandidateCount(root.statusData)", section)
+        self.assertIn("Model.recommendedCandidates(root.statusData).length", section)
+        self.assertIn("hasAction: String(modelData.actionText || \"\") !== \"\"", section)
+        self.assertIn("onActionClicked: root.acceptRecommendationsRequested()", section)
+        self.assertIn("showAdopt: modelData.hidden !== true || modelData.verdict === \"ignore\"", section)
+        self.assertIn("showIgnore: modelData.hidden !== true", section)
+        self.assertIn('text: "Accept recommendations (" + root.recommended + ")"', section)
+        # The banner link and the button share the card: the mouse area is
+        # declared first so the button still receives its click.
+        banner = section[section.index("id: bannerRow") - 900 : section.index("id: bannerRow")]
+        self.assertIn("MouseArea", banner)
+
+    def test_accept_recommendations_replays_the_frozen_plan(self) -> None:
+        panel = self.read("Panel.qml")
+        accept = panel[panel.index("function acceptRecommendations()") :]
+        accept = accept[: accept.index("function adoptConfirmed()")]
+        self.assertIn("steps: plan.steps", accept)
+        self.assertIn('root.confirmKind = "accept-recommendations"', accept)
+        confirm = panel[panel.index("function acceptConfirm()") :]
+        confirm = confirm[: confirm.index("function startBatch(")]
+        self.assertIn('root.confirmKind === "accept-recommendations"', confirm)
+        self.assertIn("Model.confirmationSteps(root.confirmPayload)", confirm)
+        # The reviewed candidate must never recompute the plan when confirming.
+        self.assertNotIn("Model.recommendationPlan", confirm)
+        self.assertIn("onAcceptRecommendationsRequested: root.acceptRecommendations()", panel)
+
+    def test_adopt_batch_reports_its_summary(self) -> None:
+        panel = self.read("Panel.qml")
+        self.assertIn('root.batchKind === "adopt" ? Model.adoptSummaryText(done, root.batchTotal)', panel)
+        self.assertIn('kind === "adopt" ? "Adopting"', panel)

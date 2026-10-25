@@ -31,7 +31,7 @@ Panel {
   property string publishMessage: ""; property var publishLines: []; property var publishTargets: []; property var publishSecrets: []
   property bool publishAllowSecrets: false; property string publishError: ""; property string publishRepoFilter: ""; property string publishUpstream: "origin/main"
   property int publishCommitDone: 0; property bool publishHadError: false
-  property string batchKind: ""; property int batchRemaining: 0; property string batchError: ""
+  property string batchKind: ""; property int batchRemaining: 0; property int batchTotal: 0; property int batchFailures: 0; property string batchError: ""
   // Adopt and diff cards.
   property string adoptRepo: ""; property string adoptPath: ""; property string adoptPackage: ""; property var adoptSuggestions: []
   property string adoptError: ""; property string diffTitle: ""; property string diffBody: ""; property bool diffTruncated: false
@@ -99,17 +99,23 @@ Panel {
     if (root.confirmKind === "setup-undo") { runner.runAction("setup-undo", ["setup-undo", "--backup", String(root.confirmPayload.backup || "")]); return }
     if (root.confirmKind === "upload") { root.startBatch("push", Model.uploadPlan(root.statusData)); return }
     if (root.confirmKind === "update") { root.startBatch("pull", Model.updatePlan(root.statusData)); return }
+    if (root.confirmKind === "accept-recommendations") {
+      // The plan shown in the card is frozen: a background refresh while the
+      // card was open must never change what the owner approved.
+      root.startBatch("adopt", Model.confirmationSteps(root.confirmPayload))
+      return
+    }
     var mutation = Model.mutationFor(root.confirmKind, root.confirmPayload)
     runner.runAction(mutation.tag, mutation.args, mutation.stdin)
   }
   function startBatch(kind, steps) {
     root.overlayMode = ""
     if (!steps || steps.length === 0) { root.setResult("Nothing to do.", true); return }
-    root.batchKind = kind; root.batchRemaining = steps.length; root.batchError = ""
-    root.busyVerb = kind === "publish" ? "Publishing" : (kind === "push" ? "Uploading" : "Updating")
+    root.batchKind = kind; root.batchRemaining = steps.length; root.batchTotal = steps.length; root.batchFailures = 0; root.batchError = ""
+    root.busyVerb = kind === "publish" ? "Publishing" : (kind === "push" ? "Uploading" : (kind === "adopt" ? "Adopting" : "Updating"))
     for (var i = 0; i < steps.length; i++) runner.runAction(steps[i].tag, steps[i].args, steps[i].stdin)
   }
-  function finishBatch(text, isError) { root.busyVerb = ""; root.batchKind = ""; root.batchRemaining = 0; root.setResult(text, isError) }
+  function finishBatch(text, isError) { root.busyVerb = ""; root.batchKind = ""; root.batchRemaining = 0; root.batchTotal = 0; root.batchFailures = 0; root.setResult(text, isError) }
   function openPublish(repoFilter) {
     root.publishRepoFilter = String(repoFilter || "")
     var card = Model.publishCard(root.statusData, root.checkedPaths, root.publishRepoFilter)
@@ -141,6 +147,20 @@ Panel {
     var pick = Model.firstNewCandidate(root.statusData ? root.statusData.candidates : [])
     if (pick) root.adoptCandidate(pick); else root.setResult("No new config to adopt.", true)
   }
+  // "Accept recommendations (N)": one Adopt per recommended config, listed with
+  // their reasons in the existing confirm card first. Nothing is uploaded.
+  function acceptRecommendations() {
+    if (root.busy) return
+    var repoList = root.statusData ? root.statusData.repos : []
+    var plan = Model.recommendationPlan(root.statusData, repoList)
+    if (plan.repo === "") { root.setResult("No repository is configured to adopt into.", true); return }
+    if (plan.count === 0) { root.setResult("No recommendations to accept.", true); return }
+    root.confirmKind = "accept-recommendations"
+    // Freeze the whole plan (lines and steps) in the payload: the card shows
+    // exactly the steps that will run, whatever a later refresh reports.
+    root.confirmPayload = { repo: plan.repo, count: plan.count, lines: plan.lines, steps: plan.steps }
+    root.overlayMode = "confirm"
+  }
   function adoptConfirmed() {
     if (root.busy) return
     if (String(root.adoptPackage).trim() === "") { root.adoptError = "Package name must not be empty."; return }
@@ -157,7 +177,7 @@ Panel {
     if (outcome.kind === "diff") { root.diffBody = outcome.body; root.diffTruncated = outcome.truncated; root.overlayMode = "diff"; return }
     if (outcome.kind === "suggest") { if (root.overlayMode === "publish") root.publishMessage = outcome.message; return }
     if (root.batchKind === "publish") { root.publishResult(outcome); return }
-    if (root.batchKind === "push" || root.batchKind === "pull") { root.batchStep(outcome); return }
+    if (root.batchKind !== "") { root.batchStep(outcome); return }
     root.overlayMode = ""
     if (outcome.kind === "mutation-error" || outcome.kind === "commit-error") { root.setResult(outcome.error, true); return }
     if (outcome.kind === "commit-secrets") { root.setResult("Secrets detected \u2014 review before publishing.", true); return }
@@ -177,11 +197,16 @@ Panel {
     root.refresh()
   }
   function batchStep(outcome) {
-    if (outcome.kind === "mutation-error") root.batchError = outcome.error
+    if (outcome.kind === "mutation-error") { root.batchError = outcome.error; root.batchFailures++ }
     root.batchRemaining--
     if (root.batchRemaining > 0) return
-    var text = root.batchKind === "push" ? "Uploaded commits" : "Updated from GitHub"
-    root.finishBatch(root.batchError !== "" ? root.batchError : text, root.batchError !== ""); root.refresh()
+    var done = root.batchTotal - root.batchFailures
+    var text = root.batchKind === "push" ? "Uploaded commits"
+      : (root.batchKind === "adopt" ? Model.adoptSummaryText(done, root.batchTotal) : "Updated from GitHub")
+    var failed = root.batchError !== ""
+    var message = failed ? root.batchError : text
+    if (failed && root.batchKind === "adopt") message = Model.adoptSummaryText(done, root.batchTotal) + " " + root.batchError
+    root.finishBatch(message, failed); root.refresh()
   }
   function applyFailure(tag, message) {
     if (String(tag).indexOf("setup-") === 0) { setupWizard.handleFailure(tag, message); if (tag === "setup-apply" || tag === "setup-undo") root.refreshAfterSetup(); return }
@@ -194,7 +219,7 @@ Panel {
       return
     }
     if (root.batchKind !== "") {
-      root.batchError = outcome.error; root.batchRemaining--
+      root.batchError = outcome.error; root.batchFailures++; root.batchRemaining--
       if (root.batchRemaining <= 0) { root.finishBatch(root.batchError, true); root.refresh() }
       return
     }
@@ -333,6 +358,7 @@ Panel {
             onRestowRequested: function(repo, packageName) { root.openConfirm("restow", { repo: repo, package: packageName }) }
             onAdoptRequested: function(candidate) { root.adoptCandidate(candidate) }
             onIgnoreRequested: function(candidate) { root.openConfirm("ignore", { path: String(candidate.path || "") }) }
+            onAcceptRecommendationsRequested: root.acceptRecommendations()
             onCopyRequested: function(value) { Util.execArgv(["wl-copy", value]) }
             onSelectAllRequested: root.selectAll()
             onSelectRepoRequested: root.selectRepoCycle()

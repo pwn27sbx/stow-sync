@@ -3,16 +3,20 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// One new-config candidate inside the Overview "New config files" group. The
-// package is chosen in the Adopt confirm card (an editable field prefilled
-// with the suggestion), so this row only shows the path, size, suggestion and
-// the Adopt / Ignore actions.
+// One new-config candidate inside the Overview "New config files" and "Hidden"
+// groups. The package is chosen in the Adopt confirm card (an editable field
+// prefilled with the suggestion), so this row shows the path, the backend's
+// reason and the Adopt / Ignore actions.
 Item {
   id: root
 
   property var row: null
   property bool focused: false
   property bool credential: false
+  // A hidden row (`never`/`ignore`) offers no Ignore button: the verdict is
+  // computed each scan, not written to the config's ignore list.
+  property bool showIgnore: true
+  property bool showAdopt: true
   property string packageName: ""
   property color foreground: Color.foreground
 
@@ -21,6 +25,7 @@ Item {
   signal ignoreRequested()
 
   readonly property var candidate: root.row || ({})
+  readonly property bool adoptable: root.showAdopt && !root.credential
 
   implicitHeight: card.implicitHeight
 
@@ -35,7 +40,8 @@ Item {
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
-      cursorShape: root.credential ? Qt.ArrowCursor : Qt.PointingHandCursor
+      enabled: root.adoptable
+      cursorShape: root.adoptable ? Qt.PointingHandCursor : Qt.ArrowCursor
       onEntered: root.hovered()
       onClicked: if (!root.credential) root.adoptRequested()
     }
@@ -54,7 +60,7 @@ Item {
         Layout.preferredWidth: Style.space(8)
         Layout.preferredHeight: Style.space(8)
         radius: width / 2
-        color: root.credential ? Util.alpha(root.foreground, 0.5) : Color.accent
+        color: root.adoptable ? Color.accent : Util.alpha(root.foreground, 0.5)
       }
 
       ColumnLayout {
@@ -82,11 +88,24 @@ Item {
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+
+        // The backend's one-line reason: what this file is and why it got its
+        // verdict, so the owner never has to ask.
+        Text {
+          Layout.fillWidth: true
+          visible: String(root.candidate.reason || "") !== ""
+          textFormat: Text.PlainText
+          text: String(root.candidate.reason || "")
+          color: Util.alpha(root.foreground, 0.72)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
       }
 
       Button {
         Layout.alignment: Qt.AlignVCenter
-        visible: !root.credential
+        visible: !root.credential && root.showAdopt
         text: "Adopt"
         fontSize: Style.font.caption
         horizontalPadding: Style.spacing.sm
@@ -96,6 +115,7 @@ Item {
 
       Button {
         Layout.alignment: Qt.AlignVCenter
+        visible: root.showIgnore
         text: "Ignore"
         fontSize: Style.font.caption
         horizontalPadding: Style.spacing.sm

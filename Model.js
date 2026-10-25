@@ -129,7 +129,7 @@ function worstState(data) {
   }
   var candidates = data.candidates || []
   for (var k = 0; k < candidates.length; k++) {
-    if (!candidates[k].known) { states.push("candidates"); break }
+    if (countsAsNewCandidate(candidates[k])) { states.push("candidates"); break }
   }
   var worst = "clean"
   for (var m = 0; m < states.length; m++) {
@@ -305,6 +305,8 @@ function candidateRow(candidate, index) {
     known: known,
     suggestedPackage: String(c.suggested_package || ""),
     credential: c.credential === true,
+    verdict: String(c.verdict || ""),
+    reason: String(c.reason || ""),
     size: num(c.size, 0),
     sizeText: formatSize(c.size),
     itemType: String(c.type || "file"),
@@ -513,6 +515,12 @@ function confirmSpec(kind, payload) {
     title: "Ignore path",
     message: "This path will no longer be reported as a candidate.",
     lines: [String(p.path || "")], confirmText: "Ignore", destructive: false
+  }
+  if (kind === "accept-recommendations") return {
+    title: "Accept recommendations",
+    message: "Adopt every recommended config into " + String(p.repo || "the repo") + ". Nothing is uploaded until you Publish.",
+    lines: (p.lines || []).slice(),
+    confirmText: "Adopt " + pluralCount(num(p.count, 0), "config"), destructive: false
   }
   if (kind === "ignore-all") return {
     title: "Ignore all shown",
@@ -725,31 +733,103 @@ function overviewState(data, opts) {
   }
 }
 
-// How many candidates the owner has not acknowledged yet, excluding credential
-// stores (they never count toward the badge).
+// True when a candidate is one the panel counts and lists as a new config: the
+// backend's `upload` or `review`, never a credential store, never a hidden
+// `never`/`ignore`. A payload from an older backend has no verdict and still
+// counts, so the panel keeps today's behaviour with old data.
+function countsAsNewCandidate(candidate) {
+  var c = candidate || {}
+  if (c.known === true) return false
+  if (c.credential === true) return false
+  var verdict = String(c.verdict || "")
+  return verdict === "" || verdict === "upload" || verdict === "review"
+}
+
+// How many candidates the owner has not acknowledged yet and that are worth a
+// look: `upload` + `review`, excluding credential stores and hidden verdicts.
 function newCandidateCount(data) {
   var candidates = (data && data.candidates) || []
   var count = 0
-  for (var i = 0; i < candidates.length; i++) {
-    var c = candidates[i]
-    if (!c || c.credential === true) continue
-    if (c.known !== true) count++
-  }
+  for (var i = 0; i < candidates.length; i++) if (countsAsNewCandidate(candidates[i])) count++
   return count
 }
 
+// The candidates the backend recommends adopting: verdict `upload`, not yet
+// known, not a credential store.
+function recommendedCandidates(data) {
+  var candidates = (data && data.candidates) || []
+  var out = []
+  for (var i = 0; i < candidates.length; i++) {
+    var c = candidates[i]
+    if (!c || c.known === true || c.credential === true) continue
+    if (String(c.verdict || "") !== "upload") continue
+    out.push(c)
+  }
+  return out
+}
+
+// The adopt steps frozen in a confirm payload. A background status refresh must
+// never change the list the owner already approved, so the confirm handler
+// replays this copy instead of recomputing the plan from live data.
+function confirmationSteps(payload) {
+  var p = payload || {}
+  return (p.steps || []).slice()
+}
+
+// The "Accept recommendations" plan: one existing adopt step per recommended
+// candidate, with the package the row already suggests, plus the confirm-card
+// lines that name every path with its reason. `count` is 0 when there is
+// nothing to accept or no repository to adopt into.
+function recommendationPlan(data, repos) {
+  var target = adoptTarget(repos)
+  var recs = recommendedCandidates(data)
+  var plan = { repo: target.repo, count: 0, lines: [], steps: [] }
+  if (target.repo === "") return plan
+  for (var i = 0; i < recs.length; i++) {
+    var c = recs[i]
+    var path = String(c.path || "")
+    var pkg = packageFor({ path: path, suggestedPackage: String(c.suggested_package || "") }, {})
+    var reason = String(c.reason || "")
+    plan.steps.push({
+      tag: "adopt",
+      args: ["adopt", "--repo", target.repo, "--package", pkg, "--path", path],
+      stdin: ""
+    })
+    plan.lines.push(path + " \u2192 package " + pkg + (reason !== "" ? " (" + reason + ")" : ""))
+  }
+  plan.count = plan.steps.length
+  return plan
+}
+
+// One plain sentence for the end of an adopt batch.
+function adoptSummaryText(done, total) {
+  var d = num(done, 0)
+  var t = num(total, 0)
+  if (t <= 0) return "Nothing adopted."
+  if (d >= t) return "Adopted " + pluralCount(t, "config") + "."
+  return "Adopted " + d + " of " + t + " configs."
+}
+
 // The first unacknowledged candidate (falling back to the first candidate) —
-// what the `a` key adopts. Null when there is nothing to adopt.
+// what the `a` key adopts. A recommendation wins over a doubt, and a hidden
+// (`never`/`ignore`) candidate is never adopted. Null when there is nothing.
 function firstNewCandidate(candidates) {
   var list = candidates || []
   var fallback = null
+  var doubt = null
   for (var i = 0; i < list.length; i++) {
-    if (!list[i]) continue
-    if (list[i].credential === true) continue // never adopt a credential store
-    if (list[i].known !== true) return list[i]
-    if (fallback === null) fallback = list[i]
+    var c = list[i]
+    if (!c || c.credential === true) continue // never adopt a credential store
+    var verdict = String(c.verdict || "")
+    if (verdict === "never" || verdict === "ignore") continue // hidden on purpose
+    if (c.known === true) {
+      if (fallback === null) fallback = c
+      continue
+    }
+    if (verdict === "upload") return c
+    if (doubt === null) doubt = c
   }
-  return fallback
+  return doubt !== null ? doubt : fallback
 }
 
 // The package label shown on a candidate row: the real suggestion, or
@@ -1487,19 +1567,42 @@ function overviewGroups(data) {
   }
 
   var newConfigs = []
+  var hiddenConfigs = []
   var candidates = d.candidates || []
   for (var f = 0; f < candidates.length; f++) {
-    if (candidates[f] && candidates[f].known === true) continue
-    newConfigs.push({
+    var c = candidates[f]
+    if (!c || c.known === true) continue
+    var verdict = String(c.verdict || "")
+    var item = {
       type: "candidate",
-      path: String((candidates[f] && candidates[f].path) || ""),
-      package: String((candidates[f] && candidates[f].suggested_package) || ""),
-      group: String((candidates[f] && candidates[f].group) || "watched"),
-      credential: !!(candidates[f] && candidates[f].credential)
-    })
+      path: String(c.path || ""),
+      package: String(c.suggested_package || ""),
+      group: String(c.group || "watched"),
+      credential: !!c.credential,
+      verdict: verdict,
+      reason: String(c.reason || ""),
+      hidden: verdict === "never" || verdict === "ignore"
+    }
+    if (item.hidden) hiddenConfigs.push(item)
+    else newConfigs.push(item)
   }
+  // Recommendations first, then the doubts; path order inside each group.
+  newConfigs.sort(function(a, b) {
+    var ra = a.verdict === "upload" ? 0 : 1
+    var rb = b.verdict === "upload" ? 0 : 1
+    return ra !== rb ? ra - rb : compareStrings(a.path, b.path)
+  })
   if (newConfigs.length > 0) {
-    groups.push(overviewGroup("newConfigs", "New config files", "file", newConfigs))
+    var fresh = overviewGroup("newConfigs", "New config files", "file", newConfigs)
+    var recommended = 0
+    for (var n = 0; n < newConfigs.length; n++) if (newConfigs[n].verdict === "upload") recommended++
+    if (recommended > 0) fresh.actionText = "Accept recommendations (" + recommended + ")"
+    groups.push(fresh)
+  }
+  if (hiddenConfigs.length > 0) {
+    var hidden = overviewGroup("hiddenConfigs", "Hidden", "file", hiddenConfigs)
+    hidden.subtitle = "Not counted; adopt one by hand if it belongs in Stow"
+    groups.push(hidden)
   }
 
   var fixing = []
