@@ -1090,6 +1090,21 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".config/app.log")
         self.assertEqual(verdict, ss.VERDICT_IGNORE)
 
+    def test_secret_in_an_oversized_log_is_never(self) -> None:
+        # The readable head is still scanned, so a credential beats the name rule.
+        token = "ghp_" + "q7Q7q7Q7" * 5
+        write(self.home / ".config" / "session.log", "token = " + token + "\n" + "a" * ss.VERDICT_FILE_MAX_BYTES)
+        verdict, reason = self.verdict(".config/session.log")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+        self.assertIn("github-token", reason)
+        self.assertNotIn(token, reason)
+
+    def test_secret_in_a_binary_file_is_never(self) -> None:
+        token = "ghp_" + "z8Z8z8Z8" * 5
+        write_bytes(self.home / ".config" / "state.db", b"\x00\x01" + token.encode() + b"\x00")
+        verdict, _reason = self.verdict(".config/state.db")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+
     def test_owner_written_shell_launcher_is_not_machine_state(self) -> None:
         # A plain shebang is the owner's script, not a tool-managed launcher.
         write(self.home / ".local" / "bin" / "mine", "#!/bin/sh\nexec foo\n")
@@ -1168,8 +1183,20 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".config/many")
         self.assertEqual(verdict, ss.VERDICT_REVIEW)
 
+    def test_directory_at_the_entry_budget_is_still_judged(self) -> None:
+        # Exactly the bound is allowed, so an off-by-one cannot hide a whole
+        # directory behind "too much content".
+        root = self.home / ".config" / "exact"
+        for index in range(ss.VERDICT_DIR_MAX_ENTRIES - 1):
+            (root / ("d" + str(index))).mkdir(parents=True)
+        write(root / "config.toml", "[app]\nx = 1\n")
+        verdict, _reason = self.verdict(".config/exact")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
     def test_unreadable_directory_is_review(self) -> None:
         # An entry the walk cannot open means "no private data found" is unproven.
+        if os.geteuid() == 0:
+            self.skipTest("root ignores mode bits, so the walk stays readable")
         blocked = self.home / ".config" / "app" / "private"
         write(blocked / "conf", "x = 1\n")
         write(self.home / ".config" / "app" / "config.toml", "[app]\ny = 2\n")

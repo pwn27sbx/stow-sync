@@ -1864,7 +1864,8 @@ def _candidate_text(path: str, limit: int) -> tuple[str, str]:
 
     ``state`` is ``_TEXT_OK`` (valid UTF-8 within the limit), ``_TEXT_LARGE``
     (more than ``limit`` bytes) or ``_TEXT_BINARY`` (unreadable, NUL bytes or
-    invalid UTF-8).
+    invalid UTF-8). ``text`` is always the decoded head, so a secret in the
+    readable bytes is found even when the file is binary or oversized.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
@@ -1880,13 +1881,14 @@ def _candidate_text(path: str, limit: int) -> tuple[str, str]:
         except OSError:
             pass
     if len(raw) > limit:
-        return "", _TEXT_LARGE
-    if b"\x00" in raw:
-        return "", _TEXT_BINARY
+        return raw[:limit].decode("utf-8", "replace"), _TEXT_LARGE
     try:
-        return raw.decode("utf-8"), _TEXT_OK
+        text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return "", _TEXT_BINARY
+        return raw.decode("utf-8", "replace"), _TEXT_BINARY
+    if b"\x00" in raw:
+        return text, _TEXT_BINARY
+    return text, _TEXT_OK
 
 
 def _secret_rule(text: str) -> str:
@@ -1918,18 +1920,19 @@ def _upload_reason(text: str) -> str:
 def _file_verdict(path: str) -> tuple[str, str]:
     """Verdict for one regular file: a plain file candidate or a walk entry.
 
-    Order, first match wins: a secret in readable text is ``never``; a
-    tool-generated launcher or a machine-state name is ``ignore``; readable text
-    with no machine-specific path is ``upload``; anything binary, oversized or
-    referring to this machine's tool installs is ``review``. A machine-state
-    name still decides when the content is not readable text: a real SQLite
-    file is binary, and its name already says machine state.
+    Order, first match wins: a secret in the readable bytes is ``never`` — even
+    when the file is binary or oversized, only the head beyond the read bound is
+    unseen; a tool-generated launcher or a machine-state name is ``ignore``;
+    readable text with no machine-specific path is ``upload``; anything binary,
+    oversized or referring to this machine's tool installs is ``review``. A
+    machine-state name still decides when the content is not readable text: a
+    real SQLite file is binary, and its name already says machine state.
     """
     text, state = _candidate_text(path, VERDICT_FILE_MAX_BYTES)
+    rule = _secret_rule(text)
+    if rule:
+        return VERDICT_NEVER, _secret_reason(rule)
     if state == _TEXT_OK:
-        rule = _secret_rule(text)
-        if rule:
-            return VERDICT_NEVER, _secret_reason(rule)
         if text.startswith("#!"):
             tool = _tool_env_tool(text.split("\n", 1)[0])
             if tool:
