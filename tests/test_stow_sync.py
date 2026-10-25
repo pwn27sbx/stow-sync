@@ -1007,6 +1007,224 @@ class CompiledBinaryTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# Candidate verdicts (README "New config candidates"): one test per rule.
+# --------------------------------------------------------------------------
+
+
+class CandidateVerdictTests(unittest.TestCase):
+    """Deterministic verdict + reason per candidate, from the file itself."""
+
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+
+    def verdict(self, rel: str):
+        return ss.candidate_verdict(str(self.home / rel))
+
+    # --- never ---------------------------------------------------------
+
+    def test_credential_store_verdict_is_never(self) -> None:
+        write(self.home / ".config" / "secrets" / "store", "opaque\n")
+        verdict, reason = self.verdict(".config/secrets")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+        self.assertIn("credential", reason.lower())
+
+    def test_secret_content_verdict_is_never_without_the_value(self) -> None:
+        token = "ghp_" + "a1B2c3D4" * 5
+        write(self.home / ".config" / "app" / "conf", "token = " + token + "\n")
+        verdict, reason = self.verdict(".config/app/conf")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+        self.assertIn("github-token", reason)
+        self.assertNotIn(token, reason)
+
+    def test_secret_inside_a_directory_is_never(self) -> None:
+        write(self.home / ".config" / "app" / "conf", "x = 1\n")
+        write(self.home / ".config" / "app" / "extra.env", "OPENAI=sk-" + "z9Y8x7W6" * 4 + "\n")
+        verdict, reason = self.verdict(".config/app")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+        self.assertIn("openai-key", reason)
+
+    # --- ignore --------------------------------------------------------
+
+    def test_uv_launcher_verdict_is_ignore(self) -> None:
+        shebang = "#!" + str(self.home / ".local/share/uv/tools/samloader/bin/python")
+        write(self.home / ".local" / "bin" / "samloader", shebang + "\nimport sys\n")
+        verdict, reason = self.verdict(".local/bin/samloader")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("uv", reason)
+        self.assertIn("reinstalling", reason.lower())
+
+    def test_tool_managed_shebangs_are_ignore(self) -> None:
+        shebangs = {
+            "mise-tool": str(self.home / ".local/share/mise/installs/node/26/bin/node"),
+            "pipx-tool": str(self.home / "pipx/venvs/tool/bin/python"),
+            "npm-tool": str(self.home / "lib/node_modules/tool/bin/tool.js"),
+        }
+        for name, target in shebangs.items():
+            write(self.home / ".local" / "bin" / name, "#!" + target + "\n")
+            verdict, _reason = self.verdict(".local/bin/" + name)
+            self.assertEqual(verdict, ss.VERDICT_IGNORE, name)
+
+    def test_machine_state_names_are_ignore(self) -> None:
+        names = (
+            ".bash_history", "app.log", "package-lock.json", "app.sqlite",
+            "conf.bak", "conf.tmp", "app.pid", "cache",
+        )
+        for name in names:
+            write(self.home / ".config" / name, "x\n")
+            verdict, _reason = self.verdict(".config/" + name)
+            self.assertEqual(verdict, ss.VERDICT_IGNORE, name)
+
+    def test_owner_written_shell_launcher_is_not_machine_state(self) -> None:
+        # A plain shebang is the owner's script, not a tool-managed launcher.
+        write(self.home / ".local" / "bin" / "mine", "#!/bin/sh\nexec foo\n")
+        verdict, _reason = self.verdict(".local/bin/mine")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_tool_install_path_in_content_is_ignore(self) -> None:
+        tool = str(self.home / ".local/share/uv/tools/samloader/bin")
+        write(self.home / ".config" / "app" / "conf", "launcher = " + tool + "\n")
+        verdict, reason = self.verdict(".config/app/conf")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("machine", reason.lower())
+
+    # --- upload --------------------------------------------------------
+
+    def test_small_text_config_verdict_is_upload(self) -> None:
+        write(self.home / ".config" / "nuncio" / "config.toml", "[app]\nstart_hidden = true\n")
+        verdict, reason = self.verdict(".config/nuncio/config.toml")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+        self.assertIn("no private data", reason.lower())
+
+    def test_commented_config_gets_the_comment_reason(self) -> None:
+        plain = self.home / ".config" / "a" / "config.json"
+        commented = self.home / ".config" / "b" / "config.json"
+        write(plain, '{"ui": {"theme": "dark"}}\n')
+        write(commented, '{\n  // my own note\n  "ui": {"theme": "dark"}\n}\n')
+        _plain_verdict, plain_reason = self.verdict(".config/a/config.json")
+        commented_verdict, commented_reason = self.verdict(".config/b/config.json")
+        self.assertEqual(commented_verdict, ss.VERDICT_UPLOAD)
+        self.assertIn("comment", commented_reason.lower())
+        self.assertNotEqual(commented_reason, plain_reason)
+
+    def test_directory_of_text_files_is_upload(self) -> None:
+        write(self.home / ".config" / "nuncio" / "config.toml", "[app]\nstart_hidden = true\n")
+        verdict, _reason = self.verdict(".config/nuncio")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    # --- review --------------------------------------------------------
+
+    def test_binary_content_verdict_is_review(self) -> None:
+        write_bytes(self.home / ".config" / "app.dat", b"\x00\x01\x02binary\x00")
+        verdict, reason = self.verdict(".config/app.dat")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+        self.assertIn("check", reason.lower())
+
+    def test_oversized_text_verdict_is_review(self) -> None:
+        write(self.home / ".config" / "big.conf", "a" * (ss.VERDICT_FILE_MAX_BYTES + 1))
+        verdict, _reason = self.verdict(".config/big.conf")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+
+    def test_directory_of_machine_state_is_ignore(self) -> None:
+        write(self.home / ".config" / "app" / "app.log", "line\n")
+        write(self.home / ".config" / "app" / "app.sqlite", "x\n")
+        verdict, _reason = self.verdict(".config/app")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+
+    def test_mixed_directory_verdict_is_review(self) -> None:
+        # S6: borderline cases go to review, never to ignore.
+        write(self.home / ".config" / "app" / "config.toml", "[app]\nx = 1\n")
+        write(self.home / ".config" / "app" / "app.log", "line\n")
+        verdict, _reason = self.verdict(".config/app")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+
+    def test_empty_directory_verdict_is_review(self) -> None:
+        (self.home / ".config" / "empty").mkdir(parents=True)
+        verdict, _reason = self.verdict(".config/empty")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+
+    # --- plumbing ------------------------------------------------------
+
+    def test_annotate_verdicts_sets_unknown_candidates_only(self) -> None:
+        write(self.home / ".config" / "nuncio" / "config.toml", "[app]\nx = 1\n")
+        write(self.home / ".config" / "old" / "config.toml", "[app]\nx = 1\n")
+        candidates = ss.compute_candidates(
+            {"repos": [], "watch": ["~/.config/*"], "ignore": []},
+            {"~/.config/old"},
+        )
+        ss.annotate_verdicts(candidates)
+        by_path = {c["path"]: c for c in candidates}
+        self.assertEqual(by_path["~/.config/nuncio"]["verdict"], ss.VERDICT_UPLOAD)
+        self.assertIn("no private data", by_path["~/.config/nuncio"]["reason"].lower())
+        self.assertEqual(by_path["~/.config/old"]["verdict"], "")
+        self.assertEqual(by_path["~/.config/old"]["reason"], "")
+
+    def test_badge_counts_upload_and_review_only(self) -> None:
+        candidates = [
+            {"group": "watched", "known": False, "verdict": "upload"},
+            {"group": "watched", "known": False, "verdict": "review"},
+            {"group": "watched", "known": False, "verdict": "ignore"},
+            {"group": "watched", "known": False, "verdict": "never"},
+            {"group": "watched", "known": True, "verdict": "upload"},
+            {"group": "watched", "known": False, "credential": True, "verdict": "never"},
+        ]
+        self.assertEqual(ss.compute_badge(candidates), 2)
+
+    def test_real_cases_from_the_brief(self) -> None:
+        # The 2026-10-25 candidates on the owner's machine, rebuilt in a sandbox.
+        write(self.home / ".config" / "secrets" / "store", "opaque\n")
+        write(
+            self.home / ".local" / "bin" / "samloader",
+            "#!" + str(self.home / ".local/share/uv/tools/samloader/bin/python") + "\nimport sys\n",
+        )
+        write(self.home / ".config" / "nuncio" / "config.toml", "[app]\nstart_hidden = true\n")
+        write(
+            self.home / ".config" / "opencode-cockpit" / "config.json",
+            '{\n  // hand written\n  "ui": {"scale": 1}\n}\n',
+        )
+        candidates = ss.compute_candidates(
+            {"repos": [], "watch": ["~/.local/bin", "~/.config/*"], "ignore": []},
+        )
+        ss.annotate_verdicts(candidates)
+        by_path = {c["path"]: c for c in candidates}
+        expected = {
+            "~/.config/secrets": "never",
+            "~/.local/bin/samloader": "ignore",
+            "~/.config/nuncio": "upload",
+            "~/.config/opencode-cockpit": "upload",
+        }
+        self.assertEqual({path: by_path[path]["verdict"] for path in expected}, expected)
+        for candidate in candidates:
+            self.assertIn(candidate["verdict"], ss.VERDICTS)
+            self.assertTrue(candidate["reason"], candidate["path"])
+        # Today's badge counts 3 of these; the verdicts bring it to 2 (S9).
+        self.assertEqual(ss.compute_badge(candidates), 2)
+
+    def test_status_reports_the_verdict_and_the_badge(self) -> None:
+        config = self.env.root / "config.json"
+        write_config(config, [], watch=["~/.local/bin", "~/.config/*"])
+        write(self.home / ".config" / "secrets" / "store", "opaque\n")
+        write(
+            self.home / ".local" / "bin" / "samloader",
+            "#!" + str(self.home / ".local/share/uv/tools/samloader/bin/python") + "\n",
+        )
+        write(self.home / ".config" / "nuncio" / "config.toml", "[app]\nstart_hidden = true\n")
+        # An existing baseline: every path below is new, so every verdict counts.
+        state = ss.resolve_state_dir()
+        ss.write_baseline(state, [])
+        payload = ss.dispatch(["status"], str(config))
+        by_path = {c["path"]: c for c in payload["candidates"]}
+        self.assertEqual(by_path["~/.config/secrets"]["verdict"], "never")
+        self.assertEqual(by_path["~/.local/bin/samloader"]["verdict"], "ignore")
+        self.assertEqual(by_path["~/.config/nuncio"]["verdict"], "upload")
+        self.assertEqual(payload["summary"]["count"], 1)
+
+
+# --------------------------------------------------------------------------
 # T12 status integration: real package health, candidates, summary
 # --------------------------------------------------------------------------
 
