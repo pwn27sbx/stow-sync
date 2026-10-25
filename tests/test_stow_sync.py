@@ -1161,6 +1161,20 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".config/app")
         self.assertEqual(verdict, ss.VERDICT_IGNORE)
 
+    def test_directory_of_caches_is_ignore(self) -> None:
+        # A config dir that only holds a cache subdirectory is machine state:
+        # the cache name decides for everything inside it.
+        write(self.home / ".config" / "pi" / "web-search-cache" / "abc.json", '{"q": "x"}\n')
+        verdict, reason = self.verdict(".config/pi")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("machine state", reason.lower())
+
+    def test_secret_inside_a_cache_is_still_never(self) -> None:
+        token = "ghp_" + "m3M3m3M3" * 5
+        write(self.home / ".config" / "pi" / "web-search-cache" / "abc.json", '{"t": "' + token + '"}\n')
+        verdict, _reason = self.verdict(".config/pi")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+
     def test_mixed_directory_verdict_is_review(self) -> None:
         # A directory with both useful and machine-state files is borderline:
         # review, never ignore, so nothing the owner might want disappears.

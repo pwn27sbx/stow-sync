@@ -1977,6 +1977,9 @@ def _directory_verdict(path: str) -> tuple[str, str]:
         entries += len(dirnames) + len(filenames)
         if entries > VERDICT_DIR_MAX_ENTRIES:
             return VERDICT_REVIEW, DIR_LARGE_REASON
+        # A machine-state directory name (a cache, a log dir) decides for
+        # everything inside it; a secret still wins over the name.
+        in_state = _machine_state_reason(dirpath) != ""
         for name in sorted(filenames):
             full = os.path.join(dirpath, name)
             if os.path.islink(full):
@@ -1991,7 +1994,9 @@ def _directory_verdict(path: str) -> tuple[str, str]:
             verdict, reason = _file_verdict(full)
             if verdict == VERDICT_NEVER:
                 return VERDICT_NEVER, reason
-            if verdict == VERDICT_IGNORE:
+            if in_state:
+                state_files += 1
+            elif verdict == VERDICT_IGNORE:
                 state_files += 1
             elif verdict == VERDICT_REVIEW:
                 return VERDICT_REVIEW, reason
