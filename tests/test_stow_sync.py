@@ -1124,7 +1124,106 @@ class CandidateVerdictTests(unittest.TestCase):
         write(self.home / ".config" / "nuncio" / "config.toml", "[app]\nstart_hidden = true\n")
         verdict, reason = self.verdict(".config/nuncio/config.toml")
         self.assertEqual(verdict, ss.VERDICT_UPLOAD)
-        self.assertIn("no private data", reason.lower())
+        self.assertIn("no secret match", reason)
+
+    # --- upload reasons: specific to the file, honest about the scan ----
+
+    def test_upload_reason_names_the_file_and_the_check(self) -> None:
+        write(self.home / ".config" / "app" / "config.json", '{"a": 1}\n')
+        _verdict, reason = self.verdict(".config/app/config.json")
+        self.assertTrue(reason.startswith("config.json: "), reason)
+        self.assertIn("no secret match", reason)
+        self.assertNotIn("private data", reason)
+
+    def test_toml_reason_names_its_sections(self) -> None:
+        write(
+            self.home / ".config" / "nuncio" / "config.toml",
+            "# nuncio configuration\n[ui]\n\n[notifications]\nenabled = true\n\n[app]\nbackground = true\n",
+        )
+        _verdict, reason = self.verdict(".config/nuncio/config.toml")
+        self.assertIn("ui, notifications, app", reason)
+
+    def test_jsonc_reason_mentions_the_comments(self) -> None:
+        write(
+            self.home / ".config" / "cockpit" / "config.json",
+            '{\n  // my own note\n  "status": {"sidebar": false}\n}\n',
+        )
+        _verdict, reason = self.verdict(".config/cockpit/config.json")
+        self.assertIn("JSON with your own comments", reason)
+
+    def test_plain_json_reason_does_not_claim_comments(self) -> None:
+        write(self.home / ".config" / "a" / "config.json", '{"ui": {"scale": 1}}\n')
+        _verdict, reason = self.verdict(".config/a/config.json")
+        self.assertNotIn("comment", reason)
+        self.assertIn("JSON settings you can edit", reason)
+
+    def test_script_reason_is_honest(self) -> None:
+        write(self.home / ".local" / "bin" / "mine", "#!/bin/sh\nexec foo\n")
+        _verdict, reason = self.verdict(".local/bin/mine")
+        self.assertIn("script", reason)
+        self.assertIn("no secret match", reason)
+
+    def test_single_file_directory_reason_is_the_file_reason(self) -> None:
+        write(self.home / ".config" / "nuncio" / "config.toml", "[ui]\n[notifications]\n")
+        file_verdict, file_reason = self.verdict(".config/nuncio/config.toml")
+        dir_verdict, dir_reason = self.verdict(".config/nuncio")
+        self.assertEqual(file_verdict, ss.VERDICT_UPLOAD)
+        self.assertEqual(dir_verdict, ss.VERDICT_UPLOAD)
+        self.assertEqual(dir_reason, file_reason)
+        self.assertTrue(dir_reason.startswith("config.toml: "), dir_reason)
+
+    def test_multi_file_directory_reason_lists_its_files(self) -> None:
+        write(self.home / ".config" / "app" / "config.toml", "[ui]\n")
+        write(self.home / ".config" / "app" / "extra.conf", "key = 1\n")
+        _verdict, reason = self.verdict(".config/app")
+        self.assertIn("config.toml", reason)
+        self.assertIn("extra.conf", reason)
+        self.assertIn("no secret match", reason)
+
+    def test_upload_reason_is_one_bounded_line(self) -> None:
+        write(
+            self.home / ".config" / "app" / ("x" * 60 + ".conf"),
+            "[alpha]\n[beta]\n[gamma]\n[delta]\n",
+        )
+        _verdict, reason = self.verdict(".config/app")
+        self.assertLessEqual(len(reason), ss.MAX_REASON_CHARS)
+        self.assertIn("no secret match", reason)
+
+    def test_reason_with_one_long_word_still_fits_the_cap(self) -> None:
+        # A section name with no space to cut at used to overflow by the
+        # ellipsis (review finding R3-reason-cap).
+        write(
+            self.home / ".config" / "app" / ("n" * 30 + ".conf"),
+            "[" + "y" * 38 + "]\n",
+        )
+        _verdict, reason = self.verdict(".config/app")
+        self.assertLessEqual(len(reason), ss.MAX_REASON_CHARS)
+        self.assertTrue(reason.endswith(ss.NO_SECRET_NOTE), reason)
+
+    def test_two_real_cases_get_different_specific_reasons(self) -> None:
+        # The two candidates the owner sees on this machine: one TOML with
+        # sections, one JSONC with comments. They must not share a reason.
+        write(
+            self.home / ".config" / "nuncio" / "config.toml",
+            "# nuncio configuration\n[ui]\n\n[notifications]\nenabled = true\n\n[app]\nbackground = true\n",
+        )
+        write(
+            self.home / ".config" / "opencode-cockpit" / "config.json",
+            '{\n  // Status (opencode-cockpit)\n  "status": {"sidebar": false}\n}\n',
+        )
+        _nuncio_verdict, nuncio = self.verdict(".config/nuncio")
+        _cockpit_verdict, cockpit = self.verdict(".config/opencode-cockpit")
+        self.assertNotEqual(nuncio, cockpit)
+        self.assertIn("config.toml", nuncio)
+        self.assertIn("ui, notifications, app", nuncio)
+        self.assertIn("config.json", cockpit)
+        self.assertIn("JSON with your own comments", cockpit)
+        for reason in (nuncio, cockpit):
+            self.assertIn("no secret match", reason)
+            self.assertNotIn("private data", reason)
+            # Both fit the measured row width, so neither is truncated.
+            self.assertLessEqual(len(reason), ss.MAX_REASON_CHARS)
+            self.assertNotIn("\u2026", reason)
 
     def test_commented_config_gets_the_comment_reason(self) -> None:
         plain = self.home / ".config" / "a" / "config.json"
@@ -1183,10 +1282,27 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".config/app")
         self.assertEqual(verdict, ss.VERDICT_REVIEW)
 
-    def test_empty_directory_verdict_is_review(self) -> None:
+    def test_empty_directory_is_ignore(self) -> None:
+        # Nothing to adopt, so it must not ask the owner anything.
         (self.home / ".config" / "empty").mkdir(parents=True)
-        verdict, _reason = self.verdict(".config/empty")
-        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+        verdict, reason = self.verdict(".config/empty")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("nothing to keep", reason)
+
+    def test_directory_of_empty_folders_is_ignore(self) -> None:
+        (self.home / ".config" / "app" / "sub").mkdir(parents=True)
+        verdict, reason = self.verdict(".config/app")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("nothing to keep", reason)
+
+    def test_directory_of_an_empty_machine_state_folder_is_ignore(self) -> None:
+        # The live case on this machine: ~/.config/pi held only an empty
+        # web-search-cache/, so it asked for a decision with nothing inside.
+        (self.home / ".config" / "pi" / "web-search-cache").mkdir(parents=True)
+        verdict, reason = self.verdict(".config/pi")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("web-search-cache", reason)
+        self.assertIn("nothing to keep", reason)
 
     def test_directory_over_the_entry_budget_is_review(self) -> None:
         # Directory entries count too, so a tree of empty directories cannot
@@ -1208,7 +1324,7 @@ class CandidateVerdictTests(unittest.TestCase):
         self.assertEqual(verdict, ss.VERDICT_UPLOAD)
 
     def test_unreadable_directory_is_review(self) -> None:
-        # An entry the walk cannot open means "no private data found" is unproven.
+        # An entry the walk cannot open means the clean scan is unproven.
         if os.geteuid() == 0:
             self.skipTest("root ignores mode bits, so the walk stays readable")
         blocked = self.home / ".config" / "app" / "private"
@@ -1231,7 +1347,7 @@ class CandidateVerdictTests(unittest.TestCase):
         ss.annotate_verdicts(candidates)
         by_path = {c["path"]: c for c in candidates}
         self.assertEqual(by_path["~/.config/nuncio"]["verdict"], ss.VERDICT_UPLOAD)
-        self.assertIn("no private data", by_path["~/.config/nuncio"]["reason"].lower())
+        self.assertIn("no secret match", by_path["~/.config/nuncio"]["reason"])
         self.assertEqual(by_path["~/.config/old"]["verdict"], "")
         self.assertEqual(by_path["~/.config/old"]["reason"], "")
 
@@ -6040,6 +6156,12 @@ class CandidateVerdictSourceTests(unittest.TestCase):
         # The reviewed candidate must never recompute the plan when confirming.
         self.assertNotIn("Model.recommendationPlan", confirm)
         self.assertIn("onAcceptRecommendationsRequested: root.acceptRecommendations()", panel)
+
+    def test_no_reason_claims_more_than_the_scan(self) -> None:
+        # Only SECRET_RULES ran, so no reason may claim "no private data".
+        source = (SCRIPTS / "stow_sync.py").read_text(encoding="utf-8")
+        self.assertNotIn("no private data", source)
+        self.assertIn("no secret match", source)
 
     def test_adopt_batch_reports_its_summary(self) -> None:
         panel = self.read("Panel.qml")

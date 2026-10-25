@@ -1814,21 +1814,29 @@ NEVER_CREDENTIAL_REASON = "Known credential store; never stow it"
 TOOL_PATH_REASON = "Refers to a path installed on this machine only"
 DIR_STATE_REASON = "Only machine state inside; nothing to keep"
 DIR_MIXED_REASON = "Mixed contents; check it by hand"
-DIR_EMPTY_REASON = "Empty; nothing to inspect"
+DIR_EMPTY_REASON = "Empty folder; nothing to keep"
+DIR_EMPTY_FOLDERS_REASON = "Only empty folders inside; nothing to keep"
 DIR_LARGE_REASON = "Too much content to inspect; check it by hand"
 BINARY_REASON = "Binary or unfamiliar format; check it by hand"
 LARGE_REASON = (
     "Larger than " + str(VERDICT_FILE_MAX_BYTES // 1024) + " KB; check it by hand"
 )
 DIR_UNREADABLE_REASON = "Could not inspect every file; check it by hand"
-UPLOAD_PLAIN_REASON = "Small text config; no private data found"
-UPLOAD_COMMENTED_REASON = "Hand-written config with comments; no private data found"
-UPLOAD_SCRIPT_REASON = "Hand-written script; no private data found"
-UPLOAD_DIR_REASON = "Small text files; no private data found"
+
+# A reason is one line in the panel row: the backend caps it here. Measured on
+# the 560 px panel, a caption glyph averages ~5.4 px and the reason column is
+# ~326 px (the Adopt/Ignore buttons take the row's right side), so ~60
+# characters fit; 58 keeps a margin so the row never has to elide the note.
+MAX_REASON_CHARS = 58
+# The only check that ran on the bytes is SECRET_RULES: say exactly that, and
+# never claim that the file holds nothing sensitive.
+NO_SECRET_NOTE = "no secret match"
 
 # A line that starts with one of these is the owner's own comment, which is
 # extra confidence for `upload`.
 _COMMENT_MARKERS = ("#", "//", ";", "/*", "--")
+# A TOML/INI section header: one bracketed name alone on its line.
+_TOML_SECTION = re.compile(r"^\s*\[([^\[\]\n]{1,40})\]\s*$")
 
 
 def _secret_reason(rule: str) -> str:
@@ -1907,14 +1915,95 @@ def _tool_env_tool(text: str) -> str:
     return ""
 
 
-def _upload_reason(text: str) -> str:
-    """Reason for an uploadable text file; comments mean the owner wrote it."""
-    if text.startswith("#!"):
-        return UPLOAD_SCRIPT_REASON
+def _upload_reason(path: str, text: str) -> str:
+    """Specific reason for one uploadable text file.
+
+    Names the file and describes what the bytes actually show (sections,
+    JSON with comments, a script), then states the only check that ran. Two
+    different files therefore never share a generic line.
+    """
+    return _compose_reason(os.path.basename(path), _describe_text(text))
+
+
+def _has_comment(text: str) -> bool:
+    """True when one of the owner's comment markers starts a line."""
     for line in text.splitlines():
         if line.strip().startswith(_COMMENT_MARKERS):
-            return UPLOAD_COMMENTED_REASON
-    return UPLOAD_PLAIN_REASON
+            return True
+    return False
+
+
+def _text_sections(text: str) -> list[str]:
+    """Bracketed section names at the start of a line, in file order."""
+    sections: list[str] = []
+    for line in text.splitlines():
+        match = _TOML_SECTION.match(line)
+        if not match:
+            continue
+        name = match.group(1).strip()
+        if name and name not in sections:
+            sections.append(name)
+    return sections
+
+
+def _describe_text(text: str) -> str:
+    """What the bytes show, in a few plain words (never a guess)."""
+    if text.startswith("#!"):
+        return "a script you can edit"
+    sections = _text_sections(text)
+    if sections:
+        if len(sections) <= 3:
+            return ", ".join(sections)
+        return str(len(sections)) + " sections"
+    if text.lstrip()[:1] in ("{", "["):
+        if _has_comment(text):
+            return "JSON with your own comments"
+        return "JSON settings you can edit"
+    if _has_comment(text):
+        return "settings with your own comments"
+    return "text settings you can edit"
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Cut ``text`` to at most ``limit`` characters, at a word boundary.
+
+    The ellipsis is part of the budget, so the result never exceeds ``limit``
+    (the panel row must stay one line).
+    """
+    if len(text) <= limit:
+        return text
+    room = max(1, limit - 1)
+    cut = text[:room].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return (cut or text[:room]) + "\u2026"
+
+
+def _cap_line(text: str) -> str:
+    """One bounded line for a reason built from a path name."""
+    return _truncate(text, MAX_REASON_CHARS)
+
+
+def _compose_reason(name: str, detail: str) -> str:
+    """One bounded line: ``name: detail; <check note>``.
+
+    The detail is cut at a word boundary when it does not fit, and the check
+    note always survives, so a reason never lies about what was checked.
+    """
+    note = "; " + NO_SECRET_NOTE
+    head = name + ": " if name else ""
+    budget = MAX_REASON_CHARS - len(head) - len(note)
+    if budget < 12:
+        head = ""  # the name alone would eat the detail
+        budget = MAX_REASON_CHARS - len(note)
+    return head + _truncate(detail, budget) + note
+
+
+def _group_upload_reason(names: list[str]) -> str:
+    """Reason for a directory of several text files: name what is inside."""
+    shown = ", ".join(names[:2])
+    rest = len(names) - 2
+    if rest > 0:
+        shown += " and " + str(rest) + " more"
+    return _compose_reason("", shown + " (" + str(len(names)) + " text files)")
 
 
 def _file_verdict(path: str) -> tuple[str, str]:
@@ -1942,7 +2031,7 @@ def _file_verdict(path: str) -> tuple[str, str]:
             return VERDICT_IGNORE, state_reason
         if _tool_env_tool(text):
             return VERDICT_IGNORE, TOOL_PATH_REASON
-        return VERDICT_UPLOAD, _upload_reason(text)
+        return VERDICT_UPLOAD, _upload_reason(path, text)
     state_reason = _machine_state_reason(path)
     if state_reason:
         return VERDICT_IGNORE, state_reason
@@ -1968,7 +2057,10 @@ def _directory_verdict(path: str) -> tuple[str, str]:
 
     entries = 0
     state_files = 0
-    text_files = 0
+    text_names: list[str] = []
+    text_reasons: list[str] = []
+    dir_names: list[str] = []
+    state_dirs = 0
     read_bytes = 0
     for dirpath, dirnames, filenames in os.walk(path, onerror=_onerror):
         dirnames.sort()
@@ -1977,6 +2069,10 @@ def _directory_verdict(path: str) -> tuple[str, str]:
         entries += len(dirnames) + len(filenames)
         if entries > VERDICT_DIR_MAX_ENTRIES:
             return VERDICT_REVIEW, DIR_LARGE_REASON
+        for name in dirnames:
+            dir_names.append(name)
+            if _machine_state_reason(os.path.join(dirpath, name)):
+                state_dirs += 1
         # A machine-state directory name (a cache, a log dir) decides for
         # everything inside it; a secret still wins over the name.
         in_state = _machine_state_reason(dirpath) != ""
@@ -2001,16 +2097,34 @@ def _directory_verdict(path: str) -> tuple[str, str]:
             elif verdict == VERDICT_REVIEW:
                 return VERDICT_REVIEW, reason
             else:
-                text_files += 1
+                text_names.append(name)
+                text_reasons.append(reason)
     if unreadable:
         return VERDICT_REVIEW, DIR_UNREADABLE_REASON
-    if text_files == 0 and state_files == 0:
-        return VERDICT_REVIEW, DIR_EMPTY_REASON
-    if text_files == 0:
+    if not text_reasons and state_files == 0:
+        # Nothing to adopt: the walk found no file at all. An empty folder, or
+        # one holding only empty folders, asks the owner nothing, so it is
+        # ignored with a reason that names what was found.
+        if entries == 0:
+            return VERDICT_IGNORE, DIR_EMPTY_REASON
+        if dir_names and state_dirs == len(dir_names):
+            if len(dir_names) == 1:
+                return VERDICT_IGNORE, _cap_line(
+                    dir_names[0] + ": empty folder; nothing to keep"
+                )
+            return VERDICT_IGNORE, _cap_line(
+                str(len(dir_names)) + " empty machine-state folders; nothing to keep"
+            )
+        return VERDICT_IGNORE, DIR_EMPTY_FOLDERS_REASON
+    if not text_reasons:
         return VERDICT_IGNORE, DIR_STATE_REASON
     if state_files > 0:
         return VERDICT_REVIEW, DIR_MIXED_REASON
-    return VERDICT_UPLOAD, UPLOAD_DIR_REASON
+    # The reason comes from what is inside: one file keeps its own specific
+    # reason, several are named so the owner sees what would be adopted.
+    if len(text_reasons) == 1:
+        return VERDICT_UPLOAD, text_reasons[0]
+    return VERDICT_UPLOAD, _group_upload_reason(text_names)
 
 
 def candidate_verdict(path: str) -> tuple[str, str]:

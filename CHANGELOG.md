@@ -30,11 +30,19 @@ All notable changes to Stow Sync. The format follows
 - The new-config badge, the Overview banner sentence, the bar tone and the `a`
   key count only `upload` and `review` candidates; the `a` key prefers a
   recommendation and never picks a hidden one.
+- Candidate reasons are specific to the file: an `upload` names the file and
+  what it holds (TOML sections, JSON with your own comments, a script) and
+  states only what the scan proved ("no secret match"), instead of a generic
+  "no private data found". A directory names the files inside it, and a reason
+  stays one line.
 
 ### Fixed
 
 - A machine-state name (a real SQLite file, an oversized log) stays `ignore`
   instead of falling into `review`, and a secret in the readable bytes still
   wins over that name.
+- An empty new-config folder, or one holding only empty machine-state folders,
+  is `ignore` with a "nothing to keep" reason instead of asking for a decision
+  with nothing inside to adopt.
 - The Accept recommendations confirm card replays the plan it listed, so a
   background refresh while the card is open cannot change the approved paths.
