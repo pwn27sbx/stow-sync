@@ -1079,6 +1079,17 @@ class CandidateVerdictTests(unittest.TestCase):
             verdict, _reason = self.verdict(".config/" + name)
             self.assertEqual(verdict, ss.VERDICT_IGNORE, name)
 
+    def test_binary_database_name_is_still_ignore(self) -> None:
+        # A real SQLite file is binary; its name already says machine state.
+        write_bytes(self.home / ".config" / "app.sqlite", b"SQLite format 3\x00\x01\x02")
+        verdict, _reason = self.verdict(".config/app.sqlite")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+
+    def test_oversized_log_name_is_still_ignore(self) -> None:
+        write(self.home / ".config" / "app.log", "a" * (ss.VERDICT_FILE_MAX_BYTES + 1))
+        verdict, _reason = self.verdict(".config/app.log")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+
     def test_owner_written_shell_launcher_is_not_machine_state(self) -> None:
         # A plain shebang is the owner's script, not a tool-managed launcher.
         write(self.home / ".local" / "bin" / "mine", "#!/bin/sh\nexec foo\n")
@@ -1136,7 +1147,8 @@ class CandidateVerdictTests(unittest.TestCase):
         self.assertEqual(verdict, ss.VERDICT_IGNORE)
 
     def test_mixed_directory_verdict_is_review(self) -> None:
-        # S6: borderline cases go to review, never to ignore.
+        # A directory with both useful and machine-state files is borderline:
+        # review, never ignore, so nothing the owner might want disappears.
         write(self.home / ".config" / "app" / "config.toml", "[app]\nx = 1\n")
         write(self.home / ".config" / "app" / "app.log", "line\n")
         verdict, _reason = self.verdict(".config/app")
@@ -1145,6 +1157,25 @@ class CandidateVerdictTests(unittest.TestCase):
     def test_empty_directory_verdict_is_review(self) -> None:
         (self.home / ".config" / "empty").mkdir(parents=True)
         verdict, _reason = self.verdict(".config/empty")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+
+    def test_directory_over_the_entry_budget_is_review(self) -> None:
+        # Directory entries count too, so a tree of empty directories cannot
+        # outrun the bound (review finding R3-directory-work-bound).
+        root = self.home / ".config" / "many"
+        for index in range(ss.VERDICT_DIR_MAX_ENTRIES + 1):
+            (root / ("d" + str(index))).mkdir(parents=True)
+        verdict, _reason = self.verdict(".config/many")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+
+    def test_unreadable_directory_is_review(self) -> None:
+        # An entry the walk cannot open means "no private data found" is unproven.
+        blocked = self.home / ".config" / "app" / "private"
+        write(blocked / "conf", "x = 1\n")
+        write(self.home / ".config" / "app" / "config.toml", "[app]\ny = 2\n")
+        os.chmod(blocked, 0o000)
+        self.addCleanup(os.chmod, blocked, 0o755)
+        verdict, _reason = self.verdict(".config/app")
         self.assertEqual(verdict, ss.VERDICT_REVIEW)
 
     # --- plumbing ------------------------------------------------------
@@ -1175,7 +1206,9 @@ class CandidateVerdictTests(unittest.TestCase):
         self.assertEqual(ss.compute_badge(candidates), 2)
 
     def test_real_cases_from_the_brief(self) -> None:
-        # The 2026-10-25 candidates on the owner's machine, rebuilt in a sandbox.
+        # Four candidates a real machine reported on 2026-10-25, rebuilt here in
+        # a sandboxed HOME: a credential dir, a uv-generated launcher, and two
+        # hand-written configs (one TOML, one JSONC with a comment).
         write(self.home / ".config" / "secrets" / "store", "opaque\n")
         write(
             self.home / ".local" / "bin" / "samloader",
@@ -1201,7 +1234,8 @@ class CandidateVerdictTests(unittest.TestCase):
         for candidate in candidates:
             self.assertIn(candidate["verdict"], ss.VERDICTS)
             self.assertTrue(candidate["reason"], candidate["path"])
-        # Today's badge counts 3 of these; the verdicts bring it to 2 (S9).
+        # The badge counts what needs a look: nuncio and opencode-cockpit (2),
+        # not the credential store and not the uv launcher.
         self.assertEqual(ss.compute_badge(candidates), 2)
 
     def test_status_reports_the_verdict_and_the_badge(self) -> None:
