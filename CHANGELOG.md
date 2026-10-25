@@ -1,0 +1,40 @@
+# Changelog
+
+All notable changes to Stow Sync. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the plugin uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## Unreleased
+
+### Added
+
+- **New config candidates get a verdict and a reason.** The backend judges every
+  candidate from its own bytes — no network, no model — and reports `never`,
+  `ignore`, `upload` or `review` with a one-line plain reason: a credential
+  store or a secret match is `never`, tool-generated launchers and machine state
+  are `ignore`, a small text config with no machine-specific path is `upload`,
+  and everything doubtful is `review`. Reads are bounded, so `status` stays fast
+  and a bound turns into `review` instead of a guess.
+- **Hidden group.** `never` and `ignore` candidates move out of the new-config
+  list into a collapsible **Hidden** group that keeps their reason. `never`
+  offers no Adopt button; `ignore` can still be adopted by hand. Neither writes
+  to the config's `ignore` list.
+- **Accept recommendations (N).** One click in the New config files card (or the
+  Overview banner) adopts every `upload` candidate through the existing Adopt
+  path, after a confirm card that lists each path, package and reason. Nothing
+  is committed or uploaded: publishing stays the Publish step.
+- `status` candidates now carry `verdict` and `reason`.
+
+### Changed
+
+- The new-config badge, the Overview banner sentence, the bar tone and the `a`
+  key count only `upload` and `review` candidates; the `a` key prefers a
+  recommendation and never picks a hidden one.
+
+### Fixed
+
+- A machine-state name (a real SQLite file, an oversized log) stays `ignore`
+  instead of falling into `review`, and a secret in the readable bytes still
+  wins over that name.
+- The Accept recommendations confirm card replays the plan it listed, so a
+  background refresh while the card is open cannot change the approved paths.
