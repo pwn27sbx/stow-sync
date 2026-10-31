@@ -18,6 +18,9 @@ Item {
   property int bodyPadding: 0
   property bool hasAction: false
   property string actionText: "Fix"
+  // The action is the recommended pick for its group ("Accept recommendations"),
+  // so it follows the same rule as a candidate row's recommended button.
+  property bool actionEmphasis: false
   property bool focused: false
   property bool motion: true
   property color foreground: Color.foreground
@@ -121,6 +124,8 @@ Item {
           fontSize: Style.font.caption
           horizontalPadding: Style.spacing.sm
           verticalPadding: Style.spacing.xxs
+          background: root.actionEmphasis ? Color.accent : Style.normalFillFor(root.foreground, Color.accent)
+          foreground: root.actionEmphasis ? Color.background : root.foreground
           onClicked: root.actionClicked()
         }
 

@@ -40,11 +40,17 @@ All notable changes to Stow Sync. The format follows
 - **Every candidate row says its pick.** The row names the choice in plain
   words — **Recommended: Adopt**, **Recommended: Ignore**, **Suggested: Ignore**
   or **Never stow this** — and fills that button with the accent colour; the
-  other stays neutral. A `review` row now suggests the safer Ignore with a short
-  why instead of leaving both buttons equal: a project-bound unit says it
-  belongs to the project in `~/Projects`, an owner-only file says it is private,
-  and any other doubt says to check it first. A `never` row keeps no Adopt
-  button, as a credential store always did.
+  other stays a quiet outline. A `review` row now suggests the safer Ignore with
+  a short why instead of leaving both buttons equal: a project-bound unit says
+  it belongs to the project in `~/Projects`, an owner-only file says it is
+  private, and any other doubt says to check it first. A `never` row keeps no
+  Adopt button, as a credential store always did.
+- **One colour rule on every surface.** The same accent/quiet rule now covers
+  the Hidden rows and the group's **Accept recommendations (N)** action: an
+  already-ignored row shows a **✓ Ignored** chip with a quiet **Adopt anyway**
+  instead of a lonely opposite button. A permanent legend under the status
+  sentence ("The highlighted button is the recommended choice.") and the help
+  overlay state the rule once.
 
 ### Changed
 

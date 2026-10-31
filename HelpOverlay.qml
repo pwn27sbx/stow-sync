@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 // Help on demand: a small "? keys" button bottom-right toggles an overlay that
 // lists every shortcut. The overlay is dismissible by clicking the scrim or
@@ -69,7 +70,7 @@ Item {
         Text {
           width: parent.width
           textFormat: Text.PlainText
-          text: "Each new config row says its pick: Recommended when the verdict decided, Suggested when Ignore is the safe choice for a doubt. The filled button is that pick."
+          text: Model.recommendationLegend() + " Each new config row says its pick in words too: Recommended when the verdict decided, Suggested when Ignore is the safe choice for a doubt."
           color: Util.alpha(root.foreground, 0.72)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption

@@ -2716,6 +2716,54 @@ test("a suggested Ignore never enters the accept-recommendations plan", () => {
   assert.equal(Model.newCandidateCount(data), 3)
 })
 
+test("candidateRowActions colours only the recommended pick, everywhere", () => {
+  const upload = Model.candidateRowActions({ verdict: "upload" })
+  assert.equal(upload.adopt, "primary")
+  assert.equal(upload.ignore, "secondary")
+  assert.equal(upload.chip, "")
+
+  const review = Model.candidateRowActions({ verdict: "review", reason: "Binary or unfamiliar format; check it by hand" })
+  assert.equal(review.adopt, "secondary")
+  assert.equal(review.ignore, "primary")
+
+  // The same rule for every verdict: at most one accent button, and when there
+  // is one it is exactly the recommended action.
+  for (const verdict of ["upload", "review", "ignore", "never", ""]) {
+    const actions = Model.candidateRowActions({ verdict })
+    const primaries = [actions.adopt, actions.ignore].filter((style) => style === "primary")
+    assert.ok(primaries.length <= 1, verdict)
+    if (primaries.length === 1) {
+      const pick = Model.candidateRecommendation({ verdict }).action
+      assert.equal(pick === "adopt" ? actions.adopt : actions.ignore, "primary", verdict)
+    }
+  }
+})
+
+test("an already-ignored Hidden row shows its state, not a lone Adopt", () => {
+  const ignored = Model.candidateRowActions({ verdict: "ignore", reason: "Cache; its app regenerates it" })
+  assert.equal(ignored.chip, "Ignored")
+  assert.equal(ignored.adopt, "secondary") // "Adopt anyway"
+  assert.equal(ignored.ignore, "none") // no Ignore button: it already is ignored
+
+  const never = Model.candidateRowActions({ verdict: "never", reason: "canary.env: Discord webhook URL; never stow it" })
+  assert.equal(never.chip, "")
+  assert.equal(never.adopt, "none")
+  assert.equal(never.ignore, "none")
+
+  // A credential store is never adoptable, whatever an older payload says.
+  assert.equal(Model.candidateRowActions({ verdict: "upload", credential: true }).adopt, "none")
+
+  // An older payload without a verdict keeps both actions, neither highlighted.
+  const unknown = Model.candidateRowActions({ verdict: "" })
+  assert.equal(unknown.adopt, "secondary")
+  assert.equal(unknown.ignore, "secondary")
+  assert.equal(unknown.chip, "")
+})
+
+test("the legend states the colour rule in one line", () => {
+  assert.equal(Model.recommendationLegend(), "The highlighted button is the recommended choice.")
+})
+
 test("adoptSummaryText tells the partial story", () => {
   assert.equal(Model.adoptSummaryText(2, 2), "Adopted 2 configs.")
   assert.equal(Model.adoptSummaryText(1, 1), "Adopted 1 config.")

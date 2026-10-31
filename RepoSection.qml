@@ -50,13 +50,29 @@ Column {
     width: root.width
     visible: root.tab === 0
     spacing: Style.spacing.xxl
-    Bridge {
+    Column {
       width: parent.width
-      bridge: Model.bridgeState(root.statusData, { notSetUp: root.notSetUp })
-      sentence: Model.explain(root.statusData, { notSetUp: root.notSetUp })
-      busy: root.busy
-      motion: root.motion
-      foreground: root.foreground
+      spacing: Style.spacing.xs
+      Bridge {
+        width: parent.width
+        bridge: Model.bridgeState(root.statusData, { notSetUp: root.notSetUp })
+        sentence: Model.explain(root.statusData, { notSetUp: root.notSetUp })
+        busy: root.busy
+        motion: root.motion
+        foreground: root.foreground
+      }
+      // The permanent legend for the button colour, right under the status
+      // sentence: the first place the owner reads, and it stays put instead of
+      // living only in a tooltip.
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: Model.recommendationLegend()
+        color: Util.alpha(root.foreground, 0.6)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
     }
     SetupBanner {
       width: parent.width; visible: root.overview.showSetupCard; foreground: root.foreground; onSetupRequested: root.setupRequested()
@@ -108,6 +124,10 @@ Column {
           horizontalPadding: Style.spacing.sm
           verticalPadding: Style.spacing.xxs
           enabled: !root.busy
+          // It only appears when there is a firm recommendation, so it is the
+          // recommended Adopt: same accent rule as a candidate row.
+          background: Color.accent
+          foreground: Color.background
           onClicked: root.acceptRecommendationsRequested()
         }
       }
@@ -158,6 +178,7 @@ Column {
         foreground: root.foreground
         hasAction: String(modelData.actionText || "") !== ""
         actionText: String(modelData.actionText || "")
+        actionEmphasis: String(modelData.key) === "newConfigs"
         onToggled: root.toggleGroup(modelData.key)
         onActionClicked: root.acceptRecommendationsRequested()
         Repeater {
@@ -184,11 +205,6 @@ Column {
               visible: modelData.type === "candidate"
               row: modelData
               credential: modelData.credential === true
-              // A hidden `never` has no Adopt button at all; a hidden `ignore`
-              // can still be adopted by hand. Neither offers Ignore: the verdict
-              // is recomputed each scan.
-              showAdopt: modelData.hidden !== true || modelData.verdict === "ignore"
-              showIgnore: modelData.hidden !== true
               packageName: Model.candidateSuggestion({ suggested_package: modelData.package, credential: modelData.credential })
               foreground: root.foreground
               onAdoptRequested: root.adoptRequested(modelData)

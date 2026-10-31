@@ -167,12 +167,15 @@ line in the row.
 ### What a candidate row tells you
 
 Every row names its pick in plain words, above the two buttons, and the pick's
-button is filled with the accent colour (the other stays neutral):
+button is filled with the accent colour (the other stays a quiet outline). One
+permanent legend states the rule under the status sentence at the top of
+Overview ("The highlighted button is the recommended choice."), and the help
+overlay repeats it:
 
 | Row says | Means | Filled button |
 | --- | --- | --- |
 | **Recommended: Adopt** | the verdict is `upload`; this file belongs in Stow | Adopt |
-| **Recommended: Ignore** | the verdict is `ignore`; it is machine state, already out of the count | Ignore (hidden rows show no button: the verdict is recomputed each scan) |
+| **Recommended: Ignore** | the verdict is `ignore`; it is machine state, already out of the count. The row shows a **✓ Ignored** chip and a quiet **Adopt anyway** button, because there is no Ignore action to press: the verdict is recomputed each scan | the chip; **Adopt anyway** stays a quiet outline |
 | **Suggested: Ignore** | the verdict is `review`: a doubt, and Ignore is the safe pick | Ignore |
 | **Never stow this** | the verdict is `never` (a secret or a credential store) | no button |
 
@@ -188,7 +191,16 @@ For `never` the Adopt action is not offered at all, exactly like a known
 credential store: the row shows **Never stow this** in the warning colour and no
 Adopt button, so a secret can never be adopted in one click. Clicking the row
 itself adopts only when the pick is Adopt; a `review` row needs an explicit
-button press.
+button press. A row recommended Adopt but hidden for another reason (there is
+none today: Hidden only holds `ignore`/`never`) would keep its accent Adopt and
+a quiet Ignore, because hiding is about the group, not the advice.
+
+The same colour rule applies to every Adopt/Ignore surface, not just the rows:
+both **Accept recommendations (N)** surfaces (the New config files card and the
+Overview banner) are the recommended Adopt, so they are accent-filled too; the
+Hidden group, the keyboard (`a` still adopts the first new config) and the
+counts are unchanged; the Changes tab and the setup wizard never offer
+Adopt/Ignore, so they have nothing to colour.
 
 A candidate **directory** follows the same rule: any file inside that only its
 owner can read makes the directory `review`, with the reason naming that file

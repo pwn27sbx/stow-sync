@@ -6287,41 +6287,66 @@ class Unit17bSourceTests(unittest.TestCase):
         row = (ROOT / "CandidateRow.qml").read_text(encoding="utf-8")
         self.assertIn("property bool credential", row)
         self.assertIn("contains credentials", row)
-        self.assertIn("visible: !root.credential", row)
-        # A row click adopts only a firm upload; a credential store and a
-        # suggested Ignore stay behind an explicit button press.
-        self.assertIn(
-            "readonly property bool adoptable: root.showAdopt && !root.credential",
-            row,
-        )
-        self.assertIn(
-            "readonly property bool rowActivates: root.adoptable && root.adoptEmphasis",
-            row,
-        )
+        # The model decides the actions: a credential row is never, so no Adopt.
+        self.assertIn("Model.candidateRowActions(root.candidate)", row)
+        self.assertIn('readonly property bool adoptVisible: root.actions.adopt !== "none" && !root.credential', row)
+        # A suggested (secondary) action is never a row-click target.
+        self.assertIn('readonly property bool rowActivates: root.adoptPrimary', row)
         self.assertIn("enabled: root.rowActivates", row)
 
 
 class CandidateRecommendationUiTests(unittest.TestCase):
-    """Round 2: every candidate row names its pick and fills that button."""
+    """Round 2/3: every candidate row names its pick and colours that button."""
 
     def test_row_renders_the_recommendation_above_the_reason(self) -> None:
         row = (ROOT / "CandidateRow.qml").read_text(encoding="utf-8")
-        self.assertIn("Model.candidateRecommendation(root.candidate)", row)
+        self.assertIn("Model.candidateRowActions(root.candidate)", row)
         # The pick sits above the backend reason, which stays the why line.
         self.assertLess(
-            row.index("root.recommendation.label"),
+            row.index("root.actions.label"),
             row.index("String(root.candidate.reason"),
         )
-        self.assertIn('root.recommendation.tone === "never" ? Color.urgent', row)
+        self.assertIn('root.actions.tone === "never" ? Color.urgent', row)
 
-    def test_the_picked_button_is_filled_and_the_other_stays_neutral(self) -> None:
+    def test_the_picked_button_is_filled_and_the_other_stays_quiet(self) -> None:
         row = (ROOT / "CandidateRow.qml").read_text(encoding="utf-8")
-        self.assertIn("background: root.adoptEmphasis ? Color.accent", row)
-        self.assertIn("background: root.ignoreEmphasis ? Color.accent", row)
-        self.assertIn("foreground: root.adoptEmphasis ? Color.background", row)
+        # Primary: accent fill. Secondary: no fill, a border and muted text.
+        self.assertIn("background: root.adoptPrimary ? Color.accent", row)
+        self.assertIn("background: root.ignorePrimary ? Color.accent", row)
+        self.assertIn("foreground: root.adoptPrimary ? Color.background", row)
+        self.assertIn('background: root.adoptPrimary ? Color.accent : "transparent"', row)
+        self.assertIn("bordered: !root.adoptPrimary", row)
+        self.assertIn("bordered: !root.ignorePrimary", row)
 
-    def test_help_names_the_row_pick(self) -> None:
+    def test_an_ignored_hidden_row_shows_a_chip_and_a_quiet_way_out(self) -> None:
+        row = (ROOT / "CandidateRow.qml").read_text(encoding="utf-8")
+        self.assertIn('text: "\\uf00c  " + String(root.actions.chip || "")', row)
+        self.assertIn('text: root.actions.chip !== "" ? "Adopt anyway" : "Adopt"', row)
+        # The Ignore button exists only when the model allows it.
+        self.assertIn("visible: root.ignoreVisible", row)
+        self.assertIn('readonly property bool ignoreVisible: root.actions.ignore !== "none"', row)
+
+    def test_the_legend_sits_under_the_status_sentence(self) -> None:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.recommendationLegend()", section)
+        # It is inside the same column as the Bridge sentence, not a tooltip.
+        window = section[section.index("id: overviewBody") :]
+        self.assertLess(window.index("Bridge {"), window.index("Model.recommendationLegend()"))
+
+    def test_the_group_accept_action_uses_the_same_colour_rule(self) -> None:
+        card = (ROOT / "GroupCard.qml").read_text(encoding="utf-8")
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("property bool actionEmphasis: false", card)
+        self.assertIn("background: root.actionEmphasis ? Color.accent", card)
+        self.assertIn('actionEmphasis: String(modelData.key) === "newConfigs"', section)
+        # The Overview banner carries the second Accept recommendations button.
+        banner = section[section.index('text: "Accept recommendations (" + root.recommended + ")"') :][:500]
+        self.assertIn("background: Color.accent", banner)
+        self.assertIn("foreground: Color.background", banner)
+
+    def test_help_names_the_row_pick_and_the_legend(self) -> None:
         help_text = (ROOT / "HelpOverlay.qml").read_text(encoding="utf-8")
+        self.assertIn("Model.recommendationLegend()", help_text)
         self.assertIn("Recommended when the verdict decided", help_text)
         self.assertIn("Suggested when Ignore is the safe choice", help_text)
 

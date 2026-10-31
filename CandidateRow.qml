@@ -7,17 +7,16 @@ import "Model.js" as Model
 // One new-config candidate inside the Overview "New config files" and "Hidden"
 // groups. The package is chosen in the Adopt confirm card (an editable field
 // prefilled with the suggestion), so this row shows the path, what the verdict
-// recommends, the backend's reason and the Adopt / Ignore actions.
+// recommends, the backend's reason and the actions the model allows: the
+// recommended one is accent-filled, the other stays quiet, a row already
+// ignored shows an "Ignored" chip instead of a lone opposite button, and a
+// `never` row offers neither.
 Item {
   id: root
 
   property var row: null
   property bool focused: false
   property bool credential: false
-  // A hidden row (`never`/`ignore`) offers no Ignore button: the verdict is
-  // computed each scan, not written to the config's ignore list.
-  property bool showIgnore: true
-  property bool showAdopt: true
   property string packageName: ""
   property color foreground: Color.foreground
 
@@ -26,16 +25,16 @@ Item {
   signal ignoreRequested()
 
   readonly property var candidate: root.row || ({})
-  readonly property bool adoptable: root.showAdopt && !root.credential
-  // What this row recommends, in words, and which button that is (README
-  // "New config candidates"): a firm verdict is "Recommended", a review is a
-  // "Suggested" safe pick, and a secret offers nothing to press.
-  readonly property var recommendation: Model.candidateRecommendation(root.candidate)
-  readonly property bool adoptEmphasis: root.recommendation.action === "adopt"
-  readonly property bool ignoreEmphasis: root.recommendation.action === "ignore"
-  // Only a firm upload makes the whole row an Adopt target. A review row asks
-  // for a button press, so a stray click on the row must not adopt it.
-  readonly property bool rowActivates: root.adoptable && root.adoptEmphasis
+  // The single Adopt/Ignore rule, from the model (README "What a candidate row
+  // tells you"): one accent pick at most, or a state chip, or nothing.
+  readonly property var actions: Model.candidateRowActions(root.candidate)
+  readonly property bool adoptVisible: root.actions.adopt !== "none" && !root.credential
+  readonly property bool adoptPrimary: root.actions.adopt === "primary"
+  readonly property bool ignoreVisible: root.actions.ignore !== "none"
+  readonly property bool ignorePrimary: root.actions.ignore === "primary"
+  // Only the accent pick makes the whole row a target; a secondary action is
+  // reached through its own button, so a stray row click never adopts a doubt.
+  readonly property bool rowActivates: root.adoptPrimary
 
   implicitHeight: card.implicitHeight
 
@@ -70,8 +69,8 @@ Item {
         Layout.preferredWidth: Style.space(8)
         Layout.preferredHeight: Style.space(8)
         radius: width / 2
-        color: root.recommendation.tone === "never" ? Color.urgent
-          : (root.adoptEmphasis ? Color.accent : Util.alpha(root.foreground, 0.5))
+        color: root.actions.tone === "never" ? Color.urgent
+          : (root.adoptPrimary ? Color.accent : Util.alpha(root.foreground, 0.5))
       }
 
       ColumnLayout {
@@ -106,12 +105,12 @@ Item {
         // below stays the why.
         Text {
           Layout.fillWidth: true
-          visible: String(root.recommendation.label || "") !== ""
+          visible: String(root.actions.label || "") !== ""
           textFormat: Text.PlainText
-          text: String(root.recommendation.label || "")
-            + (String(root.recommendation.hint || "") !== "" ? "  \u00b7  " + String(root.recommendation.hint) : "")
-          color: root.recommendation.tone === "never" ? Color.urgent
-            : (root.recommendation.tone === "recommended" ? Color.accent : Util.alpha(root.foreground, 0.9))
+          text: String(root.actions.label || "")
+            + (String(root.actions.hint || "") !== "" ? "  \u00b7  " + String(root.actions.hint) : "")
+          color: root.actions.tone === "never" ? Color.urgent
+            : (root.actions.tone === "recommended" ? Color.accent : Util.alpha(root.foreground, 0.9))
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
           font.bold: true
@@ -132,29 +131,52 @@ Item {
         }
       }
 
+      // The state of a row that is already ignored: the verdict is recomputed
+      // each scan, so there is no Ignore action to press, only this.
+      Rectangle {
+        Layout.alignment: Qt.AlignVCenter
+        visible: String(root.actions.chip || "") !== ""
+        implicitWidth: chipLabel.implicitWidth + Style.spacing.sm * 2
+        implicitHeight: chipLabel.implicitHeight + Style.spacing.xxs * 2
+        radius: height / 2
+        color: Util.alpha(Color.accent, 0.18)
+
+        Text {
+          id: chipLabel
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: "\uf00c  " + String(root.actions.chip || "")
+          color: Color.accent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+
       Button {
         Layout.alignment: Qt.AlignVCenter
-        visible: !root.credential && root.showAdopt
-        text: "Adopt"
+        visible: root.adoptVisible
+        text: root.actions.chip !== "" ? "Adopt anyway" : "Adopt"
         fontSize: Style.font.caption
         horizontalPadding: Style.spacing.sm
         verticalPadding: Style.spacing.xxs
         // The recommended button is filled with the accent, the other stays
-        // neutral (the plugin's primary-action style, as on "Publish selected").
-        background: root.adoptEmphasis ? Color.accent : Style.normalFillFor(root.foreground, Color.accent)
-        foreground: root.adoptEmphasis ? Color.background : root.foreground
+        // quiet: a border and muted text (README "What a candidate row tells you").
+        background: root.adoptPrimary ? Color.accent : "transparent"
+        foreground: root.adoptPrimary ? Color.background : Util.alpha(root.foreground, 0.72)
+        bordered: !root.adoptPrimary
         onClicked: root.adoptRequested()
       }
 
       Button {
         Layout.alignment: Qt.AlignVCenter
-        visible: root.showIgnore
+        visible: root.ignoreVisible
         text: "Ignore"
         fontSize: Style.font.caption
         horizontalPadding: Style.spacing.sm
         verticalPadding: Style.spacing.xxs
-        background: root.ignoreEmphasis ? Color.accent : Style.normalFillFor(root.foreground, Color.accent)
-        foreground: root.ignoreEmphasis ? Color.background : root.foreground
+        background: root.ignorePrimary ? Color.accent : "transparent"
+        foreground: root.ignorePrimary ? Color.background : Util.alpha(root.foreground, 0.72)
+        bordered: !root.ignorePrimary
         onClicked: root.ignoreRequested()
       }
     }

@@ -880,6 +880,45 @@ function reviewSuggestionHint(reason) {
   return "check it before stowing"
 }
 
+// The one rule every Adopt/Ignore surface follows: the recommended choice is
+// "primary" (the accent button), the other is "secondary" (quiet), a row that
+// is already ignored shows a state chip instead of a lone opposite button, and
+// a `never` row offers neither. Returns the recommendation fields too, so a row
+// needs a single call.
+function candidateRowActions(candidate) {
+  var r = candidateRecommendation(candidate)
+  var c = candidate || {}
+  var verdict = String(c.verdict || "")
+  var actions = { label: r.label, hint: r.hint, tone: r.tone, chip: "", adopt: "none", ignore: "none" }
+  if (r.label !== "") {
+    if (r.tone === "never") return actions
+    if (verdict === "upload") {
+      actions.adopt = "primary"
+      actions.ignore = "secondary"
+    } else if (verdict === "review") {
+      actions.adopt = "secondary"
+      actions.ignore = "primary"
+    } else if (verdict === "ignore") {
+      // Already ignored: say so, and keep a quiet "Adopt anyway" escape hatch.
+      actions.chip = "Ignored"
+      actions.adopt = "secondary"
+    }
+    return actions
+  }
+  // An older payload with no verdict keeps both actions, neither highlighted;
+  // a row already in Stow is not listed at all.
+  if (c.known !== true && verdict === "") {
+    actions.adopt = "secondary"
+    actions.ignore = "secondary"
+  }
+  return actions
+}
+
+// The permanent one-line legend for the top of Overview (and the help overlay).
+function recommendationLegend() {
+  return "The highlighted button is the recommended choice."
+}
+
 // "https://github.com/pwn27sbx/dotfiles.git" -> "pwn27sbx/dotfiles" and
 // "git@github.com:pwn27sbx/dotfiles.git" -> "pwn27sbx/dotfiles". The lane shows
 // this short form; the copy button still copies the full URL.
