@@ -49,8 +49,9 @@ All notable changes to Stow Sync. The format follows
   the Hidden rows and the group's **Accept recommendations (N)** action: an
   already-ignored row shows a **✓ Ignored** chip with a quiet **Adopt anyway**
   instead of a lonely opposite button. A permanent legend under the status
-  sentence — a soft accent callout with an info icon, "The highlighted button is
-  the recommended choice." — and the help overlay state the rule once.
+  sentence — a soft accent strip (8 % fill, 35 % border, no icon), "The
+  highlighted button is the recommended choice." — and the help overlay state
+  the rule once.
 
 ### Changed
 

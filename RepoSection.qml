@@ -61,55 +61,29 @@ Column {
         motion: root.motion
         foreground: root.foreground
       }
-      // Legend: option C, the owner's pick. A soft accent strip with an info
-      // icon, because the round-3 dim caption got lost under the status
-      // sentence. Text stays Model.recommendationLegend() (also in the help).
+      // Legend (C1): the owner's pick, without the icon. A soft accent strip
+      // under the status sentence: accent 8 % fill, accent 35 % border, roomier
+      // padding. The text stays Model.recommendationLegend() (also in the help).
       BorderSurface {
         width: parent.width
-        implicitHeight: legendRow.implicitHeight
-          + Style.spacing.sm * 2 + Style.normalBorderWidth * 2
-        color: Util.alpha(Color.accent, 0.10)
-        borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+        implicitHeight: legendText.implicitHeight
+          + Style.spacing.lg * 2 + Style.normalBorderWidth * 2
+        color: Util.alpha(Color.accent, 0.08)
+        borderSpec: Border.flat(Util.alpha(Color.accent, 0.35), Style.normalBorderWidth)
         radius: Style.cornerRadius
-        padding: Style.spacing.sm
+        padding: Style.spacing.lg
 
-        RowLayout {
-          id: legendRow
+        Text {
+          id: legendText
           x: parent.contentLeftInset
           y: parent.contentTopInset
           width: parent.width - parent.contentLeftInset - parent.contentRightInset
-          spacing: Style.spacing.sm
-
-          Rectangle {
-            Layout.alignment: Qt.AlignVCenter
-            implicitWidth: Style.space(14)
-            implicitHeight: Style.space(14)
-            radius: width / 2
-            color: "transparent"
-            border.width: Style.normalBorderWidth
-            border.color: Color.accent
-
-            Text {
-              anchors.centerIn: parent
-              textFormat: Text.PlainText
-              text: "i"
-              color: Color.accent
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              font.italic: true
-              font.bold: true
-            }
-          }
-
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: Model.recommendationLegend()
-            color: root.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            elide: Text.ElideRight
-          }
+          textFormat: Text.PlainText
+          text: Model.recommendationLegend()
+          color: Util.alpha(root.foreground, 0.92)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
         }
       }
     }
