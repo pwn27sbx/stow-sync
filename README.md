@@ -168,15 +168,17 @@ line in the row.
 
 Every row names its pick in plain words, above the two buttons, and the pick's
 button is filled with the accent colour (the other stays a quiet outline). One
-permanent legend states the rule under the status sentence at the top of
-Overview — a soft strip with an 8 % accent fill, a 35 % accent border and roomier
-padding, carrying "The highlighted button is the recommended choice." — and the
-help overlay repeats the same sentence:
+colour rule for the whole panel: **accent = the recommended choice**, **muted
+grey = state or information**, **red = never**. One permanent legend states the
+rule under the status sentence at the top of Overview — a soft strip with an 8 %
+accent fill, a 35 % accent border and roomier padding, carrying "The highlighted
+button is the recommended choice." — and the help overlay repeats the same
+sentence plus the colour rule:
 
 | Row says | Means | Filled button |
 | --- | --- | --- |
 | **Recommended: Adopt** | the verdict is `upload`; this file belongs in Stow | Adopt |
-| **Recommended: Ignore** | the verdict is `ignore`; it is machine state, already out of the count. The row shows a **✓ Ignored** chip and a quiet **Adopt anyway** button, because there is no Ignore action to press: the verdict is recomputed each scan | the chip; **Adopt anyway** stays a quiet outline |
+| **Recommended: Ignore** | the verdict is `ignore`; it is machine state, already out of the count. The row shows a neutral **✓ Ignored** state chip (muted text, no accent, the panel's button radius, the check right next to the word) and a quiet **Adopt anyway** button, because there is no Ignore action to press: the verdict is recomputed each scan | the chip is information, not a button; **Adopt anyway** stays a quiet outline |
 | **Suggested: Ignore** | the verdict is `review`: a doubt, and Ignore is the safe pick | Ignore |
 | **Never stow this** | the verdict is `never` (a secret or a credential store) | no button |
 

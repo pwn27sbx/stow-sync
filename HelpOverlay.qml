@@ -70,7 +70,7 @@ Item {
         Text {
           width: parent.width
           textFormat: Text.PlainText
-          text: Model.recommendationLegend() + " Each new config row says its pick in words too: Recommended when the verdict decided, Suggested when Ignore is the safe choice for a doubt."
+          text: Model.recommendationLegend() + " Each new config row says its pick in words too: Recommended when the verdict decided, Suggested when Ignore is the safe choice for a doubt. Accent marks the recommendation, grey is state, red is never."
           color: Util.alpha(root.foreground, 0.72)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption

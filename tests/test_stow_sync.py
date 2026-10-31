@@ -6320,7 +6320,10 @@ class CandidateRecommendationUiTests(unittest.TestCase):
 
     def test_an_ignored_hidden_row_shows_a_chip_and_a_quiet_way_out(self) -> None:
         row = (ROOT / "CandidateRow.qml").read_text(encoding="utf-8")
-        self.assertIn('text: "\\uf00c  " + String(root.actions.chip || "")', row)
+        # The check and the word are one unit (round 8): a separate glyph Text
+        # next to the chip text, not one string with padded spaces.
+        self.assertIn('text: "\\uf00c"', row)
+        self.assertIn("text: String(root.actions.chip || \"\")", row)
         self.assertIn('text: root.actions.chip !== "" ? "Adopt anyway" : "Adopt"', row)
         # The Ignore button exists only when the model allows it.
         self.assertIn("visible: root.ignoreVisible", row)
@@ -6368,7 +6371,29 @@ class CandidateRecommendationUiTests(unittest.TestCase):
         self.assertIn("background: Color.accent", banner)
         self.assertIn("foreground: Color.background", banner)
 
-    def test_help_names_the_row_pick_and_the_legend(self) -> None:
+    def test_the_ignored_chip_is_a_neutral_state_indicator(self) -> None:
+        # Round 8: the chip is information, not a second recommendation. Muted
+        # text, no accent, the panel's button radius, and the check sits next to
+        # the word as one unit.
+        row = (ROOT / "CandidateRow.qml").read_text(encoding="utf-8")
+        start = row.index("// The Ignored chip")
+        end = row.index("\n      }", start)  # the chip's own closing brace
+        block = row[start:end]
+        self.assertIn("radius: Style.cornerRadius", block)
+        self.assertNotIn("height / 2", block)
+        self.assertNotIn("Color.accent", block)
+        self.assertIn("Util.alpha(root.foreground, 0.06)", block)
+        self.assertIn('text: "\\uf00c"', block)
+        self.assertIn("spacing: Style.spacing.xs", block)
+        self.assertIn("Util.alpha(root.foreground, 0.72)", block)
+        # Information, not a control: the chip has no hover or press handler.
+        self.assertNotIn("MouseArea", block)
+
+    def test_the_help_states_the_one_colour_rule(self) -> None:
+        help_text = (ROOT / "HelpOverlay.qml").read_text(encoding="utf-8")
+        self.assertIn("Accent marks the recommendation", help_text)
+        self.assertIn("grey is state", help_text)
+        self.assertIn("red is never", help_text)
         help_text = (ROOT / "HelpOverlay.qml").read_text(encoding="utf-8")
         self.assertIn("Model.recommendationLegend()", help_text)
         self.assertIn("Recommended when the verdict decided", help_text)

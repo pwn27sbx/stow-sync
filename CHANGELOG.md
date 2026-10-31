@@ -45,13 +45,15 @@ All notable changes to Stow Sync. The format follows
   it belongs to the project in `~/Projects`, an owner-only file says it is
   private, and any other doubt says to check it first. A `never` row keeps no
   Adopt button, as a credential store always did.
-- **One colour rule on every surface.** The same accent/quiet rule now covers
-  the Hidden rows and the group's **Accept recommendations (N)** action: an
-  already-ignored row shows a **✓ Ignored** chip with a quiet **Adopt anyway**
-  instead of a lonely opposite button. A permanent legend under the status
-  sentence — a soft accent strip (8 % fill, 35 % border, no icon), "The
-  highlighted button is the recommended choice." — and the help overlay state
-  the rule once.
+- **One colour rule on every surface.** Accent means the recommended choice,
+  muted grey is state or information, red is never. The same rule covers the
+  Hidden rows and the group's **Accept recommendations (N)** action: an
+  already-ignored row shows a neutral **✓ Ignored** state chip (muted text, no
+  accent, the button radius, the check next to the word) with a quiet **Adopt
+  anyway** instead of a lonely opposite button. A permanent legend under the
+  status sentence — a soft accent strip (8 % fill, 35 % border, no icon), "The
+  highlighted button is the recommended choice." — and the help overlay state the
+  rule once, including the accent/grey/red sentence.
 
 ### Changed
 

@@ -131,24 +131,40 @@ Item {
         }
       }
 
-      // The state of a row that is already ignored: the verdict is recomputed
-      // each scan, so there is no Ignore action to press, only this.
+      // The Ignored chip: a neutral state indicator, not a recommendation and
+      // not a control. Muted text on a faint neutral fill, the panel's button
+      // radius, and the check right next to the word; accent is reserved for
+      // the recommended pick, so nothing in this chip is accent.
       Rectangle {
         Layout.alignment: Qt.AlignVCenter
         visible: String(root.actions.chip || "") !== ""
-        implicitWidth: chipLabel.implicitWidth + Style.spacing.sm * 2
-        implicitHeight: chipLabel.implicitHeight + Style.spacing.xxs * 2
-        radius: height / 2
-        color: Util.alpha(Color.accent, 0.18)
+        implicitWidth: chipRow.implicitWidth + Style.spacing.sm * 2
+        implicitHeight: chipRow.implicitHeight + Style.spacing.xxs * 2
+        radius: Style.cornerRadius
+        color: Util.alpha(root.foreground, 0.06)
 
-        Text {
-          id: chipLabel
+        RowLayout {
+          id: chipRow
           anchors.centerIn: parent
-          textFormat: Text.PlainText
-          text: "\uf00c  " + String(root.actions.chip || "")
-          color: Color.accent
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
+          spacing: Style.spacing.xs
+
+          Text {
+            Layout.alignment: Qt.AlignVCenter
+            textFormat: Text.PlainText
+            text: "\uf00c"
+            color: Util.alpha(root.foreground, 0.72)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            Layout.alignment: Qt.AlignVCenter
+            textFormat: Text.PlainText
+            text: String(root.actions.chip || "")
+            color: Util.alpha(root.foreground, 0.72)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
         }
       }
 
