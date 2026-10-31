@@ -2642,6 +2642,80 @@ test("recommendationPlan never adopts a never or review candidate (qs-nmr shape)
   assert.equal(Model.recommendationPlan(credential, repos).count, 0)
 })
 
+test("candidateRecommendation names the pick and the highlighted button", () => {
+  const upload = Model.candidateRecommendation({ verdict: "upload", reason: "config.toml: app; no secret match" })
+  assert.equal(upload.label, "Recommended: Adopt")
+  assert.equal(upload.action, "adopt")
+  assert.equal(upload.tone, "recommended")
+  assert.equal(upload.hint, "")
+
+  const ignore = Model.candidateRecommendation({ verdict: "ignore", reason: "Cache; its app regenerates it" })
+  assert.equal(ignore.label, "Recommended: Ignore")
+  assert.equal(ignore.action, "ignore")
+  assert.equal(ignore.tone, "recommended")
+  assert.equal(ignore.hint, "")
+
+  const never = Model.candidateRecommendation({ verdict: "never", reason: "canary.env: Discord webhook URL; never stow it" })
+  assert.equal(never.label, "Never stow this")
+  assert.equal(never.action, "")
+  assert.equal(never.tone, "never")
+
+  // A credential store says the same thing even if an older payload calls it upload.
+  const credential = Model.candidateRecommendation({ verdict: "upload", credential: true })
+  assert.equal(credential.label, "Never stow this")
+  assert.equal(credential.action, "")
+
+  // A row already in Stow, or one without a verdict, asks nothing.
+  assert.equal(Model.candidateRecommendation({ verdict: "upload", known: true }).label, "")
+  assert.equal(Model.candidateRecommendation({ verdict: "" }).label, "")
+  assert.equal(Model.candidateRecommendation(null).label, "")
+})
+
+test("candidateRecommendation suggests Ignore for review, by reason class", () => {
+  const project = Model.candidateRecommendation({
+    verdict: "review", reason: "Runs a script in ~/Projects; check before stowing"
+  })
+  assert.equal(project.label, "Suggested: Ignore")
+  assert.equal(project.action, "ignore")
+  assert.equal(project.tone, "suggested")
+  assert.equal(project.hint, "belongs to the project in ~/Projects, not to dotfiles")
+
+  const trigger = Model.candidateRecommendation({
+    verdict: "review", reason: "Triggers a ~/Projects unit; check before stowing"
+  })
+  assert.equal(trigger.hint, "belongs to the project in ~/Projects, not to dotfiles")
+
+  const privateFile = Model.candidateRecommendation({
+    verdict: "review", reason: "canary.env: private file (mode 600); check before stowing"
+  })
+  assert.equal(privateFile.action, "ignore")
+  assert.equal(privateFile.hint, "private file; keep it out unless you know it is safe")
+
+  const other = Model.candidateRecommendation({
+    verdict: "review", reason: "Binary or unfamiliar format; check it by hand"
+  })
+  assert.equal(other.label, "Suggested: Ignore")
+  assert.equal(other.hint, "check it before stowing")
+})
+
+test("a suggested Ignore never enters the accept-recommendations plan", () => {
+  const repos = [{ path: "~/.dotfiles", exists: true, packages: [] }]
+  const data = { candidates: [
+    verdictCandidate("~/.config/systemd/user/qs-nmr-canary.service", "review", {
+      reason: "Runs a script in ~/Projects; check before stowing"
+    }),
+    verdictCandidate("~/.config/systemd/user/qs-nmr-canary.timer", "review", {
+      reason: "Triggers a ~/Projects unit; check before stowing"
+    }),
+    verdictCandidate("~/.config/nuncio", "upload")
+  ] }
+  const plan = Model.recommendationPlan(data, repos)
+  assert.equal(plan.count, 1)
+  same(plan.steps.map((s) => s.args[6]), ["~/.config/nuncio"])
+  // The two review rows are still counted as new configs worth a look.
+  assert.equal(Model.newCandidateCount(data), 3)
+})
+
 test("adoptSummaryText tells the partial story", () => {
   assert.equal(Model.adoptSummaryText(2, 2), "Adopted 2 configs.")
   assert.equal(Model.adoptSummaryText(1, 1), "Adopted 1 config.")

@@ -66,6 +66,16 @@ Item {
           font.bold: true
         }
 
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: "Each new config row says its pick: Recommended when the verdict decided, Suggested when Ignore is the safe choice for a doubt. The filled button is that pick."
+          color: Util.alpha(root.foreground, 0.72)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+
         Repeater {
           model: root.keys
 

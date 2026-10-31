@@ -842,6 +842,44 @@ function candidateSuggestion(candidate) {
   return s !== "" ? s : "new package"
 }
 
+// The plain recommendation shown on every candidate row: what to press, why,
+// and which button the row highlights. `tone` separates a firm verdict
+// ("recommended": the backend already decided upload or ignore) from a doubt
+// ("suggested": review, where the safe pick is Ignore but the owner still picks)
+// and from "never", which offers no action at all. The backend reason stays the
+// why line; `hint` only adds the rationale for a suggested Ignore.
+function candidateRecommendation(candidate) {
+  var c = candidate || {}
+  if (c.known === true) return { label: "", hint: "", action: "", tone: "" }
+  var verdict = String(c.verdict || "")
+  if (c.credential === true || verdict === "never") {
+    return { label: "Never stow this", hint: "", action: "", tone: "never" }
+  }
+  if (verdict === "upload") {
+    return { label: "Recommended: Adopt", hint: "", action: "adopt", tone: "recommended" }
+  }
+  if (verdict === "ignore") {
+    return { label: "Recommended: Ignore", hint: "", action: "ignore", tone: "recommended" }
+  }
+  if (verdict === "review") {
+    return {
+      label: "Suggested: Ignore",
+      hint: reviewSuggestionHint(String(c.reason || "")),
+      action: "ignore",
+      tone: "suggested"
+    }
+  }
+  return { label: "", hint: "", action: "", tone: "" }
+}
+
+// Why Ignore is the safer pick for a `review` row, from the reason class: the
+// two reason shapes the backend emits, and a generic note for the rest.
+function reviewSuggestionHint(reason) {
+  if (reason.indexOf("Projects") !== -1) return "belongs to the project in ~/Projects, not to dotfiles"
+  if (reason.indexOf("private file (mode") !== -1) return "private file; keep it out unless you know it is safe"
+  return "check it before stowing"
+}
+
 // "https://github.com/pwn27sbx/dotfiles.git" -> "pwn27sbx/dotfiles" and
 // "git@github.com:pwn27sbx/dotfiles.git" -> "pwn27sbx/dotfiles". The lane shows
 // this short form; the copy button still copies the full URL.

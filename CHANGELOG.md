@@ -37,6 +37,14 @@ All notable changes to Stow Sync. The format follows
   publishing it would widen who can read it. A user unit whose `ExecStart` points
   into `~/Projects`, and a `.timer`/`.path` that triggers such a service, belong
   to that project rather than to dotfiles.
+- **Every candidate row says its pick.** The row names the choice in plain
+  words — **Recommended: Adopt**, **Recommended: Ignore**, **Suggested: Ignore**
+  or **Never stow this** — and fills that button with the accent colour; the
+  other stays neutral. A `review` row now suggests the safer Ignore with a short
+  why instead of leaving both buttons equal: a project-bound unit says it
+  belongs to the project in `~/Projects`, an owner-only file says it is private,
+  and any other doubt says to check it first. A `never` row keeps no Adopt
+  button, as a credential store always did.
 
 ### Changed
 

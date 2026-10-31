@@ -2,11 +2,12 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 // One new-config candidate inside the Overview "New config files" and "Hidden"
 // groups. The package is chosen in the Adopt confirm card (an editable field
-// prefilled with the suggestion), so this row shows the path, the backend's
-// reason and the Adopt / Ignore actions.
+// prefilled with the suggestion), so this row shows the path, what the verdict
+// recommends, the backend's reason and the Adopt / Ignore actions.
 Item {
   id: root
 
@@ -26,6 +27,15 @@ Item {
 
   readonly property var candidate: root.row || ({})
   readonly property bool adoptable: root.showAdopt && !root.credential
+  // What this row recommends, in words, and which button that is (README
+  // "New config candidates"): a firm verdict is "Recommended", a review is a
+  // "Suggested" safe pick, and a secret offers nothing to press.
+  readonly property var recommendation: Model.candidateRecommendation(root.candidate)
+  readonly property bool adoptEmphasis: root.recommendation.action === "adopt"
+  readonly property bool ignoreEmphasis: root.recommendation.action === "ignore"
+  // Only a firm upload makes the whole row an Adopt target. A review row asks
+  // for a button press, so a stray click on the row must not adopt it.
+  readonly property bool rowActivates: root.adoptable && root.adoptEmphasis
 
   implicitHeight: card.implicitHeight
 
@@ -40,10 +50,10 @@ Item {
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
-      enabled: root.adoptable
-      cursorShape: root.adoptable ? Qt.PointingHandCursor : Qt.ArrowCursor
+      enabled: root.rowActivates
+      cursorShape: root.rowActivates ? Qt.PointingHandCursor : Qt.ArrowCursor
       onEntered: root.hovered()
-      onClicked: if (!root.credential) root.adoptRequested()
+      onClicked: root.adoptRequested()
     }
 
     RowLayout {
@@ -60,7 +70,8 @@ Item {
         Layout.preferredWidth: Style.space(8)
         Layout.preferredHeight: Style.space(8)
         radius: width / 2
-        color: root.adoptable ? Color.accent : Util.alpha(root.foreground, 0.5)
+        color: root.recommendation.tone === "never" ? Color.urgent
+          : (root.adoptEmphasis ? Color.accent : Util.alpha(root.foreground, 0.5))
       }
 
       ColumnLayout {
@@ -89,6 +100,24 @@ Item {
           elide: Text.ElideRight
         }
 
+        // The pick in plain words, above the buttons: "Recommended" when the
+        // verdict already decided, "Suggested" when it is the safe pick for a
+        // doubt, "Never stow this" when there is nothing to adopt. The reason
+        // below stays the why.
+        Text {
+          Layout.fillWidth: true
+          visible: String(root.recommendation.label || "") !== ""
+          textFormat: Text.PlainText
+          text: String(root.recommendation.label || "")
+            + (String(root.recommendation.hint || "") !== "" ? "  \u00b7  " + String(root.recommendation.hint) : "")
+          color: root.recommendation.tone === "never" ? Color.urgent
+            : (root.recommendation.tone === "recommended" ? Color.accent : Util.alpha(root.foreground, 0.9))
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          elide: Text.ElideRight
+        }
+
         // The backend's one-line reason: what this file is and why it got its
         // verdict, so the owner never has to ask.
         Text {
@@ -110,6 +139,10 @@ Item {
         fontSize: Style.font.caption
         horizontalPadding: Style.spacing.sm
         verticalPadding: Style.spacing.xxs
+        // The recommended button is filled with the accent, the other stays
+        // neutral (the plugin's primary-action style, as on "Publish selected").
+        background: root.adoptEmphasis ? Color.accent : Style.normalFillFor(root.foreground, Color.accent)
+        foreground: root.adoptEmphasis ? Color.background : root.foreground
         onClicked: root.adoptRequested()
       }
 
@@ -120,6 +153,8 @@ Item {
         fontSize: Style.font.caption
         horizontalPadding: Style.spacing.sm
         verticalPadding: Style.spacing.xxs
+        background: root.ignoreEmphasis ? Color.accent : Style.normalFillFor(root.foreground, Color.accent)
+        foreground: root.ignoreEmphasis ? Color.background : root.foreground
         onClicked: root.ignoreRequested()
       }
     }

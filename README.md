@@ -147,10 +147,10 @@ from the file on disk — no network call, no model — and tells you why:
 
 | Verdict | When | In the panel |
 | --- | --- | --- |
-| `never` | a known credential store, or a secret rule (the same rules the commit scan uses) matches the content: keys, tokens, private keys, chat webhooks (Discord, Slack, Teams), a Sentry DSN or cron check-in URL, a URL that carries a password or a long token, and a setting whose name says secret (`*_WEBHOOK`, `*_DSN`, `*_TOKEN`, `*_SECRET`, `*_KEY`, `*_PASSWORD` with a non-empty value) | not counted, listed under **Hidden**, no Adopt button |
-| `ignore` | tool-generated or machine state: a launcher whose shebang points into a tool-managed environment (uv, pipx, mise, npm), caches, logs, history, lock files, databases, backups, temp files, a file that only names paths installed on this machine, or an empty folder (or one holding only empty folders) — there is nothing to adopt | not counted, listed under **Hidden**, can still be adopted by hand |
-| `upload` | a small text config (up to 128 KB, valid UTF-8) with no secret, no machine-specific path and no group/other read; a hand-written file with comments counts as extra confidence | counted, listed first with its reason |
-| `review` | anything else: binary, oversized, a directory with mixed contents, an entry the scan could not read, a file only its owner can read (mode `600` or any mode without group/other read), or a user unit whose `ExecStart` (or a `.timer`/`.path` whose service) runs a script in `~/Projects` | counted, listed with the reason for the doubt |
+| `never` | a known credential store, or a secret rule (the same rules the commit scan uses) matches the content: keys, tokens, private keys, chat webhooks (Discord, Slack, Teams), a Sentry DSN or cron check-in URL, a URL that carries a password or a long token, and a setting whose name says secret (`*_WEBHOOK`, `*_DSN`, `*_TOKEN`, `*_SECRET`, `*_KEY`, `*_PASSWORD` with a non-empty value) | not counted, listed under **Hidden**, says **Never stow this** and offers no Adopt button |
+| `ignore` | tool-generated or machine state: a launcher whose shebang points into a tool-managed environment (uv, pipx, mise, npm), caches, logs, history, lock files, databases, backups, temp files, a file that only names paths installed on this machine, or an empty folder (or one holding only empty folders) — there is nothing to adopt | not counted, listed under **Hidden**, says **Recommended: Ignore**, can still be adopted by hand |
+| `upload` | a small text config (up to 128 KB, valid UTF-8) with no secret, no machine-specific path and no group/other read; a hand-written file with comments counts as extra confidence | counted, listed first, says **Recommended: Adopt** with an accented Adopt button |
+| `review` | anything else: binary, oversized, a directory with mixed contents, an entry the scan could not read, a file only its owner can read (mode `600` or any mode without group/other read), or a user unit whose `ExecStart` (or a `.timer`/`.path` whose service) runs a script in `~/Projects` | counted, says **Suggested: Ignore** with the accented Ignore button |
 
 The reasons are plain, specific sentences: an `upload` reason names the file and
 what the bytes show ("config.toml: ui, notifications, app; no secret match",
@@ -164,6 +164,32 @@ exactly what was checked — the same `SECRET_RULES` scan as a commit — and ne
 claims more. A matched secret **value** is never shown. A reason is capped at one
 line in the row.
 
+### What a candidate row tells you
+
+Every row names its pick in plain words, above the two buttons, and the pick's
+button is filled with the accent colour (the other stays neutral):
+
+| Row says | Means | Filled button |
+| --- | --- | --- |
+| **Recommended: Adopt** | the verdict is `upload`; this file belongs in Stow | Adopt |
+| **Recommended: Ignore** | the verdict is `ignore`; it is machine state, already out of the count | Ignore (hidden rows show no button: the verdict is recomputed each scan) |
+| **Suggested: Ignore** | the verdict is `review`: a doubt, and Ignore is the safe pick | Ignore |
+| **Never stow this** | the verdict is `never` (a secret or a credential store) | no button |
+
+A suggestion is not a promise: the row still offers both actions, and you can
+adopt a `review` file by hand. The suggestion says why in one short clause, and
+the backend reason below it stays the full why:
+
+- a project-bound unit → "belongs to the project in ~/Projects, not to dotfiles";
+- an owner-only file → "private file; keep it out unless you know it is safe";
+- any other doubt → "check it before stowing".
+
+For `never` the Adopt action is not offered at all, exactly like a known
+credential store: the row shows **Never stow this** in the warning colour and no
+Adopt button, so a secret can never be adopted in one click. Clicking the row
+itself adopts only when the pick is Adopt; a `review` row needs an explicit
+button press.
+
 A candidate **directory** follows the same rule: any file inside that only its
 owner can read makes the directory `review`, with the reason naming that file
 ("canary.env: private file (mode 600); check before stowing"), because adopting
@@ -173,7 +199,8 @@ files are ordinary.
 
 **Accept recommendations (N)** in the New config files card (and in the Overview
 banner) adopts every `upload` candidate in one click through the normal Adopt
-path. The confirm card lists every path, the package it goes into and its reason
+path. It never includes a `review` row (a suggestion) or a hidden row. The
+confirm card lists every path, the package it goes into and its reason
 before anything runs, and the list is frozen at that moment: a background
 refresh cannot change what you approved. It only adopts — nothing is committed
 or uploaded until you press Publish.
@@ -491,6 +518,7 @@ yourself if you want the segment.
 | `r` | Refresh with fetch |
 | `p` | Publish (or the primary action) |
 | `u` | Update (pull `--ff-only`) |
+| `a` | Adopt the first new config (the row's filled button shows the recommendation) |
 | `i` | Hide the focused change row |
 | `Esc` | Close the panel / go back |
 
