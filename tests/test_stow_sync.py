@@ -6367,6 +6367,26 @@ class CandidateRecommendationUiTests(unittest.TestCase):
         self.assertIn("Suggested when Ignore is the safe choice", help_text)
 
 
+class PanelScrollTests(unittest.TestCase):
+    """Round 6: no visible scrollbar anywhere; wheel, touchpad and keys scroll."""
+
+    def test_no_qml_file_installs_a_scrollbar(self) -> None:
+        for path in sorted(ROOT.glob("*.qml")):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("ScrollBar", source, path.name)
+
+    def test_the_panel_body_still_scrolls_without_the_bar(self) -> None:
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        start = panel.index("id: flick")
+        body = panel[start : start + 700]
+        self.assertIn("flickableDirection: Flickable.VerticalFlick", body)
+        self.assertIn("boundsBehavior: Flickable.StopAtBounds", body)
+        self.assertIn("clip: true", body)
+        self.assertIn("contentWidth: width", body)
+        # The content keeps the panel's own padding; nothing needs to clear a bar.
+        self.assertNotIn("ScrollBar", body)
+
+
 class Unit17ChangesPolishTests(unittest.TestCase):
     """Findings 99-101: Result banner, Publish selected button, untracked card."""
 

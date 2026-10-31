@@ -332,7 +332,8 @@ Panel {
           contentHeight: overviewTab.height
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          // No scroll bar: it collided with the cards and the panel border.
+          // The wheel, the touchpad and the keyboard still scroll this body.
 
           RepoSection {
             id: overviewTab

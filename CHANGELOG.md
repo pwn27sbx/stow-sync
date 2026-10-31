@@ -54,6 +54,9 @@ All notable changes to Stow Sync. The format follows
 
 ### Changed
 
+- The panel no longer draws a scroll bar, which collided with the cards and the
+  panel border: the mouse wheel, the touchpad and the arrow keys still scroll
+  every list, and the content keeps the panel padding.
 - The new-config badge, the Overview banner sentence, the bar tone and the `a`
   key count only `upload` and `review` candidates; the `a` key prefers a
   recommendation and never picks a hidden one.

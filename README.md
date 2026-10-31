@@ -535,6 +535,9 @@ yourself if you want the segment.
 | `i` | Hide the focused change row |
 | `Esc` | Close the panel / go back |
 
+The panel draws no scroll bar: the mouse wheel, the touchpad and the arrow keys
+scroll every list, so nothing sits over the cards or the panel edge.
+
 In the "Set up this machine" wizard: `Enter` confirms the current step or moves
 on, `Esc` goes back (or shows "Setup is running" while a step is in flight), and
 the arrow keys scroll the Review and Report content.

@@ -2003,9 +2003,9 @@ function bridgeState(data, opts) {
 }
 
 // Collapsed repo lane: bold name, branch chip, short hash, relative time and a
-// compact "N pkgs" count (the panel elides it clear of the scrollbar). The
-// stripe is accent at half alpha when clean, full accent while work is
-// pending, and urgent for a state that needs attention.
+// compact "N pkgs" count (elided when the lane is narrow). The stripe is accent
+// at half alpha when clean, full accent while work is pending, and urgent for a
+// state that needs attention.
 function repoLaneSummary(repo, now, opts) {
   var r = repo || {}
   var o = opts || {}
