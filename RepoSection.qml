@@ -61,17 +61,56 @@ Column {
         motion: root.motion
         foreground: root.foreground
       }
-      // The permanent legend for the button colour, right under the status
-      // sentence: the first place the owner reads, and it stays put instead of
-      // living only in a tooltip.
-      Text {
+      // Legend: option C, the owner's pick. A soft accent strip with an info
+      // icon, because the round-3 dim caption got lost under the status
+      // sentence. Text stays Model.recommendationLegend() (also in the help).
+      BorderSurface {
         width: parent.width
-        textFormat: Text.PlainText
-        text: Model.recommendationLegend()
-        color: Util.alpha(root.foreground, 0.6)
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
-        elide: Text.ElideRight
+        implicitHeight: legendRow.implicitHeight
+          + Style.spacing.sm * 2 + Style.normalBorderWidth * 2
+        color: Util.alpha(Color.accent, 0.10)
+        borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+        radius: Style.cornerRadius
+        padding: Style.spacing.sm
+
+        RowLayout {
+          id: legendRow
+          x: parent.contentLeftInset
+          y: parent.contentTopInset
+          width: parent.width - parent.contentLeftInset - parent.contentRightInset
+          spacing: Style.spacing.sm
+
+          Rectangle {
+            Layout.alignment: Qt.AlignVCenter
+            implicitWidth: Style.space(14)
+            implicitHeight: Style.space(14)
+            radius: width / 2
+            color: "transparent"
+            border.width: Style.normalBorderWidth
+            border.color: Color.accent
+
+            Text {
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: "i"
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.italic: true
+              font.bold: true
+            }
+          }
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: Model.recommendationLegend()
+            color: root.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            elide: Text.ElideRight
+          }
+        }
       }
     }
     SetupBanner {

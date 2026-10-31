@@ -169,8 +169,9 @@ line in the row.
 Every row names its pick in plain words, above the two buttons, and the pick's
 button is filled with the accent colour (the other stays a quiet outline). One
 permanent legend states the rule under the status sentence at the top of
-Overview ("The highlighted button is the recommended choice."), and the help
-overlay repeats it:
+Overview — a soft callout strip with a faint accent background, a 1 px accent
+border and an info icon, carrying "The highlighted button is the recommended
+choice." — and the help overlay repeats the same sentence:
 
 | Row says | Means | Filled button |
 | --- | --- | --- |

@@ -6333,6 +6333,22 @@ class CandidateRecommendationUiTests(unittest.TestCase):
         window = section[section.index("id: overviewBody") :]
         self.assertLess(window.index("Bridge {"), window.index("Model.recommendationLegend()"))
 
+    def test_the_legend_is_an_accent_callout(self) -> None:
+        # Round 5, option C: a soft accent strip with an info icon, not the dim
+        # caption that got lost under the status sentence.
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        start = section.index("// Legend: option C")
+        block = section[start : start + 2200]
+        self.assertIn("Util.alpha(Color.accent, 0.10)", block)
+        self.assertIn("borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)", block)
+        self.assertIn("radius: Style.cornerRadius", block)
+        self.assertIn('text: "i"', block)
+        self.assertIn("font.italic: true", block)
+        self.assertIn("text: Model.recommendationLegend()", block)
+        self.assertIn("Style.font.bodySmall", block)
+        # The text stays the model's one sentence; no copy is re-typed here.
+        self.assertEqual(block.count('"The highlighted button'), 0)
+
     def test_the_group_accept_action_uses_the_same_colour_rule(self) -> None:
         card = (ROOT / "GroupCard.qml").read_text(encoding="utf-8")
         section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
