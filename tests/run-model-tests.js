@@ -2617,6 +2617,31 @@ test("recommendationPlan builds one adopt step per recommendation", () => {
   assert.equal(Model.recommendationPlan({ candidates: [] }, repos).count, 0)
 })
 
+test("recommendationPlan never adopts a never or review candidate (qs-nmr shape)", () => {
+  // The live shape that leaked a plan: a project unit (review), and a directory
+  // holding an env file with a webhook (never). The timer is covered by its own
+  // unit test in the backend suite.
+  const data = { candidates: [
+    verdictCandidate("~/.config/systemd/user/qs-nmr-canary.service", "review", {
+      suggested_package: "systemd",
+      reason: "Runs a script in ~/Projects; check before stowing"
+    }),
+    verdictCandidate("~/.config/qs-nmr", "never", {
+      reason: "canary.env: Discord webhook URL; never stow it"
+    }),
+    verdictCandidate("~/.config/nuncio", "upload", { suggested_package: "nuncio" })
+  ] }
+  const repos = [{ path: "~/.dotfiles", exists: true, packages: [] }]
+  const plan = Model.recommendationPlan(data, repos)
+  assert.equal(plan.count, 1)
+  same(plan.steps.map((s) => s.args[6]), ["~/.config/nuncio"])
+  assert.equal(plan.lines.length, 1)
+  assert.ok(plan.lines[0].indexOf("qs-nmr") === -1, plan.lines[0])
+  // A credential store is filtered by the same gate, even when it says upload.
+  const credential = { candidates: [verdictCandidate("~/.config/secrets", "upload", { credential: true })] }
+  assert.equal(Model.recommendationPlan(credential, repos).count, 0)
+})
+
 test("adoptSummaryText tells the partial story", () => {
   assert.equal(Model.adoptSummaryText(2, 2), "Adopted 2 configs.")
   assert.equal(Model.adoptSummaryText(1, 1), "Adopted 1 config.")

@@ -80,11 +80,15 @@ def commit_all(repo: Path, message: str) -> None:
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+    # Fixed permissions, so a test never depends on the host umask: the verdict
+    # rule for owner-only files must be exercised on purpose, never by accident.
+    os.chmod(path, 0o644)
 
 
 def write_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
+    os.chmod(path, 0o644)
 
 
 def porcelain_bytes(repo: Path) -> bytes:
@@ -1038,7 +1042,7 @@ class CandidateVerdictTests(unittest.TestCase):
         write(self.home / ".config" / "app" / "conf", "token = " + token + "\n")
         verdict, reason = self.verdict(".config/app/conf")
         self.assertEqual(verdict, ss.VERDICT_NEVER)
-        self.assertIn("github-token", reason)
+        self.assertIn("GitHub token", reason)
         self.assertNotIn(token, reason)
 
     def test_secret_inside_a_directory_is_never(self) -> None:
@@ -1046,7 +1050,155 @@ class CandidateVerdictTests(unittest.TestCase):
         write(self.home / ".config" / "app" / "extra.env", "OPENAI=sk-" + "z9Y8x7W6" * 4 + "\n")
         verdict, reason = self.verdict(".config/app")
         self.assertEqual(verdict, ss.VERDICT_NEVER)
-        self.assertIn("openai-key", reason)
+        self.assertIn("OpenAI key", reason)
+
+    # --- never: credentials carried inside a URL -----------------------
+    # Every fixture below is invented: only the shape is real.
+
+    def _credential_cases(self):
+        return (
+            (
+                "discord",
+                "QS_DISCORD_WEBHOOK=https://discord.com/api/webhooks/1234567890/FAKEfakeFAKEfakeFAKE\n",
+                "Discord webhook URL",
+                "FAKEfakeFAKEfakeFAKE",
+            ),
+            (
+                "discordapp",
+                "HOOK=https://discordapp.com/api/webhooks/1234567890/FAKEfakeFAKEfakeFAKE\n",
+                "Discord webhook URL",
+                "FAKEfakeFAKEfakeFAKE",
+            ),
+            (
+                "slack",
+                "HOOK=https://hooks.slack.com/services/T00000000/B00000000/FAKEfakeFAKEfake\n",
+                "Slack webhook URL",
+                "FAKEfakeFAKEfake",
+            ),
+            (
+                "teams",
+                "HOOK=https://example.webhook.office.com/webhookb2/00000000-0000-0000-0000-000000000000/IncomingWebhook/FAKEfake/00000000-0000-0000-0000-000000000000\n",
+                "Teams webhook URL",
+                "FAKEfake",
+            ),
+            (
+                "sentry-dsn",
+                "QS_SENTRY_DSN=https://0123456789abcdef0123456789abcdef@o0.ingest.sentry.io/4500000\n",
+                "Sentry DSN",
+                "0123456789abcdef0123456789abcdef",
+            ),
+            (
+                "sentry-checkin",
+                "QS_SENTRY_CHECKIN=https://o0.ingest.sentry.io/api/4500000/cron/nightly/0123456789abcdef0123456789abcdef/\n",
+                "Sentry check-in URL",
+                "0123456789abcdef0123456789abcdef",
+            ),
+            (
+                "url-password",
+                "DATABASE_URL=https://fakeuser:fakepassword@example.com/db\n",
+                "URL with a password",
+                "fakepassword",
+            ),
+            (
+                "remote",
+                "REMOTE=https://fake0123456789abcdef0123456789ab@example.com/x\n",
+                "URL with an embedded token",
+                "fake0123456789abcdef0123456789ab",
+            ),
+        )
+
+    def test_credential_urls_are_never_and_named_without_the_value(self) -> None:
+        for name, content, label, value in self._credential_cases():
+            with self.subTest(name):
+                write(self.home / ".config" / "qs-nmr-canary" / (name + ".env"), content)
+                verdict, reason = self.verdict(".config/qs-nmr-canary/" + name + ".env")
+                self.assertEqual(verdict, ss.VERDICT_NEVER, name)
+                self.assertIn(label, reason, name)
+                self.assertNotIn(value, reason, name)
+
+    def test_credential_url_inside_a_directory_names_the_file(self) -> None:
+        # The live qs-nmr shape: one env file inside a candidate directory.
+        write(
+            self.home / ".config" / "qs-nmr" / "canary.env",
+            "QS_DISCORD_WEBHOOK=https://discord.com/api/webhooks/1234567890/FAKEfakeFAKEfakeFAKE\n",
+        )
+        verdict, reason = self.verdict(".config/qs-nmr")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+        self.assertTrue(reason.startswith("canary.env: "), reason)
+        self.assertIn("Discord webhook URL", reason)
+
+    # --- never: a setting whose name says secret -----------------------
+
+    def test_secret_named_settings_are_never_without_a_known_shape(self) -> None:
+        names = (
+            "APP_WEBHOOK", "APP_DSN", "APP_TOKEN", "APP_SECRET", "APP_KEY",
+            "APP_PASSWORD", "SERVICE_API_KEY",
+        )
+        for name in names:
+            with self.subTest(name):
+                write(self.home / ".config" / "app" / "conf.env", name + "=fakevalue\n")
+                verdict, reason = self.verdict(".config/app/conf.env")
+                self.assertEqual(verdict, ss.VERDICT_NEVER, name)
+                self.assertIn("secret-named setting", reason, name)
+
+    def test_secret_named_setting_accepts_quoting_and_export(self) -> None:
+        for line in ("export APP_TOKEN=\"fake value\"\n", "APP_KEY='fakevalue'\n"):
+            with self.subTest(line):
+                write(self.home / ".config" / "app" / "conf.env", line)
+                verdict, _reason = self.verdict(".config/app/conf.env")
+                self.assertEqual(verdict, ss.VERDICT_NEVER, line)
+
+    def test_empty_secret_named_setting_is_not_a_secret(self) -> None:
+        write(self.home / ".config" / "app" / "conf.env", "APP_TOKEN=\nAPP_SECRET=\"\"\n")
+        verdict, _reason = self.verdict(".config/app/conf.env")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_assignment_with_its_value_on_the_next_line_is_still_never(self) -> None:
+        # The baseline caught a hand-edited YAML value below its key; the empty
+        # assignment fix must not lose that (verifier finding B1).
+        write(self.home / ".config" / "app" / "conf.yml", "db_password:\n  hunter2hunter2\n")
+        verdict, reason = self.verdict(".config/app/conf.yml")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+        self.assertIn("password or token setting", reason)
+        self.assertNotIn("hunter2hunter2", reason)
+
+    def test_assignment_value_on_a_blank_indented_line_is_still_never(self) -> None:
+        write(self.home / ".config" / "app" / "conf.yml", "password:\n\n  hunter2hunter2\n")
+        verdict, _reason = self.verdict(".config/app/conf.yml")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+
+    def test_assignment_next_line_value_keeps_its_padding_and_colons(self) -> None:
+        # A base64 value with `=` padding and a `user:pass` pair must not look
+        # like another setting's name (review finding R1-assignment-nextline-bypass).
+        cases = (
+            "db_password:\n  QUJDREVGR0g=\n",
+            "db_password:\n  alice:s3cretpass\n",
+            "api_key:\n  hunter2hunter2=\n",
+        )
+        for content in cases:
+            with self.subTest(content.splitlines()[1].strip()):
+                write(self.home / ".config" / "app" / "conf.yml", content)
+                verdict, reason = self.verdict(".config/app/conf.yml")
+                self.assertEqual(verdict, ss.VERDICT_NEVER)
+                self.assertIn("password or token setting", reason)
+                self.assertNotIn(content.splitlines()[1].strip(), reason)
+
+    def test_obvious_non_secret_names_stay_upload(self) -> None:
+        write(
+            self.home / ".config" / "app" / "conf.env",
+            "KEYMAP=us\nKEYBOARD=us\nTOKEN_EXPIRY=60\nMONKEY=banana\nKEY=\n# APP_TOKEN=x\n",
+        )
+        verdict, _reason = self.verdict(".config/app/conf.env")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_harmless_urls_stay_upload(self) -> None:
+        write(
+            self.home / ".config" / "app" / "conf.env",
+            "HOME_URL=https://example.com/docs\nSUPPORT=https://support@example.com/help\n",
+        )
+        verdict, _reason = self.verdict(".config/app/conf.env")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
 
     # --- ignore --------------------------------------------------------
 
@@ -1096,7 +1248,7 @@ class CandidateVerdictTests(unittest.TestCase):
         write(self.home / ".config" / "session.log", "token = " + token + "\n" + "a" * ss.VERDICT_FILE_MAX_BYTES)
         verdict, reason = self.verdict(".config/session.log")
         self.assertEqual(verdict, ss.VERDICT_NEVER)
-        self.assertIn("github-token", reason)
+        self.assertIn("GitHub token", reason)
         self.assertNotIn(token, reason)
 
     def test_secret_in_a_binary_file_is_never(self) -> None:
@@ -1253,6 +1405,93 @@ class CandidateVerdictTests(unittest.TestCase):
         write(self.home / ".config" / "big.conf", "a" * (ss.VERDICT_FILE_MAX_BYTES + 1))
         verdict, _reason = self.verdict(".config/big.conf")
         self.assertEqual(verdict, ss.VERDICT_REVIEW)
+
+    # --- review: an owner-only file, or a unit bound to a project ------
+
+    def test_private_file_verdict_is_review(self) -> None:
+        path = self.home / ".config" / "app" / "canary.env"
+        write(path, "PLAIN=fakevalue\n")
+        os.chmod(path, 0o600)
+        verdict, reason = self.verdict(".config/app/canary.env")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+        self.assertIn("private file (mode 600)", reason)
+        self.assertIn("check before stowing", reason)
+
+    def test_group_readable_file_stays_upload(self) -> None:
+        path = self.home / ".config" / "app" / "conf.env"
+        write(path, "PLAIN=fakevalue\n")
+        os.chmod(path, 0o640)
+        verdict, _reason = self.verdict(".config/app/conf.env")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_owner_only_directory_is_review_and_names_the_file(self) -> None:
+        path = self.home / ".config" / "app" / "canary.env"
+        write(path, "PLAIN=fakevalue\n")
+        os.chmod(path, 0o600)
+        write(self.home / ".config" / "app" / "config.toml", "[app]\nx = 1\n")
+        verdict, reason = self.verdict(".config/app")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+        self.assertIn("canary.env: private file (mode 600)", reason)
+
+    def test_private_file_with_a_credential_is_still_never(self) -> None:
+        path = self.home / ".config" / "app" / "canary.env"
+        write(
+            path,
+            "QS_DISCORD_WEBHOOK=https://discord.com/api/webhooks/1234567890/FAKEfakeFAKEfakeFAKE\n",
+        )
+        os.chmod(path, 0o600)
+        verdict, reason = self.verdict(".config/app/canary.env")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+        self.assertIn("Discord webhook URL", reason)
+
+    def test_project_service_unit_is_review(self) -> None:
+        write(
+            self.home / ".config" / "systemd/user" / "qs-nmr-canary.service",
+            "[Unit]\nDescription=fake\n[Service]\nExecStart=%h/Projects/forks/app/scripts/run.py\n",
+        )
+        verdict, reason = self.verdict(".config/systemd/user/qs-nmr-canary.service")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+        self.assertIn("~/Projects", reason)
+        self.assertIn("check before stowing", reason)
+
+    def test_absolute_project_service_unit_is_review(self) -> None:
+        write(
+            self.home / ".config" / "systemd/user" / "app.service",
+            "[Service]\nExecStart=" + str(self.home) + "/Projects/app/run.sh\n",
+        )
+        verdict, _reason = self.verdict(".config/systemd/user/app.service")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+
+    def test_project_timer_is_review_through_its_service(self) -> None:
+        write(
+            self.home / ".config" / "systemd/user" / "app.service",
+            "[Service]\nExecStart=%h/Projects/app/run.sh\n",
+        )
+        write(
+            self.home / ".config" / "systemd/user" / "app.timer",
+            "[Timer]\nOnCalendar=daily\n",
+        )
+        verdict, reason = self.verdict(".config/systemd/user/app.timer")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+        self.assertIn("~/Projects", reason)
+
+    def test_other_user_units_stay_upload(self) -> None:
+        starts = (
+            "/usr/bin/easyeffects",
+            "/usr/bin/voxtype",
+            "%h/.local/bin/wallpaper-tint-ask",
+            "%h/.local/lib/omarchy-spotify/omarchy-spotify-backend",
+        )
+        for index, start in enumerate(starts):
+            with self.subTest(start):
+                name = "unit" + str(index) + ".service"
+                write(
+                    self.home / ".config" / "systemd/user" / name,
+                    "[Service]\nExecStart=" + start + "\n",
+                )
+                verdict, _reason = self.verdict(".config/systemd/user/" + name)
+                self.assertEqual(verdict, ss.VERDICT_UPLOAD, start)
+
 
     def test_directory_of_machine_state_is_ignore(self) -> None:
         write(self.home / ".config" / "app" / "app.log", "line\n")
@@ -2121,6 +2360,23 @@ SECRET_SAMPLES = [
     ("slack-token", "xoxb-" + "A" * 10),
     ("openai-key", "sk-" + "A" * 32),
     ("google-api-key", "AIza" + "A" * 35),
+    ("discord-webhook", "https://discord.com/api/webhooks/1234567890/FAKEfakeFAKEfakeFAKE"),
+    ("slack-webhook", "https://hooks.slack.com/services/T00000000/B00000000/FAKEfakeFAKEfake"),
+    (
+        "teams-webhook",
+        "https://example.webhook.office.com/webhookb2/00000000-0000-0000-0000-000000000000/IncomingWebhook/FAKEfake/00000000-0000-0000-0000-000000000000",
+    ),
+    (
+        "sentry-dsn",
+        "https://0123456789abcdef0123456789abcdef@o0.ingest.sentry.io/4500000",
+    ),
+    (
+        "sentry-checkin",
+        "https://o0.ingest.sentry.io/api/4500000/cron/nightly/0123456789abcdef0123456789abcdef/",
+    ),
+    ("url-credentials", "https://fakeuser:fakepassword@example.com/db"),
+    ("url-token", "https://fake0123456789abcdef0123456789ab@example.com/x"),
+    ("secret-setting", "QS_DISCORD_WEBHOOK=fakevalue"),
     ("assignment", "password = \"supersecretvalue\""),
 ]
 
@@ -2139,7 +2395,9 @@ class SecretScanTests(unittest.TestCase):
     def test_every_rule_is_detected(self) -> None:
         for rule, sample in SECRET_SAMPLES:
             found = ss.scan_secrets(synthetic_diff("file.txt", sample))
-            self.assertEqual([entry["rule"] for entry in found], [rule], sample)
+            # A line can carry two rules at once (a Sentry DSN is also a URL
+            # with a token), so the proof is that the named rule is among them.
+            self.assertIn(rule, [entry["rule"] for entry in found], sample)
 
     def test_clean_line_has_no_secrets(self) -> None:
         self.assertEqual(ss.scan_secrets(synthetic_diff("file.txt", "just a normal line")), [])
@@ -2215,7 +2473,7 @@ class CommitCommandTests(unittest.TestCase):
             write(self.repo / name, sample + "\n")
             result = self.run_stdin({"message": "chore: secret", "paths": [name]})
             self.assertFalse(result["ok"], rule)
-            self.assertEqual([entry["rule"] for entry in result["secrets"]], [rule], rule)
+            self.assertIn(rule, [entry["rule"] for entry in result["secrets"]], rule)
             self.assertEqual(result["secrets"][0]["path"], name)
             git(self.repo, "reset", "-q")
             os.remove(self.repo / name)

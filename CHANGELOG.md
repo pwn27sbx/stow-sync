@@ -24,6 +24,19 @@ All notable changes to Stow Sync. The format follows
   path, after a confirm card that lists each path, package and reason. Nothing
   is committed or uploaded: publishing stays the Publish step.
 - `status` candidates now carry `verdict` and `reason`.
+- **The secret scan knows credentials carried inside a URL.** Discord, Slack and
+  Teams webhooks, a Sentry DSN or cron check-in URL, any `https://user:pass@` or
+  `https://<token>@` URL, and an env-style setting whose name says secret
+  (`*_WEBHOOK`, `*_DSN`, `*_TOKEN`, `*_SECRET`, `*_KEY`, `*_PASSWORD` with a
+  non-empty value) are now `never` in a candidate and block a commit. A `never`
+  reason names the rule that matched ("canary.env: Discord webhook URL; never
+  stow it"), never the value.
+- **Owner-only files and project-bound units are `review`.** A candidate nobody
+  but its owner can read (mode `600`, or any mode without group/other read) is
+  not recommended for upload: git records only the executable bit, so stowing and
+  publishing it would widen who can read it. A user unit whose `ExecStart` points
+  into `~/Projects`, and a `.timer`/`.path` that triggers such a service, belong
+  to that project rather than to dotfiles.
 
 ### Changed
 
@@ -46,3 +59,7 @@ All notable changes to Stow Sync. The format follows
   with nothing inside to adopt.
 - The Accept recommendations confirm card replays the plan it listed, so a
   background refresh while the card is open cannot change the approved paths.
+- The generic `assignment` secret rule only reads a value from the line below its
+  key when the key is YAML-style (`password:`), so an empty `SOMETHING_TOKEN=` in
+  an env file no longer borrows the next setting's name, while a hand-edited YAML
+  value — base64 padding and a `user:pass` pair included — is still caught.

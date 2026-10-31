@@ -1822,6 +1822,15 @@ LARGE_REASON = (
     "Larger than " + str(VERDICT_FILE_MAX_BYTES // 1024) + " KB; check it by hand"
 )
 DIR_UNREADABLE_REASON = "Could not inspect every file; check it by hand"
+# A user unit that runs a script inside the owner's Projects folder belongs to
+# that project, not to dotfiles: reinstalling or deleting the project makes the
+# unit useless, so it is worth a look before it is stowed.
+PROJECT_UNIT_REASON = "Runs a script in ~/Projects; check before stowing"
+PROJECT_TRIGGER_REASON = "Triggers a ~/Projects unit; check before stowing"
+_PRIVATE_NOTE = "; check before stowing"
+_SECRET_NOTE = "; never stow it"
+_PROJECT_EXEC = re.compile(r"(?m)^ExecStart=.*/Projects/")
+
 
 # A reason is one line in the panel row: the backend caps it here. Measured on
 # the 560 px panel, a caption glyph averages ~5.4 px and the reason column is
@@ -1839,8 +1848,17 @@ _COMMENT_MARKERS = ("#", "//", ";", "/*", "--")
 _TOML_SECTION = re.compile(r"^\s*\[([^\[\]\n]{1,40})\]\s*$")
 
 
-def _secret_reason(rule: str) -> str:
-    return "Contains a credential (" + rule + " rule)"
+def _secret_reason(rule: str, path: str) -> str:
+    """Reason for a matched secret rule: names the file and the rule, never the value."""
+    label = SECRET_RULE_LABELS.get(rule, rule)
+    name = os.path.basename(os.path.normpath(path))
+    return _named_line(name, label, _SECRET_NOTE)
+
+
+def _private_file_reason(path: str, mode: int) -> str:
+    """Reason for a file only its owner can read."""
+    name = os.path.basename(os.path.normpath(path))
+    return _named_line(name, "private file (mode " + format(mode, "o") + ")", _PRIVATE_NOTE)
 
 
 def _launcher_reason(tool: str) -> str:
@@ -1904,6 +1922,42 @@ def _secret_rule(text: str) -> str:
     for rule, pattern in SECRET_RULES:
         if pattern.search(text):
             return rule
+    return ""
+
+
+def _owner_only_mode(path: str) -> int:
+    """Permission bits when only the owner can read ``path``, else ``0``.
+
+    Git records just the executable bit, so stowing an owner-only file and
+    publishing it would widen who can read it. ``0`` means "nothing to say":
+    group or other read is allowed, or the path is not a regular file.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
+        return 0
+    if not stat.S_ISREG(info.st_mode):
+        return 0
+    if info.st_mode & (stat.S_IRGRP | stat.S_IROTH):
+        return 0
+    return stat.S_IMODE(info.st_mode)
+
+
+def _project_unit_reason(path: str, text: str) -> str:
+    """Reason when a user unit runs (or triggers) a script in ``~/Projects``.
+
+    A ``.service`` is judged from its own ``ExecStart``; a ``.timer`` or
+    ``.path`` unit has none, so it is judged from the service of the same name
+    next to it — the unit it triggers when it names no ``Unit=``. Anything else
+    (a normal system unit, ``%h/.local/bin``) stays untouched.
+    """
+    name = os.path.basename(path)
+    if name.endswith(".service"):
+        return PROJECT_UNIT_REASON if _PROJECT_EXEC.search(text) else ""
+    if name.endswith(".timer") or name.endswith(".path"):
+        service = os.path.join(os.path.dirname(path), name.rsplit(".", 1)[0] + ".service")
+        service_text, _state = _candidate_text(service, VERDICT_FILE_MAX_BYTES)
+        return PROJECT_TRIGGER_REASON if _PROJECT_EXEC.search(service_text) else ""
     return ""
 
 
@@ -1982,19 +2036,29 @@ def _cap_line(text: str) -> str:
     return _truncate(text, MAX_REASON_CHARS)
 
 
-def _compose_reason(name: str, detail: str) -> str:
-    """One bounded line: ``name: detail; <check note>``.
+def _named_line(name: str, detail: str, note: str) -> str:
+    """One bounded line: ``name: detail<note>``.
 
-    The detail is cut at a word boundary when it does not fit, and the check
-    note always survives, so a reason never lies about what was checked.
+    The detail is cut at a word boundary when it does not fit, and the fixed
+    note always survives, so a reason never loses its conclusion. A name too
+    long to leave room for the detail is dropped: the row already shows the
+    path.
     """
-    note = "; " + NO_SECRET_NOTE
     head = name + ": " if name else ""
     budget = MAX_REASON_CHARS - len(head) - len(note)
     if budget < 12:
         head = ""  # the name alone would eat the detail
         budget = MAX_REASON_CHARS - len(note)
     return head + _truncate(detail, budget) + note
+
+
+def _compose_reason(name: str, detail: str) -> str:
+    """One bounded line: ``name: detail; <check note>``.
+
+    The detail is cut at a word boundary when it does not fit, and the check
+    note always survives, so a reason never lies about what was checked.
+    """
+    return _named_line(name, detail, "; " + NO_SECRET_NOTE)
 
 
 def _group_upload_reason(names: list[str]) -> str:
@@ -2012,15 +2076,17 @@ def _file_verdict(path: str) -> tuple[str, str]:
     Order, first match wins: a secret in the readable bytes is ``never`` — even
     when the file is binary or oversized, only the head beyond the read bound is
     unseen; a tool-generated launcher or a machine-state name is ``ignore``;
-    readable text with no machine-specific path is ``upload``; anything binary,
-    oversized or referring to this machine's tool installs is ``review``. A
-    machine-state name still decides when the content is not readable text: a
-    real SQLite file is binary, and its name already says machine state.
+    readable text nobody but the owner can read, or a unit bound to a project,
+    is ``review``; readable text with no machine-specific path is ``upload``;
+    anything binary, oversized or referring to this machine's tool installs is
+    ``review``. A machine-state name still decides when the content is not
+    readable text: a real SQLite file is binary, and its name already says
+    machine state.
     """
     text, state = _candidate_text(path, VERDICT_FILE_MAX_BYTES)
     rule = _secret_rule(text)
     if rule:
-        return VERDICT_NEVER, _secret_reason(rule)
+        return VERDICT_NEVER, _secret_reason(rule, path)
     if state == _TEXT_OK:
         if text.startswith("#!"):
             tool = _tool_env_tool(text.split("\n", 1)[0])
@@ -2031,6 +2097,12 @@ def _file_verdict(path: str) -> tuple[str, str]:
             return VERDICT_IGNORE, state_reason
         if _tool_env_tool(text):
             return VERDICT_IGNORE, TOOL_PATH_REASON
+        private = _owner_only_mode(path)
+        if private:
+            return VERDICT_REVIEW, _private_file_reason(path, private)
+        unit_reason = _project_unit_reason(path, text)
+        if unit_reason:
+            return VERDICT_REVIEW, unit_reason
         return VERDICT_UPLOAD, _upload_reason(path, text)
     state_reason = _machine_state_reason(path)
     if state_reason:
@@ -2133,7 +2205,8 @@ def candidate_verdict(path: str) -> tuple[str, str]:
     ``path`` must already be expanded (``~`` resolved), which is what
     :func:`annotate_verdicts` does for the candidate list. A credential store or
     a secret inside the content is ``never``; tool-generated files and machine
-    state are ``ignore``; a small text config with no machine-specific path is
+    state are ``ignore``; a file only its owner can read, or a unit bound to a
+    project, is ``review``; a small text config with no machine-specific path is
     ``upload``; everything else is ``review`` (the owner decides).
     """
     if _is_credential_candidate(path):
@@ -2544,6 +2617,9 @@ def cmd_diff(
 # --------------------------------------------------------------------------
 
 # Named rules; the matched VALUE is never returned, only the rule/path/line.
+# The order is the order `_secret_rule` tries for a verdict reason: the specific
+# shapes come before the generic ones, so a Sentry DSN is not reported as an
+# anonymous token URL. `scan_secrets` reports every rule a line matches.
 SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
@@ -2552,11 +2628,72 @@ SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("slack-token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
     ("openai-key", re.compile(r"sk-[A-Za-z0-9]{32,}")),
     ("google-api-key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
+    # Chat webhooks carry a credential in the path itself.
+    ("discord-webhook", re.compile(r"discord(?:app)?\.com/api/webhooks/[A-Za-z0-9/_-]+")),
+    ("slack-webhook", re.compile(r"hooks\.slack\.com/services/[A-Za-z0-9/_-]+")),
+    (
+        "teams-webhook",
+        re.compile(r"(?:webhook\.office\.com|outlook\.office\.com)/webhook[A-Za-z0-9/_.-]*"),
+    ),
+    # A Sentry DSN carries its key in the userinfo of the URL; a cron check-in
+    # carries the public key in the last path segment.
+    ("sentry-dsn", re.compile(r"https?://[^@\s/]+@[^\s/]*ingest[^\s/]*sentry\.io/")),
+    (
+        "sentry-checkin",
+        re.compile(r"https?://[^\s/]*sentry\.io/api/[^/\s]+/cron/[^/\s]+/[^\s/]+"),
+    ),
+    # Any URL that carries credentials in its userinfo: `user:password@` or a
+    # long opaque token before the host (`https://<token>@host`).
+    ("url-credentials", re.compile(r"https?://[^\s/:@'\"]+:[^\s/@'\"]+@[^\s/'\"]+")),
+    (
+        "url-token",
+        re.compile(r"https?://[A-Za-z0-9._~%+-]{16,}@[A-Za-z0-9-]+\.[A-Za-z]{2,}"),
+    ),
+    # An env-style name that says secret, whatever the value looks like. Only a
+    # live assignment counts: `KEYMAP=`, `KEYBOARD=` and a commented-out line do
+    # not match, and neither does an empty value.
+    (
+        "secret-setting",
+        re.compile(
+            r"(?im)^[ \t]*(?:export[ \t]+)?[A-Za-z0-9_]+_"
+            r"(?:WEBHOOK|DSN|TOKEN|SECRET|KEY|PASSWORD)"
+            r"[ \t]*=[ \t]*['\"]?[^\s'\"#]"
+        ),
+    ),
     (
         "assignment",
-        re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
+        re.compile(
+            # A value on the same line, or — for a YAML-style `key:` — on the
+            # line below it, where a hand-edited value lives (base64 padding
+            # and `user:pass` included). Only the colon form continues onto
+            # the next line: an env-style `SOMETHING_TOKEN=` is empty, and
+            # must not borrow the next setting's name as its value.
+            r"(?i)(password|passwd|secret|token|api[_-]?key)(?:"
+            r"[ \t]*[:=][ \t]*['\"]?[^'\"\s]{8,}"
+            r"|[ \t]*:[ \t]*(?:\r?\n[ \t]*)+['\"]?[^'\"\s]{8,})"
+        ),
     ),
 ]
+
+# The plain name of each rule, for a candidate's reason. Never the value.
+SECRET_RULE_LABELS: dict[str, str] = {
+    "private-key": "Private key",
+    "github-token": "GitHub token",
+    "github-pat": "GitHub token",
+    "aws-access-key": "AWS access key",
+    "slack-token": "Slack token",
+    "openai-key": "OpenAI key",
+    "google-api-key": "Google API key",
+    "discord-webhook": "Discord webhook URL",
+    "slack-webhook": "Slack webhook URL",
+    "teams-webhook": "Teams webhook URL",
+    "sentry-dsn": "Sentry DSN",
+    "sentry-checkin": "Sentry check-in URL",
+    "url-credentials": "URL with a password",
+    "url-token": "URL with an embedded token",
+    "secret-setting": "secret-named setting",
+    "assignment": "password or token setting",
+}
 
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _SECRET_DIFF_CAP = 2 * 1024 * 1024
