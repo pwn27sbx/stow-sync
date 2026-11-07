@@ -6510,11 +6510,23 @@ class CandidateVerdictSourceTests(unittest.TestCase):
     def test_candidate_row_shows_the_reason(self) -> None:
         row = self.read("CandidateRow.qml")
         self.assertIn("root.candidate.reason", row)
-        # A hidden `never` offers no Adopt button and no Ignore button.
-        self.assertIn("property bool showAdopt", row)
-        self.assertIn("property bool showIgnore", row)
-        self.assertIn("visible: !root.credential && root.showAdopt", row)
-        self.assertIn("visible: root.showIgnore", row)
+        # The Adopt/Ignore rule lives in the model now; the row only turns it
+        # into visibility. A `never` row offers no Adopt and no Ignore, and an
+        # `ignore` row keeps a quiet "Adopt anyway".
+        self.assertIn("Model.candidateRowActions(root.candidate)", row)
+        self.assertIn(
+            'readonly property bool adoptVisible: root.actions.adopt !== "none" && !root.credential',
+            row,
+        )
+        self.assertIn('readonly property bool ignoreVisible: root.actions.ignore !== "none"', row)
+        model = self.read("Model.js")
+        actions = model[model.index("function candidateRowActions") :]
+        actions = actions[: actions.index("\n}\n")]
+        self.assertIn('if (r.tone === "never") return actions', actions)
+        ignored = actions[actions.index('} else if (verdict === "ignore")') + 1 :]
+        ignored = ignored[: ignored.index("}")]
+        self.assertIn('actions.chip = "Ignored"', ignored)
+        self.assertIn('actions.adopt = "secondary"', ignored)
 
     def test_repo_section_wires_the_hidden_group_and_the_action(self) -> None:
         section = self.read("RepoSection.qml")
@@ -6522,8 +6534,10 @@ class CandidateVerdictSourceTests(unittest.TestCase):
         self.assertIn("Model.recommendedCandidates(root.statusData).length", section)
         self.assertIn("hasAction: String(modelData.actionText || \"\") !== \"\"", section)
         self.assertIn("onActionClicked: root.acceptRecommendationsRequested()", section)
-        self.assertIn("showAdopt: modelData.hidden !== true || modelData.verdict === \"ignore\"", section)
-        self.assertIn("showIgnore: modelData.hidden !== true", section)
+        # The row receives the whole candidate and applies the model rule there.
+        self.assertIn("row: modelData", section)
+        self.assertIn("onAdoptRequested: root.adoptRequested(modelData)", section)
+        self.assertIn("onIgnoreRequested: root.ignoreRequested(modelData)", section)
         self.assertIn('text: "Accept recommendations (" + root.recommended + ")"', section)
         # The banner link and the button share the card: the mouse area is
         # declared first so the button still receives its click.
