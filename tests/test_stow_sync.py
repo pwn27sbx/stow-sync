@@ -1199,6 +1199,16 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".config/app/conf.env")
         self.assertEqual(verdict, ss.VERDICT_UPLOAD)
 
+    def test_portal_config_with_a_dbus_interface_name_stays_upload(self) -> None:
+        # Live false positive: a plain desktop config whose key is the D-Bus
+        # interface `org.freedesktop.impl.portal.Secret`, not a secret.
+        write(
+            self.home / ".config" / "xdg-desktop-portal" / "hyprland-portals.conf",
+            "[preferred]\ndefault=hyprland\norg.freedesktop.impl.portal.Secret=hyprland;gtk\n",
+        )
+        verdict, reason = self.verdict(".config/xdg-desktop-portal/hyprland-portals.conf")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD, reason)
+
 
     # --- ignore --------------------------------------------------------
 
@@ -2401,6 +2411,31 @@ class SecretScanTests(unittest.TestCase):
 
     def test_clean_line_has_no_secrets(self) -> None:
         self.assertEqual(ss.scan_secrets(synthetic_diff("file.txt", "just a normal line")), [])
+
+    def test_dotted_interface_name_is_not_a_secret_assignment(self) -> None:
+        # A D-Bus interface name ends in a segment that reads like a setting:
+        # `org.freedesktop.impl.portal.Secret=...` is a portal config, not a
+        # password.
+        line = "org.freedesktop.impl.portal.Secret=hyprland;gtk"
+        self.assertEqual(ss.scan_secrets(synthetic_diff("portals.conf", line)), [])
+
+    def test_real_secret_assignments_still_match(self) -> None:
+        for line in ("secret=fakevalue", "client_secret=fakevalue", "API_SECRET=fakevalue"):
+            with self.subTest(line):
+                found = ss.scan_secrets(synthetic_diff("conf.env", line))
+                self.assertIn("assignment", [entry["rule"] for entry in found], line)
+
+    def test_namespaced_secret_assignments_still_match(self) -> None:
+        # The D-Bus exemption is the freedesktop interface shape only; a
+        # namespaced property that carries a credential stays a secret.
+        for line in (
+            "com.example.service.secret=fakevalue",
+            "spring.datasource.password=fakevalue",
+            "com.example.service.Secret=fakevalue",
+        ):
+            with self.subTest(line):
+                found = ss.scan_secrets(synthetic_diff("conf.properties", line))
+                self.assertIn("assignment", [entry["rule"] for entry in found], line)
 
     def test_path_and_line_number_are_reported(self) -> None:
         found = ss.scan_secrets(synthetic_diff("dir/secret.env", "ghp_" + "A" * 36))

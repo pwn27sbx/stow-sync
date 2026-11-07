@@ -1920,7 +1920,7 @@ def _candidate_text(path: str, limit: int) -> tuple[str, str]:
 def _secret_rule(text: str) -> str:
     """First ``SECRET_RULES`` name matching ``text`` (never the value)."""
     for rule, pattern in SECRET_RULES:
-        if pattern.search(text):
+        if _rule_matches(rule, pattern, text):
             return rule
     return ""
 
@@ -2675,6 +2675,39 @@ SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
     ),
 ]
 
+
+# The freedesktop D-Bus namespace. Its interface names are reverse-DNS
+# CamelCase names such as `org.freedesktop.impl.portal.Secret`, which read like
+# a setting but name an interface.
+_DBUS_FREEDESKTOP = "org.freedesktop."
+
+
+def _assignment_is_real(text: str, match: re.Match[str]) -> bool:
+    """False when the matched keyword ends a freedesktop D-Bus interface name.
+
+    Only that shape is exempt: a namespaced setting such as
+    `com.example.service.secret=` or `spring.datasource.password=` is still a
+    secret, and so is a single dotted key (`app.secret=`).
+    """
+    start = match.start()
+    if start == 0 or text[start - 1] != "." or not text[start].isupper():
+        return True
+    index = start - 1
+    while index >= 0 and (text[index].isalnum() or text[index] in "._-"):
+        index -= 1
+    return not text[index + 1 : start - 1].startswith(_DBUS_FREEDESKTOP)
+
+
+def _rule_matches(rule: str, pattern: re.Pattern[str], text: str) -> bool:
+    """True when ``rule`` really matches ``text``."""
+    if rule != "assignment":
+        return pattern.search(text) is not None
+    for match in pattern.finditer(text):
+        if _assignment_is_real(text, match):
+            return True
+    return False
+
+
 # The plain name of each rule, for a candidate's reason. Never the value.
 SECRET_RULE_LABELS: dict[str, str] = {
     "private-key": "Private key",
@@ -2743,7 +2776,7 @@ def scan_secrets(diff_text: str) -> list[dict[str, Any]]:
     seen: set[tuple[str, int, str]] = set()
     for path, line_no, text in iter_added_lines(diff_text):
         for rule, pattern in SECRET_RULES:
-            if not pattern.search(text):
+            if not _rule_matches(rule, pattern, text):
                 continue
             key = (path, line_no, rule)
             if key in seen:

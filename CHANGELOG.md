@@ -71,6 +71,9 @@ All notable changes to Stow Sync. The format follows
 
 ### Fixed
 
+- A D-Bus interface name is no longer read as a secret setting: a portal config
+  key such as `org.freedesktop.impl.portal.Secret` is a plain desktop config,
+  while `secret=`, `client_secret=` and `API_SECRET=` still count as secrets.
 - A machine-state name (a real SQLite file, an oversized log) stays `ignore`
   instead of falling into `review`, and a secret in the readable bytes still
   wins over that name.
