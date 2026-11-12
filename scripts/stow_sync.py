@@ -3712,6 +3712,8 @@ def cmd_skip(
         "changed": changed,
         "scope": "package" if package is not None else "paths",
         "package": values_to_add[0] if package is not None else "",
+        # `path` stays for a single-path caller from 0.3.1; `paths` is the list.
+        "path": values_to_add[0] if package is None and values_to_add else "",
         "paths": values_to_add if package is None else [],
         "skip_packages": list(section.get("skip_packages", []) or []),
         "skip_paths": list(section.get("skip_paths", []) or []),

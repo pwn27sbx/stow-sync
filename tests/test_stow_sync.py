@@ -6929,6 +6929,8 @@ class SkipCommandTests(unittest.TestCase):
         path = str(self.home / "Pictures" / "Wallpapers" / "solarized-osaka-mac")
         result = self.skip("--path", path)
         self.assertTrue(result["ok"], result)
+        # The single-path response keeps the 0.3.1 `path` key (0.3.1b adds `paths`).
+        self.assertEqual(result["path"], "~/Pictures/Wallpapers/solarized-osaka-mac")
         data = json.loads(self.config.read_text(encoding="utf-8"))
         self.assertEqual(
             data["machines"][self.host]["skip_paths"],
