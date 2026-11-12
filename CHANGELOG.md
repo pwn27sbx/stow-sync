@@ -4,6 +4,57 @@ All notable changes to Stow Sync. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the plugin uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.1 - 2026-11-11
+
+### Added
+
+- **Upload is always reachable.** The Overview action row now carries an
+  **Upload** button whenever any repository has commits ahead, and the Changes
+  tab carries **Upload N commits**, even while another action (Publish, Update,
+  Review, a package to fix) is the recommended one. Both open the same confirm
+  card and push every repo that is ahead; before, Upload only existed as the
+  primary button and disappeared as soon as anything else needed attention.
+- **"Needs fixing" explains every package.** Each package is its own row with
+  its state in plain words (**Missing links**, **A real file is in the way**,
+  **Broken links**), its affected paths (first three, then "+N more") and one
+  recommended action: **Link this** for a missing link, **Review** for a
+  conflict or a broken link — never an automatic overwrite.
+- **The link confirm shows the dry-run plan.** Pressing Link runs
+  `stow --dry-run` for that one package and lists every action path by path
+  ("will link X → Y", "will replace the link X with a folder" for an
+  `UNLINK`/`MKDIR` pair, "conflict at Z"), names the package and says nothing
+  else follows. Only a conflict-free pending package gets a **Link** button; a
+  conflict, a broken link, a refused plan or an empty plan only closes.
+- **Per-machine skips.** An optional `machines.<hostname>` section with
+  `skip_packages` and `skip_paths` leaves a package or a path alone on one
+  machine without affecting another, so a shared dotfiles config can say
+  "`mise-mac` never restows here". A skipped package is out of health, the
+  badge, the count, notifications and Needs fixing, and the Packages tab shows
+  it as **Skipped on this machine**. **Skip on this machine** in a row shows the
+  exact config change before saving it, and writes through the Stow link
+  instead of replacing it; `skip --package|--path [--dry-run]` does the same
+  from a terminal. The setup wizard also honours `machines.<host>.skip_packages`.
+- **A broken `machines` section never crashes.** One clear error is reported in
+  the panel and the section is ignored, which keeps today's behaviour.
+- **Packages tab says when a check failed.** A package whose `stow` check
+  crashed now shows **Check failed: <error>** instead of looking healthy.
+
+### Changed
+
+- **Fix packages is gone.** It restowed only the first unhealthy package and
+  gave no guidance; every package now has its own row and its own action, so
+  there is no multi-package walk to explain.
+
+### Fixed
+
+- **Writing the config through its Stow link.** `ignore`/`unignore` and the new
+  skip action used to replace a symlinked `config.json` with a regular file.
+  The real file is now resolved with `realpath` and written only when it stays
+  inside `$HOME`; the link is preserved, and a link pointing outside `$HOME` is
+  refused.
+- **`restow --dry-run` reports conflicts with the plan** instead of failing
+  before the panel can show what a package would do.
+
 ## 0.3.0 - 2026-11-07
 
 ### Added

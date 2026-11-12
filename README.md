@@ -12,8 +12,10 @@ machine from them in one guided flow.
   links are pending, conflicting or dangling, and new config files that were
   never added to a package. The bar icon only shows a badge when something
   needs you.
-- **Lets you act** from the panel: review changes, commit and publish, pull
-  updates, and fix (re)link problems.
+- **Lets you act** from the panel: review changes, commit and publish, upload
+  commits whenever there are some, pull updates, and fix one package at a time
+  with a plain explanation and a dry-run plan — or skip a package or a path on
+  this machine only.
 - **Sets up a new machine** (opt-in): checks your tools and `gh` login, downloads your repos,
   shows exactly what it will link and back up, links everything with
   `stow`, runs your optional post-install steps, and can undo the whole setup.
@@ -86,7 +88,8 @@ The first call to `status` creates two things:
 
 1. **Config** — `~/.config/stow-sync/config.json`, written once with the default
    repositories (`~/.dotfiles` and `~/wallpapers`). An existing file is **never
-   overwritten**; edit it by hand or with the panel's **Edit** button.
+   overwritten** by the first run; edit it by hand, with the panel's **Edit**
+   button, or with **Skip on this machine**.
 2. **State dir** — `~/.local/state/stow-sync/`, owned by the plugin and written
    atomically with mode `0600`:
    - `baseline.json` — the first-run snapshot of files that already existed, so
@@ -135,9 +138,93 @@ shows up as a candidate until you adopt or ignore it. That is intended.
 | `repos[].packages` | `"auto"` or array | `"auto"` detects every top-level Stow package (directories that are not hidden and do not ignore everything). An array lists packages explicitly, e.g. `["walls"]`. |
 | `watch` | array | Directories or globs checked for new config files. A plain directory reports its direct children; a glob such as `~/.config/*` reports each direct child. Depth is always 1. |
 | `ignore` | array | Paths or globs (`fnmatch`) excluded from the candidate scan. |
+| `machines` | object | Optional per-machine skips, keyed by hostname (see [Per-machine skips](#per-machine-skips)). Missing means today's behaviour. |
 | `fetch_minutes` | number | How often the panel runs `git fetch --prune` in the background. |
 | `refresh_minutes` | number | How often the panel re-runs `status`. |
 | `notify_after_hours` | number | `0` disables desktop notifications. `N > 0` sends one `notify-send` when a repo has had pending items continuously for at least `N` hours, at most once per repo per calendar day. The continuous-pending clock is stored in `notify.json`; a repo that becomes clean clears its entry. |
+
+### Per-machine skips
+
+The config usually lives in your dotfiles, so one shared file has to describe
+several machines. A `machines` section is keyed by hostname and only the current
+host's entry applies:
+
+```json
+"machines": {
+  "pwnsxb": {
+    "skip_packages": ["mise-mac"],
+    "skip_paths": ["~/Pictures/Wallpapers/solarized-osaka-mac"]
+  }
+}
+```
+
+The key is the hostname the plugin reads from `socket.gethostname()`: run
+`hostname` on Linux to see it. (On macOS `hostname` can differ from
+`scutil --get LocalHostName`; this plugin runs on Omarchy, so that note only
+matters if you edit the shared file from a Mac.)
+
+- `skip_packages` — the package is left out of health, the badge, the action
+  count, notifications and **Needs fixing** on that host. The Packages tab still
+  lists it, as **Skipped on this machine**.
+- `skip_paths` — a pending `LINK` target at, under, or above a skipped path does
+  not count as pending. A link that folds a whole parent covering a skipped path
+  counts as touching it: skipping
+  `~/Pictures/Wallpapers/solarized-osaka-mac` also hides a plan that would link
+  `~/Pictures`.
+- Another host's section changes nothing here, and a missing `machines` key is
+  exactly the old behaviour. A wrong type prints one error in the panel and the
+  section is ignored; it never crashes.
+- **Skip on this machine** in a Needs fixing row writes the entry for the
+  current host after showing you the change. The config is a Stow link into your
+  dotfiles, so the plugin writes through the link (it never replaces it) and
+  dotfiles then shows 1 change to publish. From a terminal,
+  `python3 scripts/stow_sync.py skip --package NAME` (or `--path PATH`) does the
+  same, and `--dry-run` prints the change without saving it.
+- **Link this** refuses when its dry-run plan would touch a skipped path, and
+  the setup wizard never links a package skipped on this host.
+
+## Upload and fixing packages
+
+### Upload is always reachable
+
+Whenever any repository has commits ahead, the Overview shows an **Upload**
+button in the action row — next to Review Changes, Update and Publish, whichever
+of them is the recommended action — and the Changes tab shows **Upload N
+commits** above its lists. Both open the same confirm card and push every repo
+that is ahead, exactly like the `p` key's Upload action.
+
+### Needs fixing, one package at a time
+
+The Overview **Needs fixing** group lists one row per package, never a single
+"fix everything" button. Each row says the state in plain words, the affected
+paths (first three, then "+N more") and one recommended action:
+
+| Package health | The row says | Recommended action |
+| --- | --- | --- |
+| `pending` | **Missing links** | **Link this** |
+| `conflicts` | **A real file is in the way** | **Review** — a conflict is never overwritten |
+| `dangling` | **Broken links** | **Review** — there is no repair for a broken link, so it is shown, not re-linked |
+
+Every row also offers **Skip on this machine**, which writes the per-host entry
+described in [Per-machine skips](#per-machine-skips). A package skipped on this
+host is not listed at all.
+
+Pressing the action runs `stow --dry-run` for that one package and opens a
+confirm card with the plan, path by path:
+
+- "will link `~/.config/nuncio` → `~/.dotfiles/nuncio/.config/nuncio`"
+- "will replace the link `~/.config/mise` with a folder" for an `UNLINK`/`MKDIR`
+  pair
+- "conflict at `~/.config/ghostty/config`"
+
+The card names the package and says that nothing else follows, so the old
+"which package comes next?" surprise is gone. Only a conflict-free `pending`
+package gets a **Link** button; a conflict, a broken link, a refused plan or an
+empty plan shows **Close**, so nothing is ever applied blindly.
+
+In the Packages tab a package skipped on this host says **Skipped on this
+machine**, and a health check that crashed says **Check failed: <error>** instead
+of pretending the package is fine.
 
 ## New config candidates
 
@@ -400,14 +487,17 @@ anything.
   remote-tracking refs, never the working tree). Stow health checks use
   `stow -n` (dry runs) only.
 - **The only writes the plugin makes on its own** are the config file (created
-  once, never overwritten) and its own state directory
+  once; after that only **Skip on this machine** writes it, after showing you
+  the change) and its own state directory
   `~/.local/state/stow-sync/` (`baseline.json`, `publish.json`, `notify.json`).
   State writes are atomic and `0600`, and the directory is `0700`. Nothing is
   ever written to a repository or to your tracked config unless you press a
-  mutating action.
-- **Confirm cards.** Every mutating action (Publish, Upload, Update, Restow,
-  Adopt, Ignore) opens a confirm card that names exactly what will happen — the
-  paths, the package and the repository involved — before anything runs.
+  mutating action; Skip writes the config through its Stow link, so your
+  dotfiles repo then shows 1 change to publish.
+- **Confirm cards.** Every mutating action (Publish, Upload, Update, Link this,
+  Skip on this machine, Adopt, Ignore) opens a confirm card that names exactly
+  what will happen — the paths, the package, the config change and the
+  repository involved — before anything runs.
 - **Deletions and renames publish.** A selected deletion commits the removal, and
   a selected rename commits as a real rename (`old → new`) instead of leaving a
   stray staged deletion behind.
@@ -441,11 +531,14 @@ and, when you use the wizard, `gh`.
   `O_NOFOLLOW`; the opened inode itself is checked to be a regular file owned
   by you, so a planted symlink, a foreign-owned file or an oversized file is
   refused instead of read.
-- **What it writes.** Only your config (created once, never overwritten) and the
-  plugin's own state directory (`baseline.json`, `publish.json`, `notify.json`,
+- **What it writes.** Only your config (created once; a **Skip on this machine**
+  confirms and then writes it, through the Stow link when it is one, so the real
+  file inside your dotfiles changes and the link stays a link) and the plugin's
+  own state directory (`baseline.json`, `publish.json`, `notify.json`,
   `setup-plan.json`, `setup-progress.json`, `setup-backups/`). Every write is
   atomic: an exclusive `0600` temp file inside the target directory, `fsync`,
-  then `os.replace`; the state directory is `0700`. The plugin never writes to a
+  then `os.replace`; the state directory is `0700`. A config link that points
+  outside `$HOME` is refused, never followed. The plugin never writes to a
   repository or to a tracked config unless you press a mutating action.
 - **Processes.** Every external command runs as a fixed argument vector, never
   through a shell, with a hard timeout and a bounded, killable process group.
@@ -497,6 +590,8 @@ repository has been pending for a while:
 
 - A repo counts as **pending** when it has changes or untracked files, is ahead
   or behind its upstream, or has a package that needs fixing.
+- A package skipped on this machine (see [Per-machine
+  skips](#per-machine-skips)) never counts as pending.
 - The clock starts when it first becomes pending and resets when it becomes
   clean.
 - Once it has been pending continuously for at least `notify_after_hours`, one
