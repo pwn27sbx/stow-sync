@@ -32,6 +32,9 @@ Panel {
   property bool publishAllowSecrets: false; property string publishError: ""; property string publishRepoFilter: ""; property string publishUpstream: "origin/main"
   property int publishCommitDone: 0; property bool publishHadError: false
   property string batchKind: ""; property int batchRemaining: 0; property int batchTotal: 0; property int batchFailures: 0; property string batchError: ""
+  // S2/S3: the package whose dry-run plan is being fetched, and the skip
+  // preview's answer, so each confirm card shows exactly what will run.
+  property var planTarget: ({})
   // Adopt and diff cards.
   property string adoptRepo: ""; property string adoptPath: ""; property string adoptPackage: ""; property var adoptSuggestions: []
   property string adoptError: ""; property string diffTitle: ""; property string diffBody: ""; property bool diffTruncated: false
@@ -72,7 +75,13 @@ Panel {
     if (isError) { root.errorText = value; root.resultText = ""; resultTimer.stop() }
     else { root.resultText = value; resultTimer.restart() }
   }
-  function applyStatus(payload) { root.statusData = payload; root.errorText = ""; if (root.setupOn && !root.backupsFetched) { root.backupsFetched = true; root.refreshSetupBackups() } }
+  function applyStatus(payload) {
+    root.statusData = payload
+    // A broken shared `machines` section is reported once and ignored by the
+    // backend; the panel is the surface for that one clear error (C7).
+    root.errorText = String((payload && payload.machine_error) || "")
+    if (root.setupOn && !root.backupsFetched) { root.backupsFetched = true; root.refreshSetupBackups() }
+  }
   function switchTabTo(index) { root.activeTab = index; root.focusedKey = "" }
   function switchTab(dx) { var n = root.tabs.length; if (n > 0) root.switchTabTo((root.activeTab + dx + n) % n) }
   function isChecked(key) { return root.checkedPaths[key] !== false }
@@ -94,11 +103,40 @@ Panel {
   function requestUpdate() {
     if (Model.flowTotals(root.statusData, "behind").count > 0) { root.confirmKind = "update"; root.confirmPayload = { repos: Model.repoNames(root.statusData, "behind") }; root.overlayMode = "confirm" }
   }
+  // S1: the one Upload control behind both buttons (Overview row and Changes
+  // summary). Same confirm and batch as the `upload` primary action.
+  function requestUpload() {
+    if (root.busy) return
+    if (Model.flowTotals(root.statusData, "ahead").count <= 0) { root.setResult("Nothing to upload.", true); return }
+    root.confirmKind = "upload"
+    root.confirmPayload = { repos: Model.repoNames(root.statusData, "ahead") }
+    root.overlayMode = "confirm"
+  }
+  // S2: one package. The dry run comes first so the confirm card can list the
+  // plan path by path; a conflict or a skipped path turns it into Review/Close.
+  function requestPackagePlan(repo, packageName) {
+    if (root.busy) return
+    root.planTarget = { repo: String(repo || ""), package: String(packageName || "") }
+    runner.runAction("restow-plan", ["restow", "--repo", String(repo || ""), "--package", String(packageName || ""), "--dry-run"])
+  }
+  // S3: the config change is shown before it is saved.
+  function requestSkipPackage(packageName) {
+    if (root.busy) return
+    runner.runAction("skip-preview", ["skip", "--package", String(packageName || ""), "--dry-run"])
+  }
   function acceptConfirm() {
     if (root.busy) return
     if (root.confirmKind === "setup-undo") { runner.runAction("setup-undo", ["setup-undo", "--backup", String(root.confirmPayload.backup || "")]); return }
     if (root.confirmKind === "upload") { root.startBatch("push", Model.uploadPlan(root.statusData)); return }
     if (root.confirmKind === "update") { root.startBatch("pull", Model.updatePlan(root.statusData)); return }
+    // S2: a plan card that offers no Link (a conflict, a broken link, a skipped
+    // path, or nothing to change) only closes. A restow is never auto-applied.
+    if (root.confirmKind === "package-plan") {
+      if (root.confirmPayload.canLink !== true) { root.overlayMode = ""; return }
+      var restow = Model.mutationFor("restow", { repo: root.confirmPayload.repo, package: root.confirmPayload.package })
+      runner.runAction(restow.tag, restow.args, restow.stdin)
+      return
+    }
     if (root.confirmKind === "accept-recommendations") {
       // The plan shown in the card is frozen: a background refresh while the
       // card was open must never change what the owner approved.
@@ -176,6 +214,35 @@ Panel {
     var outcome = Model.actionOutcome(tag, payload)
     if (outcome.kind === "diff") { root.diffBody = outcome.body; root.diffTruncated = outcome.truncated; root.overlayMode = "diff"; return }
     if (outcome.kind === "suggest") { if (root.overlayMode === "publish") root.publishMessage = outcome.message; return }
+    // S2: the dry-run plan becomes the confirm card, frozen at this moment.
+    if (tag === "restow-plan") {
+      var target = root.planTarget || {}
+      root.planTarget = ({})
+      if (!payload || payload.ok !== true) { root.overlayMode = ""; root.setResult(String((payload && payload.error) || "The dry run failed."), true); return }
+      var pkg = Model.packageByName(root.statusData, String(target.repo || ""), String(target.package || ""))
+      var card = Model.packagePlanCard(String(target.repo || ""), pkg, payload)
+      root.confirmKind = "package-plan"
+      root.confirmPayload = {
+        repo: card.repo, package: card.package, title: card.title, message: card.message,
+        lines: card.lines, confirmText: card.confirmText, canLink: card.canLink
+      }
+      root.overlayMode = "confirm"
+      return
+    }
+    // S3: the skip card lists the exact config change before saving.
+    if (tag === "skip-preview") {
+      if (!payload || payload.ok !== true) { root.overlayMode = ""; root.setResult(String((payload && payload.error) || "The skip preview failed."), true); return }
+      var isPath = String((payload && payload.path) || "") !== ""
+      root.confirmKind = isPath ? "skip-path" : "skip-package"
+      root.confirmPayload = {
+        package: String((payload && payload.package) || ""),
+        path: String((payload && payload.path) || ""),
+        message: String((payload && payload.message) || ""),
+        lines: ((payload && payload.lines) || []).slice()
+      }
+      root.overlayMode = "confirm"
+      return
+    }
     if (root.batchKind === "publish") { root.publishResult(outcome); return }
     if (root.batchKind !== "") { root.batchStep(outcome); return }
     root.overlayMode = ""
@@ -230,7 +297,7 @@ Panel {
     if (kind === "review") root.switchTabTo(1)
     else if (kind === "review-new") { root.switchTabTo(0); overviewTab.expandGroup("newConfigs") }
     else if (kind === "publish") root.openPublish("")
-    else if (kind === "upload") { root.confirmKind = "upload"; root.confirmPayload = { repos: Model.repoNames(root.statusData, "ahead") }; root.overlayMode = "confirm" }
+    else if (kind === "upload") root.requestUpload()
     else if (kind === "update") root.requestUpdate()
   }
   function editConfig() { Util.execArgv(["xdg-open", root.configPath]) }
@@ -356,7 +423,10 @@ Panel {
             onReviewRequested: root.switchTabTo(1)
             onPublishRequested: root.openPublish("")
             onUpdateRequested: root.requestUpdate()
-            onRestowRequested: function(repo, packageName) { root.openConfirm("restow", { repo: repo, package: packageName }) }
+            onUploadRequested: root.requestUpload()
+            onRestowRequested: function(repo, packageName) { root.requestPackagePlan(repo, packageName) }
+            onPackagePlanRequested: function(repo, packageName) { root.requestPackagePlan(repo, packageName) }
+            onSkipPackageRequested: function(repo, packageName) { root.requestSkipPackage(packageName) }
             onAdoptRequested: function(candidate) { root.adoptCandidate(candidate) }
             onIgnoreRequested: function(candidate) { root.openConfirm("ignore", { path: String(candidate.path || "") }) }
             onAcceptRecommendationsRequested: root.acceptRecommendations()

@@ -14,8 +14,9 @@ Column {
   property bool busy: false; property bool motion: true; property var checkedPaths: ({}); property var hiddenPaths: []
   property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false; property bool notSetUp: false; property string focusedKey: ""; property var packages: []; property var setupBackups: []
   property color foreground: Color.foreground
-  signal reviewRequested(); signal publishRequested(); signal updateRequested()
-  signal restowRequested(string repo, string packageName); signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
+  signal reviewRequested(); signal publishRequested(); signal updateRequested(); signal uploadRequested()
+  signal restowRequested(string repo, string packageName); signal packagePlanRequested(string repo, string packageName); signal skipPackageRequested(string repo, string packageName)
+  signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
   signal copyRequested(string value); signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
   signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested(); signal changeToggled(string key, bool value); signal changeHovered(string key)
   signal diffRequested(string repo, string path); signal undoSetupRequested(); signal acceptRecommendationsRequested()
@@ -28,10 +29,11 @@ Column {
   readonly property var changeView: Model.changesView(root.statusData, { hiddenPaths: root.hiddenPaths, showHidden: root.showHidden, showExisting: root.showExisting })
   readonly property int changes: Model.changeTotals(root.statusData).count
   readonly property int behind: Model.flowTotals(root.statusData, "behind").count
+  readonly property int ahead: Model.flowTotals(root.statusData, "ahead").count
   readonly property int fresh: Model.newCandidateCount(root.statusData)
   readonly property int recommended: Model.recommendedCandidates(root.statusData).length
   readonly property int hiddenCount: root.hiddenPaths.length
-  readonly property var firstUnhealthy: Model.firstUnhealthy(root.statusData)
+  readonly property int fixCount: Model.unhealthyPackages(root.statusData).length
   readonly property var overview: Model.overviewState(root.statusData, { notSetUp: root.notSetUp, setupNeeded: root.setupNeeded }) // finding 76
   readonly property bool anySelected: Model.anyChecked(root.changeView.rows, root.checkedPaths)
   function groupExpanded(key) { return root.expandedKey === String(key) }
@@ -147,15 +149,16 @@ Column {
     }
     Row {
       width: parent.width
-      visible: root.overview.showManagement && (root.changes > 0 || root.fresh > 0 || root.behind > 0 || root.firstUnhealthy !== null)
+      // S1/C1: commits ahead keep the row (and its Upload button) on screen,
+      // whatever the primary action is.
+      visible: root.overview.showManagement && (root.changes > 0 || root.fresh > 0 || root.behind > 0 || root.ahead > 0 || root.fixCount > 0)
       spacing: Style.spacing.lg
       Button { visible: root.changes > 0 || root.fresh > 0 || root.behind > 0; text: "Review Changes"; iconText: "\uf044"; fontSize: Style.font.caption; onClicked: root.reviewRequested() }
+      // The Upload control the panel never had (C1): same confirm and batch as
+      // the `upload` primary action, reachable whenever commits are ahead.
+      Button { visible: root.ahead > 0; text: "Upload"; iconText: "\uf093"; fontSize: Style.font.caption; enabled: !root.busy; onClicked: root.uploadRequested() }
       Button { visible: root.behind > 0; text: "Update"; iconText: "\uf0ed"; fontSize: Style.font.caption; onClicked: root.updateRequested() }
       Button { visible: root.changes > 0; text: "Publish"; iconText: "\uf0ee"; fontSize: Style.font.caption; enabled: !root.busy; onClicked: root.publishRequested() }
-      Button {
-        visible: root.firstUnhealthy !== null; text: "Fix packages"; iconText: "\uf0ad"; fontSize: Style.font.caption; enabled: !root.busy
-        onClicked: if (root.firstUnhealthy) root.restowRequested(root.firstUnhealthy.repo, root.firstUnhealthy.package)
-      }
     }
     Repeater {
       model: root.repos
@@ -199,18 +202,27 @@ Column {
           Item {
             required property var modelData
             width: parent ? parent.width : 0
-            implicitHeight: Math.max(itemLine.implicitHeight, candLine.implicitHeight)
+            implicitHeight: Math.max(itemLine.implicitHeight, candLine.implicitHeight, fixLine.implicitHeight)
             ItemRow {
               id: itemLine
               width: parent.width
-              visible: modelData.type !== "candidate"
-              primary: modelData.type === "health" ? String(modelData.title) : (modelData.type === "incoming" ? (String(modelData.hash) + "  " + String(modelData.subject)) : String(modelData.pathLabel || modelData.path))
-              secondary: modelData.type === "health" ? String(modelData.subtitle) : (modelData.type === "incoming" ? Model.repoDisplayName(modelData.repo) : String(modelData.package))
+              visible: modelData.type !== "candidate" && modelData.type !== "health"
+              primary: modelData.type === "incoming" ? (String(modelData.hash) + "  " + String(modelData.subject)) : String(modelData.pathLabel || modelData.path)
+              secondary: modelData.type === "incoming" ? Model.repoDisplayName(modelData.repo) : String(modelData.package)
               chip: modelData.type === "change" ? String(modelData.chip) : ""
-              showAction: modelData.type === "health"
-              actionText: "Fix"
               foreground: root.foreground
-              onActionClicked: root.restowRequested(String(modelData.repo), String(modelData.package))
+            }
+            // S2: one package per row with its plain state, its affected paths
+            // and the two per-package choices; no multi-package walk (C5).
+            PackageFixRow {
+              id: fixLine
+              width: parent.width
+              visible: modelData.type === "health"
+              row: modelData
+              busy: root.busy
+              foreground: root.foreground
+              onPlanRequested: root.packagePlanRequested(String(modelData.repo), String(modelData.package))
+              onSkipRequested: root.skipPackageRequested(String(modelData.repo), String(modelData.package))
             }
             CandidateRow {
               id: candLine
@@ -239,6 +251,14 @@ Column {
     Text {
       width: parent.width; textFormat: Text.PlainText; text: Model.explain(root.statusData, { notSetUp: root.notSetUp })
       color: Util.alpha(root.foreground, 0.72); font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
+    }
+    // S1: the summary says "Upload to send them to GitHub", so this tab carries
+    // the same control the Overview row has (C1).
+    Button {
+      visible: root.ahead > 0
+      text: "Upload " + Model.pluralCount(root.ahead, "commit")
+      iconText: "\uf093"; fontSize: Style.font.caption; enabled: !root.busy
+      onClicked: root.uploadRequested()
     }
     Row {
       width: parent.width

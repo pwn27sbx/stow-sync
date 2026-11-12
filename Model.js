@@ -499,12 +499,6 @@ function confirmSpec(kind, payload) {
     message: "Fast-forward only; refuses when a repo is dirty or diverged.",
     lines: (p.repos || []).slice(), confirmText: "Update", destructive: false
   }
-  if (kind === "restow") return {
-    title: "Restow " + String(p.package || ""),
-    message: "Dry-run first; conflicts abort the restow.",
-    lines: [String(p.repo || ""), "package: " + String(p.package || "")],
-    confirmText: "Restow", destructive: false
-  }
   if (kind === "adopt") return {
     title: "Adopt into " + String(p.repo || ""),
     message: "Move the path into the repo and stow it back as a symlink.",
@@ -526,6 +520,27 @@ function confirmSpec(kind, payload) {
     title: "Ignore all shown",
     message: "These paths will no longer be reported.",
     lines: (p.paths || []).slice(), confirmText: "Ignore all", destructive: true
+  }
+  // S3: the skip card shows the exact config change before it is saved.
+  if (kind === "skip-package") return {
+    title: "Skip " + String(p.package || "") + " on this machine",
+    message: String(p.message || ""),
+    lines: (p.lines || []).slice(),
+    confirmText: "Skip", destructive: false
+  }
+  if (kind === "skip-path") return {
+    title: "Skip " + String(p.path || "") + " on this machine",
+    message: String(p.message || ""),
+    lines: (p.lines || []).slice(),
+    confirmText: "Skip", destructive: false
+  }
+  // S2: the per-package dry-run plan. The card only offers Link when the
+  // backend would really restow; every other case is Review with Close.
+  if (kind === "package-plan") return {
+    title: String(p.title || ""),
+    message: String(p.message || ""),
+    lines: (p.lines || []).slice(),
+    confirmText: String(p.confirmText || "Close"), destructive: false
   }
   if (kind === "baseline") return {
     title: "Mark all as known",
@@ -549,6 +564,8 @@ function mutationFor(kind, payload) {
   if (kind === "adopt") return { tag: "adopt", args: ["adopt", "--repo", p.repo, "--package", p.package, "--path", p.path], stdin: "" }
   if (kind === "ignore") return { tag: "ignore", args: ["ignore"], stdin: JSON.stringify([p.path]) }
   if (kind === "ignore-all") return { tag: "ignore", args: ["ignore"], stdin: JSON.stringify(p.paths || []) }
+  if (kind === "skip-package") return { tag: "skip", args: ["skip", "--package", String(p.package || "")], stdin: "" }
+  if (kind === "skip-path") return { tag: "skip", args: ["skip", "--path", String(p.path || "")], stdin: "" }
   if (kind === "baseline") return { tag: "baseline", args: ["baseline", "--reset"], stdin: "" }
   return { tag: kind, args: [], stdin: "" }
 }
@@ -960,7 +977,8 @@ function healthLabel(health) {
 }
 
 // First unhealthy package in repo/package order, or null when every package is
-// healthy. The Overview "Fix packages" button restows exactly this package.
+// healthy. Kept for callers that need one target; the panel now acts per
+// package through `unhealthyPackages` (C5).
 function firstUnhealthy(data) {
   var repos = (data && data.repos) || []
   for (var i = 0; i < repos.length; i++) {
@@ -971,6 +989,196 @@ function firstUnhealthy(data) {
     }
   }
   return null
+}
+
+// --- 0.3.1 S2: "Needs fixing" guidance -------------------------------------
+
+// Plain words for a package health token. `conflicts` is the backend's plural
+// token (C4); a broken link has no repair path, so it is reviewed like a
+// conflict and never re-linked from here.
+function fixStateText(health) {
+  var h = String(health === undefined || health === null ? "ok" : health)
+  if (h === "conflicts") return "A real file is in the way"
+  if (h === "pending") return "Missing links"
+  if (h === "dangling") return "Broken links"
+  return ""
+}
+
+// The paths a package needs fixed: conflicts first (they block the restow),
+// then broken links, then missing links; duplicates dropped.
+function packagePathList(pkg) {
+  var p = pkg || {}
+  var paths = []
+  var groups = [p.conflicts, p.dangling, p.pending_links]
+  for (var g = 0; g < groups.length; g++) {
+    var list = groups[g] || []
+    for (var i = 0; i < list.length; i++) {
+      var target = list[i] && list[i].target ? String(list[i].target) : ""
+      if (target !== "" && paths.indexOf(target) === -1) paths.push(target)
+    }
+  }
+  return paths
+}
+
+// First three paths, then "+N more" (S2).
+function pathListText(paths) {
+  var list = paths || []
+  if (list.length === 0) return ""
+  var shown = list.slice(0, 3)
+  var extra = list.length - shown.length
+  return shown.join(", ") + (extra > 0 ? " +" + extra + " more" : "")
+}
+
+// One "Needs fixing" row: the state in plain words, its affected paths and
+// exactly one recommended action. A conflict or a broken link is only ever
+// reviewed; a missing link can be linked. A skipped package is not a row (S3).
+function packageFix(repoPath, pkg) {
+  var p = pkg || {}
+  var health = String(p.health || "ok")
+  var name = String(p.name || "")
+  var repo = String(repoPath || "")
+  var paths = packagePathList(p)
+  var link = health === "pending"
+  var known = health !== "ok"
+  return {
+    type: "health",
+    key: "health:" + repo + ":" + name,
+    repo: repo,
+    package: name,
+    packageLabel: packageLabel(name),
+    health: health,
+    state: healthState(health),
+    stateColor: healthColor(health),
+    stateText: fixStateText(health),
+    paths: paths,
+    pathsText: pathListText(paths),
+    action: known ? (link ? "link" : "review") : "",
+    actionText: known ? (link ? "Link this" : "Review") : "",
+    canLink: link,
+    title: name,
+    subtitle: repoDisplayName(repo) + " \u00b7 " + fixStateText(health),
+    skipped: p.skipped === true,
+    error: String(p.error || "")
+  }
+}
+
+// Every package that needs the owner, in repo order then package name, leaving
+// out a package skipped on this machine (S3/C6).
+function unhealthyPackages(data) {
+  var rows = []
+  var repos = (data && data.repos) || []
+  for (var i = 0; i < repos.length; i++) {
+    var repo = repos[i] || {}
+    var packages = (repo.packages || []).slice().sort(function(a, b) {
+      return compareStrings(a && a.name, b && b.name)
+    })
+    for (var j = 0; j < packages.length; j++) {
+      var pkg = packages[j] || {}
+      if (pkg.skipped === true) continue
+      if (String(pkg.health || "ok") === "ok") continue
+      rows.push(packageFix(String(repo.path || ""), pkg))
+    }
+  }
+  return rows
+}
+
+// The package object a row refers to, by repo path and package name; null when
+// a refresh removed it between the click and the dry-run answer.
+function packageByName(data, repoPath, packageName) {
+  var repos = (data && data.repos) || []
+  var repo = String(repoPath || "")
+  var name = String(packageName || "")
+  for (var i = 0; i < repos.length; i++) {
+    if (String((repos[i] && repos[i].path) || "") !== repo) continue
+    var packages = (repos[i] && repos[i].packages) || []
+    for (var j = 0; j < packages.length; j++) {
+      if (String((packages[j] && packages[j].name) || "") === name) return packages[j]
+    }
+  }
+  return null
+}
+
+// One plain line per stow action (C3). UNLINK/MKDIR replace a link with a real
+// folder, which is exactly what the owner must understand before pressing Link.
+function stowActionText(action) {
+  var a = action || {}
+  var name = String(a.action || "")
+  var target = String(a.target || "")
+  if (name === "") return ""
+  if (name === "LINK") return "will link " + target + (a.source ? " \u2192 " + String(a.source) : "")
+  if (name === "UNLINK" || name === "MKDIR")
+    return target === "" ? "will replace the link with a folder" : "will replace the link " + target + " with a folder"
+  if (name === "RMDIR")
+    return target === "" ? "will remove the empty folder" : "will remove the empty folder " + target
+  return "will " + name.toLowerCase() + (target === "" ? "" : " " + target)
+}
+
+// Every action of the dry run, once, then every conflict by path (S2).
+function planLines(actions, conflicts) {
+  var lines = []
+  var seen = {}
+  var list = actions || []
+  for (var i = 0; i < list.length; i++) {
+    var text = stowActionText(list[i])
+    if (text === "" || seen[text] === true) continue
+    seen[text] = true
+    lines.push(text)
+  }
+  var blocked = conflicts || []
+  for (var j = 0; j < blocked.length; j++) {
+    var target = blocked[j] && blocked[j].target ? String(blocked[j].target) : ""
+    var line = target === "" ? "conflict" : "conflict at " + target
+    if (seen[line] === true) continue
+    seen[line] = true
+    lines.push(line)
+  }
+  return lines
+}
+
+// The confirm card for one package: the dry-run plan path by path, and a Link
+// button only when the backend would really run it. A conflict, a broken link,
+// a refused plan or an empty plan is a Review with Close, so a restow is never
+// applied blindly (S2/C5).
+function packagePlanCard(repoPath, pkg, preview) {
+  var p = pkg || {}
+  var r = preview || {}
+  var repo = String(repoPath || "")
+  var name = String(p.name || "")
+  var health = String(p.health || "ok")
+  var refused = String(r.refused || "")
+  var conflicts = r.conflicts || []
+  var actions = r.actions || []
+  var lines = planLines(actions, conflicts)
+  if (health === "dangling") {
+    var broken = p.dangling || []
+    lines = []
+    for (var i = 0; i < broken.length; i++) {
+      var target = broken[i] && broken[i].target ? String(broken[i].target) : ""
+      var source = broken[i] && broken[i].source ? String(broken[i].source) : ""
+      lines.push("broken link at " + target + (source !== "" ? " \u2192 " + source : ""))
+    }
+  }
+  var canLink = health === "pending" && refused === "" && conflicts.length === 0 && actions.length > 0
+  var blockedMessage = "A real file is in the way at these paths. Nothing is changed from here: move the file away, or adopt it into the package first."
+  var message
+  if (refused !== "") message = refused
+  else if (conflicts.length > 0 || health === "conflicts") message = blockedMessage
+  else if (health === "dangling") message = "These links point at files that no longer exist. Nothing is changed from here."
+  else if (actions.length === 0) message = "Stow reports nothing to change for this package."
+  else message = "Dry run of stow for " + repoDisplayName(repo) + " \u00b7 package " + name +
+    ". Nothing changes until you press Link; a conflict cancels the restow. One package only: nothing else follows."
+  return {
+    kind: "package-plan",
+    repo: repo,
+    package: name,
+    health: health,
+    title: (canLink ? "Link " : "Review ") + name,
+    message: message,
+    lines: lines,
+    confirmText: canLink ? "Link" : "Close",
+    canLink: canLink,
+    destructive: false
+  }
 }
 
 // The first thing that needs the owner's attention, with a plain-words hint
@@ -1299,7 +1507,8 @@ function repoNames(data, metric) {
 // One-line result copy for a completed single mutation.
 function actionSuccessText(tag) {
   if (tag === "adopt") return "Adopted the file"
-  if (tag === "restow") return "Fixed packages"
+  if (tag === "restow") return "Fixed the package"
+  if (tag === "skip") return "Skipped on this machine"
   if (tag === "ignore") return "Ignored the path"
   if (tag === "baseline") return "Marked all as known"
   if (tag === "push") return "Uploaded commits"
@@ -1682,29 +1891,7 @@ function overviewGroups(data) {
     groups.push(hidden)
   }
 
-  var fixing = []
-  for (var r = 0; r < repos.length; r++) {
-    var current = repos[r] || {}
-    var packages = (current.packages || []).slice().sort(function(a, b) {
-      return compareStrings(a && a.name, b && b.name)
-    })
-    for (var p = 0; p < packages.length; p++) {
-      var pkg = packages[p] || {}
-      var health = String(pkg.health || "ok")
-      if (health === "ok") continue
-      var pkgName = String(pkg.name || "")
-      fixing.push({
-        type: "health",
-        repo: String(current.path || ""),
-        package: pkgName,
-        health: health,
-        // Plain title/subtitle so the row never renders "undefined" (finding 79).
-        title: pkgName,
-        subtitle: repoDisplayName(String(current.path || "")) + " \u00b7 " + healthLabel(health),
-        stateColor: healthColor(health)
-      })
-    }
-  }
+  var fixing = unhealthyPackages(d)
   if (fixing.length > 0) {
     groups.push(overviewGroup("fixing", "Needs fixing", "package", fixing))
   }
@@ -1914,8 +2101,14 @@ function packageCards(data) {
       var name = String(pkg.name || "")
       var health = String(pkg.health || "ok")
       var files = packageChangeFiles(repo, name)
+      var skipped = pkg.skipped === true
+      var error = String(pkg.error || "")
+      var stateText = fixStateText(health)
+      var pathsText = pathListText(packagePathList(pkg))
       var statusText
-      if (health !== "ok") statusText = "Needs fixing"
+      if (skipped) statusText = "Skipped on this machine"
+      else if (error !== "") statusText = "Check failed"
+      else if (health !== "ok") statusText = stateText
       else if (files.length > 0) statusText = plural(files.length, " change", " changes")
       else statusText = "Stowed"
       var target = packageTargetLabel(pkg, files)
@@ -1929,7 +2122,11 @@ function packageCards(data) {
         count: files.length,
         unit: pluralUnit(files.length, "file"),
         files: files,
-        expanded: false
+        expanded: false,
+        skipped: skipped,
+        error: error,
+        stateText: stateText,
+        pathsText: pathsText
       })
     }
   }

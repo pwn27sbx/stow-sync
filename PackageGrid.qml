@@ -39,6 +39,21 @@ Item {
     return Color.accent
   }
 
+  // C4/C6: the one line under an expanded package with no changed files — a
+  // package skipped on this machine, a check that crashed (its error), or the
+  // plain state with the affected paths.
+  function detailText() {
+    var card = root.expandedCard || ({})
+    if (card.skipped === true) return "Skipped on this machine: left out of health and Fix here."
+    if (String(card.error || "") !== "") return "Check failed: " + String(card.error)
+    if (String(card.health || "ok") !== "ok") {
+      var state = String(card.stateText || Model.healthLabel(String(card.health || "ok")))
+      var paths = String(card.pathsText || "")
+      return "Needs fixing: " + state + (paths !== "" ? " \u2014 " + paths : "")
+    }
+    return "No changed files."
+  }
+
   readonly property var expandedCard: {
     for (var i = 0; i < root.packages.length; i++) {
       if (keyOf(root.packages[i]) === root.expandedKey) return root.packages[i]
@@ -151,9 +166,7 @@ Item {
             width: parent.width
             visible: root.expandedCard !== null && (root.expandedCard.count || 0) === 0
             textFormat: Text.PlainText
-            text: Model.healthLabel(String((root.expandedCard && root.expandedCard.health) || "ok")) === "ok"
-              ? "No changed files."
-              : "Needs fixing: " + Model.healthLabel(String(root.expandedCard.health))
+            text: root.detailText()
             color: Util.alpha(root.foreground, 0.72)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption

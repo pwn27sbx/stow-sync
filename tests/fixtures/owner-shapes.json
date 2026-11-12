@@ -1,0 +1,51 @@
+{
+  "repos": [
+    {
+      "path": "~/.dotfiles",
+      "exists": true,
+      "branch": "main",
+      "ahead": 3,
+      "behind": 0,
+      "state": "clean",
+      "changes": [],
+      "untracked": [],
+      "incoming_commits": [],
+      "stowed_packages": 1,
+      "packages": [
+        {
+          "name": "mise-mac",
+          "health": "pending",
+          "pending_links": [
+            {
+              "target": "~/.config/mise",
+              "source": "~/.dotfiles/mise-mac/.config/mise"
+            }
+          ],
+          "conflicts": [],
+          "dangling": []
+        },
+        {
+          "name": "nuncio",
+          "health": "ok",
+          "pending_links": [],
+          "conflicts": [],
+          "dangling": []
+        },
+        {
+          "name": "omarchy",
+          "health": "pending",
+          "pending_links": [
+            {
+              "target": "~/Pictures/Wallpapers/solarized-osaka-mac",
+              "source": "~/.dotfiles/omarchy/Pictures/Wallpapers/solarized-osaka-mac"
+            }
+          ],
+          "conflicts": [],
+          "dangling": []
+        }
+      ]
+    }
+  ],
+  "candidates": [],
+  "summary": { "state": "pending", "count": 2 }
+}

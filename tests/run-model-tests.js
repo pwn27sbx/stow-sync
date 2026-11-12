@@ -999,7 +999,8 @@ test("packageCards describes each package and maps a real icon", () => {
   same(fish.files.map((f) => f.state), ["added", "modified"])
   assert.equal(fish.expanded, false)
   assert.equal(cards[1].icon, "\ue83a")
-  assert.ok(cards[1].description.indexOf("Needs fixing") !== -1, cards[1].description)
+  assert.equal(cards[1].description, "\u00b7 A real file is in the way")
+  assert.equal(cards[1].stateText, "A real file is in the way")
   assert.equal(cards[2].icon, "\uf03d8")
   assert.ok(cards[2].description.indexOf("Stowed") !== -1, cards[2].description)
   assert.equal(cards[2].count, 0)
@@ -2291,7 +2292,7 @@ test("overviewGroups: a Needs fixing row title is the package name (79)", () => 
   assert.equal(fixing.items.length, 1)
   assert.equal(fixing.items[0].title, "ghostty")
   assert.ok(String(fixing.items[0].subtitle).indexOf("dotfiles") !== -1)
-  assert.ok(String(fixing.items[0].subtitle).indexOf("conflict") !== -1)
+  assert.ok(String(fixing.items[0].subtitle).indexOf("A real file is in the way") !== -1)
 })
 
 test("accordionKey: expanding one key replaces the previous", () => {
@@ -2869,4 +2870,299 @@ test("confirmationSteps replays the frozen plan, not a later scan", () => {
   assert.equal(Model.confirmationSteps(frozen).length, 1)
   same(Model.confirmationSteps({}).map((s) => s.args), [])
   same(Model.confirmationSteps(null).map((s) => s.args), [])
+})
+
+// --- 0.3.1 S2: "Needs fixing" guidance, the plan card and per-machine skips ---
+
+// C10: the owner's real shapes — mise-mac pending, omarchy with only the Mac
+// wallpaper unlinked, nuncio healthy.
+const OWNER = fixture("owner-shapes.json")
+
+test("unhealthyPackages lists the owner's pending packages in order", () => {
+  const rows = Model.unhealthyPackages(OWNER)
+  same(rows.map((r) => r.package), ["mise-mac", "omarchy"])
+  assert.equal(rows[0].type, "health")
+  assert.equal(rows[0].repo, "~/.dotfiles")
+  assert.equal(rows[0].title, "mise-mac")
+  assert.equal(rows[0].subtitle, "dotfiles \u00b7 Missing links")
+  assert.equal(rows[0].stateText, "Missing links")
+  assert.equal(rows[0].pathsText, "~/.config/mise")
+  assert.equal(rows[0].action, "link")
+  assert.equal(rows[0].actionText, "Link this")
+  assert.equal(rows[1].pathsText, "~/Pictures/Wallpapers/solarized-osaka-mac")
+  assert.equal(rows[1].actionText, "Link this")
+})
+
+test("packageFix spells each state in plain words and picks one action", () => {
+  const pending = Model.packageFix("~/.dotfiles", {
+    name: "p", health: "pending", pending_links: [{ target: "~/a" }]
+  })
+  assert.equal(pending.stateText, "Missing links")
+  assert.equal(pending.action, "link")
+  assert.equal(pending.actionText, "Link this")
+  assert.equal(pending.canLink, true)
+  const conflict = Model.packageFix("~/.dotfiles", {
+    name: "p", health: "conflicts", conflicts: [{ target: "~/a" }]
+  })
+  assert.equal(conflict.stateText, "A real file is in the way")
+  assert.equal(conflict.action, "review")
+  assert.equal(conflict.actionText, "Review")
+  assert.equal(conflict.canLink, false)
+  const dangling = Model.packageFix("~/.dotfiles", {
+    name: "p", health: "dangling", dangling: [{ target: "~/b", source: "~/.dotfiles/p/b" }]
+  })
+  assert.equal(dangling.stateText, "Broken links")
+  assert.equal(dangling.action, "review")
+  assert.equal(dangling.actionText, "Review")
+  assert.equal(dangling.canLink, false)
+  const ok = Model.packageFix("~/.dotfiles", { name: "p", health: "ok" })
+  assert.equal(ok.stateText, "")
+  assert.equal(ok.action, "")
+  assert.equal(ok.actionText, "")
+  assert.equal(ok.canLink, false)
+})
+
+test("packageFix lists three paths then +N more", () => {
+  const links = ["~/a", "~/b", "~/c", "~/d", "~/e"].map((target) => ({ target }))
+  const row = Model.packageFix("~/.dotfiles", { name: "p", health: "pending", pending_links: links })
+  assert.equal(row.pathsText, "~/a, ~/b, ~/c +2 more")
+  const three = Model.packageFix("~/.dotfiles", {
+    name: "p", health: "pending", pending_links: links.slice(0, 3)
+  })
+  assert.equal(three.pathsText, "~/a, ~/b, ~/c")
+  const none = Model.packageFix("~/.dotfiles", { name: "p", health: "pending" })
+  assert.equal(none.pathsText, "")
+})
+
+test("packageFix puts the conflicts before the pending links", () => {
+  const row = Model.packageFix("~/.dotfiles", {
+    name: "p",
+    health: "conflicts",
+    conflicts: [{ target: "~/in-the-way" }],
+    pending_links: [{ target: "~/missing" }]
+  })
+  assert.equal(row.pathsText, "~/in-the-way, ~/missing")
+})
+
+test("unhealthyPackages leaves a skipped package out", () => {
+  const data = {
+    repos: [{
+      path: "~/.dotfiles",
+      packages: [
+        { name: "mise-mac", health: "pending", skipped: true, pending_links: [{ target: "~/x" }] },
+        { name: "nuncio", health: "pending", pending_links: [{ target: "~/.config/nuncio" }] }
+      ]
+    }]
+  }
+  same(Model.unhealthyPackages(data).map((r) => r.package), ["nuncio"])
+  same(Model.unhealthyPackages(null), [])
+  same(Model.unhealthyPackages({}), [])
+})
+
+test("stowActionText renders every stow action (C3)", () => {
+  assert.equal(
+    Model.stowActionText({ action: "LINK", target: "~/.config/a", source: "~/.dotfiles/p/.config/a" }),
+    "will link ~/.config/a \u2192 ~/.dotfiles/p/.config/a"
+  )
+  assert.equal(
+    Model.stowActionText({ action: "UNLINK", target: "~/.config/mise" }),
+    "will replace the link ~/.config/mise with a folder"
+  )
+  assert.equal(
+    Model.stowActionText({ action: "MKDIR", target: "~/.config/mise" }),
+    "will replace the link ~/.config/mise with a folder"
+  )
+  assert.equal(
+    Model.stowActionText({ action: "RMDIR", target: "~/.config/mise" }),
+    "will remove the empty folder ~/.config/mise"
+  )
+  assert.equal(Model.stowActionText({ action: "MKDIR" }), "will replace the link with a folder")
+  assert.equal(Model.stowActionText({}), "")
+})
+
+test("planLines lists every action once and each conflict by path", () => {
+  const lines = Model.planLines(
+    [
+      { action: "UNLINK", target: "~/.config/mise" },
+      { action: "MKDIR", target: "~/.config/mise" },
+      {
+        action: "LINK",
+        target: "~/.config/mise/config.toml",
+        source: "~/.dotfiles/mise-mac/.config/mise/config.toml"
+      }
+    ],
+    [{ target: "~/.config/app/conf" }]
+  )
+  same(lines, [
+    "will replace the link ~/.config/mise with a folder",
+    "will link ~/.config/mise/config.toml \u2192 ~/.dotfiles/mise-mac/.config/mise/config.toml",
+    "conflict at ~/.config/app/conf"
+  ])
+  same(Model.planLines(null, null), [])
+})
+
+test("packagePlanCard links a pending package with its dry-run plan", () => {
+  const pkg = { name: "mise-mac", health: "pending", pending_links: [{ target: "~/.config/mise" }] }
+  const card = Model.packagePlanCard("~/.dotfiles", pkg, {
+    actions: [
+      { action: "UNLINK", target: "~/.config/mise" },
+      {
+        action: "LINK",
+        target: "~/.config/mise/config.toml",
+        source: "~/.dotfiles/mise-mac/.config/mise/config.toml"
+      }
+    ],
+    conflicts: [],
+    refused: ""
+  })
+  assert.equal(card.kind, "package-plan")
+  assert.equal(card.title, "Link mise-mac")
+  assert.equal(card.confirmText, "Link")
+  assert.equal(card.canLink, true)
+  assert.equal(card.repo, "~/.dotfiles")
+  assert.equal(card.package, "mise-mac")
+  assert.ok(card.message.indexOf("One package only") !== -1, card.message)
+  assert.ok(card.message.indexOf("nothing else follows") !== -1, card.message)
+  same(card.lines, [
+    "will replace the link ~/.config/mise with a folder",
+    "will link ~/.config/mise/config.toml \u2192 ~/.dotfiles/mise-mac/.config/mise/config.toml"
+  ])
+})
+
+test("packagePlanCard never offers a link for a conflict", () => {
+  const pkg = { name: "app", health: "conflicts", conflicts: [{ target: "~/.config/app/conf" }] }
+  const card = Model.packagePlanCard("~/.dotfiles", pkg, {
+    actions: [],
+    conflicts: [{ target: "~/.config/app/conf" }],
+    refused: ""
+  })
+  assert.equal(card.canLink, false)
+  assert.equal(card.confirmText, "Close")
+  assert.equal(card.title, "Review app")
+  assert.ok(card.message.indexOf("A real file is in the way") !== -1, card.message)
+  same(card.lines, ["conflict at ~/.config/app/conf"])
+})
+
+test("packagePlanCard reviews a dangling package with its paths", () => {
+  const pkg = {
+    name: "x",
+    health: "dangling",
+    dangling: [{ target: "~/.config/x", source: "~/.dotfiles/x/.config/x" }]
+  }
+  const card = Model.packagePlanCard("~/.dotfiles", pkg, { actions: [], conflicts: [], refused: "" })
+  assert.equal(card.canLink, false)
+  assert.equal(card.confirmText, "Close")
+  assert.equal(card.title, "Review x")
+  same(card.lines, ["broken link at ~/.config/x \u2192 ~/.dotfiles/x/.config/x"])
+})
+
+test("packagePlanCard closes when the plan touches a skipped path", () => {
+  const refusal =
+    "Refusing: this plan would link ~/Pictures, which is skipped on this machine (machines.pwnsxb.skip_paths)."
+  const card = Model.packagePlanCard(
+    "~/.dotfiles",
+    { name: "omarchy", health: "pending", pending_links: [{ target: "~/Pictures" }] },
+    {
+      actions: [{ action: "LINK", target: "~/Pictures", source: "~/.dotfiles/omarchy/Pictures" }],
+      conflicts: [],
+      refused: refusal
+    }
+  )
+  assert.equal(card.canLink, false)
+  assert.equal(card.confirmText, "Close")
+  assert.equal(card.message, refusal)
+})
+
+test("packagePlanCard closes when stow reports nothing to change", () => {
+  const card = Model.packagePlanCard(
+    "~/.dotfiles",
+    { name: "x", health: "pending", pending_links: [{ target: "~/x" }] },
+    { actions: [], conflicts: [], refused: "" }
+  )
+  assert.equal(card.canLink, false)
+  assert.equal(card.confirmText, "Close")
+  assert.ok(card.message.indexOf("nothing to change") !== -1, card.message)
+})
+
+test("packageCards marks a skipped package and a failed check", () => {
+  const status = {
+    repos: [{
+      path: "~/.dotfiles",
+      changes: [],
+      untracked: [],
+      packages: [
+        { name: "mise-mac", health: "ok", skipped: true, pending_links: [], conflicts: [], dangling: [] },
+        { name: "nuncio", health: "ok", error: "stow failed", pending_links: [], conflicts: [], dangling: [] }
+      ]
+    }]
+  }
+  const cards = Model.packageCards(status)
+  assert.equal(cards[0].skipped, true)
+  assert.equal(cards[0].description, "\u00b7 Skipped on this machine")
+  assert.equal(cards[1].skipped, false)
+  assert.equal(cards[1].error, "stow failed")
+  assert.equal(cards[1].description, "\u00b7 Check failed")
+})
+
+test("packageCards spells an unhealthy package's state in plain words", () => {
+  const status = {
+    repos: [{
+      path: "~/.dotfiles",
+      changes: [],
+      untracked: [],
+      packages: [
+        { name: "app", health: "conflicts", pending_links: [], conflicts: [{ target: "~/.config/app" }], dangling: [] }
+      ]
+    }]
+  }
+  const card = Model.packageCards(status)[0]
+  assert.equal(card.stateText, "A real file is in the way")
+  assert.equal(card.pathsText, "~/.config/app")
+  assert.equal(card.description, "~/.config \u00b7 A real file is in the way")
+})
+
+test("confirmSpec and mutationFor handle the skip and plan cards", () => {
+  const skip = Model.confirmSpec("skip-package", {
+    package: "mise-mac",
+    message: "This saves your choice in ~/.config/stow-sync/config.json.",
+    lines: ["machines.pwnsxb.skip_packages += mise-mac"]
+  })
+  assert.equal(skip.title, "Skip mise-mac on this machine")
+  assert.equal(skip.confirmText, "Skip")
+  assert.equal(skip.destructive, false)
+  assert.equal(skip.message, "This saves your choice in ~/.config/stow-sync/config.json.")
+  same(skip.lines, ["machines.pwnsxb.skip_packages += mise-mac"])
+  same(Model.mutationFor("skip-package", { package: "mise-mac" }), {
+    tag: "skip",
+    args: ["skip", "--package", "mise-mac"],
+    stdin: ""
+  })
+  same(Model.mutationFor("skip-path", { path: "~/Pictures/x" }), {
+    tag: "skip",
+    args: ["skip", "--path", "~/Pictures/x"],
+    stdin: ""
+  })
+  const plan = Model.confirmSpec("package-plan", {
+    title: "Link mise-mac",
+    message: "m",
+    lines: ["will link ~/.config/mise"],
+    confirmText: "Link"
+  })
+  assert.equal(plan.title, "Link mise-mac")
+  assert.equal(plan.confirmText, "Link")
+  same(plan.lines, ["will link ~/.config/mise"])
+})
+
+test("packageByName finds one package and tolerates a refresh", () => {
+  const pkg = Model.packageByName(OWNER, "~/.dotfiles", "omarchy")
+  assert.equal(pkg.name, "omarchy")
+  assert.equal(pkg.health, "pending")
+  assert.equal(Model.packageByName(OWNER, "~/.dotfiles", "gone"), null)
+  assert.equal(Model.packageByName(OWNER, "~/other", "omarchy"), null)
+  assert.equal(Model.packageByName(null, "~/.dotfiles", "omarchy"), null)
+})
+
+test("actionSuccessText names the per-package actions", () => {
+  assert.equal(Model.actionSuccessText("restow"), "Fixed the package")
+  assert.equal(Model.actionSuccessText("skip"), "Skipped on this machine")
 })

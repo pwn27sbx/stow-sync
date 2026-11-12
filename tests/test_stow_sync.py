@@ -7048,3 +7048,100 @@ class SetupPlanMachineSkipTests(SetupTestBase):
         self.assertIn("app", packages)
         self.assertNotIn("machine_error", plan)
 
+
+# --------------------------------------------------------------------------
+# 0.3.1 S1/S2/C1/C3/C5: the panel surfaces (QML source regressions)
+# --------------------------------------------------------------------------
+
+
+class UploadControlSourceTests(unittest.TestCase):
+    """S1/C1: Upload is reachable whenever commits are ahead."""
+
+    def _row(self) -> str:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        start = section.index("visible: root.overview.showManagement && (root.changes > 0")
+        return section[start : section.index("Repeater {", start)]
+
+    def test_the_button_row_stays_visible_and_carries_upload(self) -> None:
+        row = self._row()
+        self.assertIn("root.ahead > 0", row)
+        self.assertIn('text: "Upload"', row)
+        self.assertIn("onClicked: root.uploadRequested()", row)
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn(
+            'readonly property int ahead: Model.flowTotals(root.statusData, "ahead").count', section
+        )
+
+    def test_the_changes_tab_offers_the_same_control(self) -> None:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn('text: "Upload " + Model.pluralCount(root.ahead, "commit")', section)
+        self.assertIn("onClicked: root.uploadRequested()", section)
+
+    def test_panel_uploads_through_one_function(self) -> None:
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        upload = panel[panel.index("function requestUpload()") :]
+        upload = upload[: upload.index("function requestPackagePlan(")]
+        self.assertIn('root.confirmKind = "upload"', upload)
+        self.assertIn('root.confirmPayload = { repos: Model.repoNames(root.statusData, "ahead") }', upload)
+        self.assertIn('root.overlayMode = "confirm"', upload)
+        confirm = panel[panel.index("function acceptConfirm()") :]
+        confirm = confirm[: confirm.index("function startBatch(")]
+        self.assertIn('root.startBatch("push", Model.uploadPlan(root.statusData))', confirm)
+        self.assertIn('else if (kind === "upload") root.requestUpload()', panel)
+        self.assertIn("onUploadRequested: root.requestUpload()", panel)
+
+    def test_the_multi_package_fix_walk_is_gone(self) -> None:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertNotIn("Fix packages", section)
+        self.assertNotIn("root.firstUnhealthy", section)
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertNotIn('root.openConfirm("restow"', panel)
+
+
+class PackageGuidanceSourceTests(unittest.TestCase):
+    """S2/C3/C5: the per-package row, the plan card and the skip card."""
+
+    def test_needs_fixing_rows_use_the_package_row(self) -> None:
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("PackageFixRow {", section)
+        self.assertIn("onPlanRequested: root.packagePlanRequested(", section)
+        self.assertIn("onSkipRequested: root.skipPackageRequested(", section)
+        row = (ROOT / "PackageFixRow.qml").read_text(encoding="utf-8")
+        self.assertIn('text: "Skip on this machine"', row)
+        self.assertIn("String(root.fix.pathsText || \"\")", row)
+        self.assertIn("background: Color.accent", row)
+
+    def test_panel_shows_the_dry_run_plan_before_a_restow(self) -> None:
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        plan = panel[panel.index("function requestPackagePlan(repo, packageName)") :]
+        plan = plan[: plan.index("function requestSkipPackage(")]
+        self.assertIn('"--dry-run"', plan)
+        self.assertIn('"restow"', plan)
+        self.assertIn('if (tag === "restow-plan")', panel)
+        self.assertIn("Model.packagePlanCard(", panel)
+        self.assertIn("Model.packageByName(", panel)
+        confirm = panel[panel.index("function acceptConfirm()") :]
+        confirm = confirm[: confirm.index("function startBatch(")]
+        self.assertIn('root.confirmKind === "package-plan"', confirm)
+        self.assertIn("root.confirmPayload.canLink !== true", confirm)
+        self.assertNotIn('root.confirmKind === "restow"', confirm)
+
+    def test_panel_shows_the_skip_change_before_saving(self) -> None:
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        skip = panel[panel.index("function requestSkipPackage(packageName)") :]
+        skip = skip[: skip.index("function acceptConfirm(")]
+        self.assertIn('"skip-preview"', skip)
+        self.assertIn('"--dry-run"', skip)
+        self.assertIn('if (tag === "skip-preview")', panel)
+        self.assertIn('root.confirmKind = isPath ? "skip-path" : "skip-package"', panel)
+
+    def test_panel_surfaces_a_broken_machines_section(self) -> None:
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertIn('String((payload && payload.machine_error) || "")', panel)
+
+    def test_packages_tab_shows_a_skip_and_a_failed_check(self) -> None:
+        grid = (ROOT / "PackageGrid.qml").read_text(encoding="utf-8")
+        self.assertIn("text: root.detailText()", grid)
+        self.assertIn('"Skipped on this machine: left out of health and Fix here."', grid)
+        self.assertIn('"Check failed: " + String(card.error)', grid)
+        self.assertIn('"Needs fixing: " + state', grid)
