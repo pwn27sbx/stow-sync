@@ -1797,22 +1797,22 @@ def write_config(
     repos: list[dict],
     watch: list[str] | None = None,
     ignore: list[str] | None = None,
+    machines: dict | None = None,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "repos": repos,
-                "watch": watch or [],
-                "ignore": ignore or [],
-                "fetch_minutes": 15,
-                "refresh_minutes": 5,
-                "notify_after_hours": 0,
-            }
-        ),
-        encoding="utf-8",
-    )
+    data = {
+        "version": 1,
+        "repos": repos,
+        "watch": watch or [],
+        "ignore": ignore or [],
+        "fetch_minutes": 15,
+        "refresh_minutes": 5,
+        "notify_after_hours": 0,
+    }
+    # A config without the key is the "no machines section" case S3 pins.
+    if machines is not None:
+        data["machines"] = machines
+    path.write_text(json.dumps(data), encoding="utf-8")
     return path
 
 
@@ -2911,6 +2911,30 @@ class ParseStowActionsTests(unittest.TestCase):
     def test_non_link_action_is_target_only(self) -> None:
         actions = ss.parse_stow_actions("MKDIR: .config/app\n", str(self.home))
         self.assertEqual(actions, [{"action": "MKDIR", "target": "~/.config/app"}])
+
+    def test_a_reverted_action_is_dropped_from_the_plan(self) -> None:
+        text = (
+            "UNLINK: .config\n"
+            "MKDIR: .config\n"
+            "LINK: .config/mise => ../.dotfiles/mise-mac/.config/mise\n"
+            "UNLINK: .config/mise (reverts previous action)\n"
+            "MKDIR: .config/mise\n"
+            "LINK: .config/mise/config.toml => ../../.dotfiles/mise-mac/.config/mise/config.toml\n"
+        )
+        actions = ss.parse_stow_actions(text, str(self.home))
+        self.assertEqual(
+            actions,
+            [
+                {"action": "UNLINK", "target": "~/.config"},
+                {"action": "MKDIR", "target": "~/.config"},
+                {"action": "MKDIR", "target": "~/.config/mise"},
+                {
+                    "action": "LINK",
+                    "target": "~/.config/mise/config.toml",
+                    "source": "~/.dotfiles/mise-mac/.config/mise/config.toml",
+                },
+            ],
+        )
 
 
 class RestowCommandTests(unittest.TestCase):
@@ -6603,3 +6627,424 @@ class CandidateVerdictSourceTests(unittest.TestCase):
         panel = self.read("Panel.qml")
         self.assertIn('root.batchKind === "adopt" ? Model.adoptSummaryText(done, root.batchTotal)', panel)
         self.assertIn('kind === "adopt" ? "Adopting"', panel)
+
+
+# --------------------------------------------------------------------------
+# 0.3.1 S3: per-machine skips (`machines.<host>`)
+# --------------------------------------------------------------------------
+
+
+class MachineOverridesTests(unittest.TestCase):
+    """The named validator C7 asks for: shape errors never crash a command."""
+
+    def test_missing_section_and_missing_key_are_todays_behaviour(self) -> None:
+        empty = ss._machine_overrides({}, host="pwnsxb")
+        self.assertEqual(empty["skip_packages"], [])
+        self.assertEqual(empty["skip_paths"], [])
+        self.assertEqual(empty["error"], "")
+        other = ss._machine_overrides({"machines": {"mac": {"skip_packages": ["mise-mac"]}}}, host="pwnsxb")
+        self.assertEqual(other["skip_packages"], [])
+        self.assertEqual(other["skip_paths"], [])
+        self.assertEqual(other["error"], "")
+        partial = ss._machine_overrides({"machines": {"pwnsxb": {}}}, host="pwnsxb")
+        self.assertEqual(partial["skip_packages"], [])
+        self.assertEqual(partial["error"], "")
+
+    def test_valid_section_is_read_for_this_host_only(self) -> None:
+        config = {
+            "machines": {
+                "pwnsxb": {
+                    "skip_packages": ["mise-mac"],
+                    "skip_paths": ["~/Pictures/Wallpapers/solarized-osaka-mac"],
+                },
+                "mac": {"skip_packages": ["omarchy"]},
+            }
+        }
+        result = ss._machine_overrides(config, host="pwnsxb")
+        self.assertEqual(result["skip_packages"], ["mise-mac"])
+        self.assertEqual(
+            result["skip_paths"],
+            [os.path.join(os.path.expanduser("~"), "Pictures/Wallpapers/solarized-osaka-mac")],
+        )
+        self.assertEqual(result["error"], "")
+        mac = ss._machine_overrides(config, host="mac")
+        self.assertEqual(mac["skip_packages"], ["omarchy"])
+        self.assertEqual(mac["skip_paths"], [])
+
+    def test_wrong_types_are_one_error_and_the_section_is_ignored(self) -> None:
+        cases = [
+            ({"machines": []}, "machines must be an object"),
+            ({"machines": {"pwnsxb": "x"}}, "machines.pwnsxb must be an object"),
+            ({"machines": {"pwnsxb": {"skip_packages": "mise-mac"}}}, "skip_packages must be a list"),
+            ({"machines": {"pwnsxb": {"skip_packages": [1]}}}, "skip_packages must be a list"),
+            ({"machines": {"pwnsxb": {"skip_paths": "~/x"}}}, "skip_paths must be a list"),
+            ({"machines": {"pwnsxb": {"skip_paths": [None]}}}, "skip_paths must be a list"),
+            ({"machines": {"pwnsxb": {"skip_packages": ["../evil"]}}}, "invalid package name"),
+        ]
+        for config, message in cases:
+            result = ss._machine_overrides(config, host="pwnsxb")
+            self.assertIn(message, result["error"], config)
+            self.assertEqual(result["skip_packages"], [], config)
+            self.assertEqual(result["skip_paths"], [], config)
+
+    def test_another_hosts_broken_section_never_affects_this_one(self) -> None:
+        config = {"machines": {"mac": {"skip_packages": "nope"}}}
+        result = ss._machine_overrides(config, host="pwnsxb")
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["skip_packages"], [])
+
+
+class MachineSkipStatusTests(unittest.TestCase):
+    """C6: the skips are applied once, in ``_repo_status``."""
+
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.config = self.env.root / "config.json"
+        self.state = self.env.root / "state"
+        self.host = ss.current_hostname()
+        self.repo = self.home / ".dotfiles"
+        init_repo(self.repo)
+        bare = self.env.root / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", str(bare)],
+            check=True,
+            capture_output=True,
+            env=git_test_env(),
+        )
+        git(self.repo, "remote", "add", "origin", str(bare))
+
+    def status(self, machines=None, extra: str | None = None) -> dict:
+        write_config(
+            self.config,
+            [{"path": str(self.repo), "target": str(self.home), "packages": "auto"}],
+            machines=machines,
+        )
+        return ss.dispatch(["status", *([extra] if extra else [])], str(self.config), str(self.state))
+
+    def _commit(self, files: dict[str, str]) -> None:
+        for rel, content in files.items():
+            write(self.repo / rel, content)
+        commit_all(self.repo, "c1")
+        git(self.repo, "push", "-q", "-u", "origin", "main")
+
+    def test_skip_packages_leaves_the_package_out_of_health_and_summary(self) -> None:
+        self._commit({"mise-mac/.config/mise/config.toml": "mac\n", "nuncio/.config/nuncio/x": "n\n"})
+        plain = self.status()
+        self.assertEqual(
+            sorted(p["name"] for p in plain["repos"][0]["packages"] if p["health"] != "ok"),
+            ["mise-mac", "nuncio"],
+        )
+        skipped = self.status(machines={self.host: {"skip_packages": ["mise-mac"]}})
+        entry = skipped["repos"][0]
+        package = next(p for p in entry["packages"] if p["name"] == "mise-mac")
+        self.assertEqual(package["skipped"], True)
+        self.assertEqual(package["health"], "ok")
+        self.assertEqual(package["pending_links"], [])
+        self.assertNotIn("skipped", next(p for p in entry["packages"] if p["name"] == "nuncio"))
+        # nuncio alone keeps the summary pending, with its single link.
+        self.assertEqual(skipped["summary"]["state"], "pending")
+        self.assertEqual(skipped["summary"]["count"], 1)
+        self.assertEqual(ss.repo_pending(entry), True)
+        self.assertEqual(ss.repo_pending_count(entry), 1)
+        # A skipped package is not counted as a stowed package on this machine.
+        self.assertEqual(entry["stowed_packages"], 0)
+
+    def test_skip_packages_alone_makes_the_repo_clean(self) -> None:
+        self._commit({"mise-mac/.config/mise/config.toml": "mac\n"})
+        result = self.status(machines={self.host: {"skip_packages": ["mise-mac"]}})
+        self.assertEqual(result["summary"], {"state": "clean", "count": 0})
+        self.assertFalse(ss.repo_pending(result["repos"][0]))
+        self.assertEqual(result["repos"][0]["stowed_packages"], 0)
+
+    def test_skip_paths_drops_a_pending_link_under_the_path(self) -> None:
+        self._commit({"omarchy/Pictures/Wallpapers/solarized-osaka-mac": "wall\n"})
+        plain = self.status()
+        self.assertEqual(plain["repos"][0]["packages"][0]["health"], "pending")
+        result = self.status(
+            machines={self.host: {"skip_paths": ["~/Pictures/Wallpapers/solarized-osaka-mac"]}}
+        )
+        package = result["repos"][0]["packages"][0]
+        self.assertEqual(package["pending_links"], [])
+        self.assertEqual(package["health"], "ok")
+        self.assertEqual(result["summary"]["count"], 0)
+
+    def test_skip_paths_matches_a_parent_link_that_folds_the_skipped_path(self) -> None:
+        # Stow folds the whole directory into one link when nothing is in the way.
+        self._commit(
+            {
+                "omarchy/Pictures/Wallpapers/solarized-osaka-mac": "wall\n",
+                "omarchy/Pictures/Wallpapers/other": "other\n",
+            }
+        )
+        plain = self.status()
+        self.assertEqual(
+            plain["repos"][0]["packages"][0]["pending_links"],
+            [{"target": "~/Pictures", "source": "~/.dotfiles/omarchy/Pictures"}],
+        )
+        result = self.status(
+            machines={self.host: {"skip_paths": ["~/Pictures/Wallpapers/solarized-osaka-mac"]}}
+        )
+        package = result["repos"][0]["packages"][0]
+        self.assertEqual(package["pending_links"], [])
+        self.assertEqual(package["health"], "ok")
+
+    def test_skip_paths_keeps_an_unrelated_link_pending(self) -> None:
+        self._commit({"nuncio/.config/nuncio/x": "n\n"})
+        result = self.status(
+            machines={self.host: {"skip_paths": ["~/Pictures/Wallpapers/solarized-osaka-mac"]}}
+        )
+        package = result["repos"][0]["packages"][0]
+        self.assertEqual(package["health"], "pending")
+        self.assertEqual([link["target"] for link in package["pending_links"]], ["~/.config"])
+
+    def test_a_section_for_another_host_changes_nothing(self) -> None:
+        self._commit({"mise-mac/.config/mise/config.toml": "mac\n"})
+        plain = self.status()
+        other = self.status(machines={"some-other-host": {"skip_packages": ["mise-mac"]}})
+        self.assertEqual(json.dumps(plain, sort_keys=True), json.dumps(other, sort_keys=True))
+
+    def test_a_broken_section_reports_one_error_and_keeps_todays_output(self) -> None:
+        self._commit({"mise-mac/.config/mise/config.toml": "mac\n"})
+        plain = self.status()
+        broken = self.status(machines={self.host: {"skip_packages": "mise-mac"}})
+        self.assertIn("skip_packages must be a list", broken["machine_error"])
+        self.assertNotIn("machine_error", plain)
+        broken.pop("machine_error")
+        self.assertEqual(json.dumps(plain, sort_keys=True), json.dumps(broken, sort_keys=True))
+
+
+class SkipCommandTests(unittest.TestCase):
+    """`skip --package|--path`: preview, write, and the symlinked config (C2)."""
+
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.host = ss.current_hostname()
+        self.config = self.home / ".config" / "stow-sync" / "config.json"
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "repos": [{"path": "~/.dotfiles", "target": "~", "packages": "auto"}],
+                    "watch": [],
+                    "ignore": [],
+                    "machines": {"mac": {"skip_packages": ["omarchy"]}},
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def skip(self, *args: str) -> dict:
+        return ss.dispatch(["skip", *args], str(self.config))
+
+    def test_dry_run_shows_the_change_and_writes_nothing(self) -> None:
+        before = self.config.read_bytes()
+        result = self.skip("--package", "mise-mac", "--dry-run")
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["dry_run"])
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["host"], self.host)
+        self.assertEqual(result["skip_packages"], ["mise-mac"])
+        self.assertEqual(
+            result["lines"], ["machines." + self.host + ".skip_packages += mise-mac"]
+        )
+        self.assertIn("saves your choice", result["message"])
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_write_adds_the_entry_and_keeps_the_rest_of_the_file(self) -> None:
+        result = self.skip("--package", "mise-mac")
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["dry_run"])
+        data = json.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(data["machines"]["mac"], {"skip_packages": ["omarchy"]})
+        self.assertEqual(data["machines"][self.host]["skip_packages"], ["mise-mac"])
+        self.assertEqual(data["repos"][0]["packages"], "auto")
+        self.assertEqual(data["version"], 1)
+        self.assertEqual(ss._machine_overrides(data, host=self.host)["skip_packages"], ["mise-mac"])
+        # Running it twice reports the entry is already there and changes nothing.
+        again = self.skip("--package", "mise-mac")
+        self.assertFalse(again["changed"])
+        self.assertEqual(again["skip_packages"], ["mise-mac"])
+
+    def test_skip_path_is_stored_in_tilde_form(self) -> None:
+        path = str(self.home / "Pictures" / "Wallpapers" / "solarized-osaka-mac")
+        result = self.skip("--path", path)
+        self.assertTrue(result["ok"], result)
+        data = json.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(
+            data["machines"][self.host]["skip_paths"],
+            ["~/Pictures/Wallpapers/solarized-osaka-mac"],
+        )
+
+    def test_one_of_package_or_path_is_required(self) -> None:
+        self.assertFalse(self.skip()["ok"])
+        self.assertFalse(self.skip("--package", "a", "--path", "~/b")["ok"])
+        self.assertFalse(self.skip("--package", "../evil")["ok"])
+
+    def test_a_symlinked_config_is_written_through_never_replaced(self) -> None:
+        real = self.home / ".dotfiles" / "stow-sync" / "config.json"
+        real.parent.mkdir(parents=True)
+        os.replace(self.config, real)
+        os.symlink(real, self.config)
+        result = self.skip("--package", "mise-mac")
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["config_is_link"])
+        self.assertTrue(os.path.islink(self.config))
+        self.assertEqual(os.path.realpath(self.config), str(real))
+        data = json.loads(real.read_text(encoding="utf-8"))
+        self.assertEqual(data["machines"][self.host]["skip_packages"], ["mise-mac"])
+        self.assertIn("dotfiles will show 1 change to publish", result["message"])
+
+    def test_a_symlinked_config_directory_still_writes_the_real_file(self) -> None:
+        # The owner's layout: ~/.config/stow-sync is the Stow link and
+        # config.json inside it is a regular file.
+        real_dir = self.home / ".dotfiles" / "stow-sync"
+        real_dir.mkdir(parents=True)
+        os.replace(self.config, real_dir / "config.json")
+        os.rmdir(self.config.parent)
+        os.symlink(real_dir, self.config.parent)
+        result = self.skip("--package", "mise-mac")
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["config_is_link"])
+        self.assertTrue(os.path.islink(self.config.parent))
+        self.assertFalse(os.path.islink(self.config))
+        data = json.loads((real_dir / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["machines"][self.host]["skip_packages"], ["mise-mac"])
+        self.assertIn("dotfiles will show 1 change to publish", result["message"])
+
+    def test_a_symlink_outside_home_is_refused_without_writing(self) -> None:
+        outside = self.env.root / "elsewhere.json"
+        outside.write_text('{"version": 1}\n', encoding="utf-8")
+        os.unlink(self.config)
+        os.symlink(outside, self.config)
+        result = self.skip("--package", "mise-mac")
+        self.assertFalse(result["ok"])
+        # Reading already refuses a link that leaves $HOME; the write path has
+        # the same rule and is exercised directly below.
+        self.assertIn("not a user-owned regular file", result["error"])
+        self.assertEqual(outside.read_text(encoding="utf-8"), '{"version": 1}\n')
+        self.assertTrue(os.path.islink(self.config))
+
+    def test_write_config_atomic_refuses_a_link_outside_home(self) -> None:
+        outside = self.env.root / "elsewhere.json"
+        outside.write_text('{"version": 1}\n', encoding="utf-8")
+        os.unlink(self.config)
+        os.symlink(outside, self.config)
+        with self.assertRaises(ss.CommandError) as ctx:
+            ss._write_config_atomic(str(self.config), {"version": 2})
+        self.assertIn("outside your home folder", str(ctx.exception))
+        self.assertEqual(outside.read_text(encoding="utf-8"), '{"version": 1}\n')
+        self.assertTrue(os.path.islink(self.config))
+
+    def test_a_broken_machines_section_is_refused_instead_of_overwritten(self) -> None:
+        self.config.write_text('{"version": 1, "machines": []}\n', encoding="utf-8")
+        result = self.skip("--package", "mise-mac")
+        self.assertFalse(result["ok"])
+        self.assertIn("machines must be an object", result["error"])
+        self.assertEqual(json.loads(self.config.read_text(encoding="utf-8"))["machines"], [])
+
+
+class RestowSkipRefusalTests(unittest.TestCase):
+    """C6: Link this refuses a skipped package or a skipped path."""
+
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.host = ss.current_hostname()
+        self.repo = self.home / ".dotfiles"
+        self.config = self.env.root / "config.json"
+        write(self.repo / "mypkg" / ".config" / "app" / "conf", "hello\n")
+        write(self.repo / "omarchy" / "Pictures" / "Wallpapers" / "solarized-osaka-mac", "wall\n")
+        init_repo(self.repo)
+        commit_all(self.repo, "c1")
+
+    def restow(self, package: str, *extra: str, machines=None) -> dict:
+        write_config(
+            self.config,
+            [{"path": str(self.repo), "target": str(self.home), "packages": "auto"}],
+            machines=machines,
+        )
+        return ss.dispatch(
+            ["restow", "--repo", str(self.repo), "--package", package, *extra], str(self.config)
+        )
+
+    def test_a_skipped_package_is_refused_before_the_dry_run(self) -> None:
+        result = self.restow("mypkg", machines={self.host: {"skip_packages": ["mypkg"]}})
+        self.assertFalse(result["ok"])
+        self.assertIn("skipped on this machine", result["error"])
+        self.assertFalse(os.path.islink(self.home / ".config" / "app" / "conf"))
+
+    def test_a_plan_that_touches_a_skipped_path_is_refused(self) -> None:
+        machines = {self.host: {"skip_paths": ["~/Pictures/Wallpapers/solarized-osaka-mac"]}}
+        preview = self.restow("omarchy", "--dry-run", machines=machines)
+        self.assertTrue(preview["ok"], preview)
+        self.assertIn("skipped on this machine", preview["refused"])
+        result = self.restow("omarchy", machines=machines)
+        self.assertFalse(result["ok"])
+        self.assertIn("skipped on this machine", result["error"])
+        self.assertFalse(os.path.lexists(self.home / "Pictures"))
+
+    def test_without_a_machines_section_the_restow_is_unchanged(self) -> None:
+        preview = self.restow("mypkg", "--dry-run")
+        self.assertEqual(preview["refused"], "")
+        self.assertEqual(len(preview["actions"]), 1)
+        result = self.restow("mypkg")
+        self.assertTrue(result["ok"], result)
+        # One file under a fresh HOME lets stow fold the tree into one link.
+        self.assertTrue(os.path.islink(self.home / ".config"))
+        self.assertEqual(
+            os.path.realpath(self.home / ".config" / "app" / "conf"),
+            str(self.repo / "mypkg" / ".config" / "app" / "conf"),
+        )
+
+    def test_dry_run_lists_conflicts_instead_of_failing(self) -> None:
+        write(self.home / ".config" / "app" / "conf", "real\n")
+        preview = self.restow("mypkg", "--dry-run")
+        self.assertTrue(preview["ok"], preview)
+        self.assertEqual(len(preview["conflicts"]), 1)
+        self.assertEqual(preview["conflicts"][0]["target"], "~/.config/app/conf")
+        real = self.restow("mypkg")
+        self.assertFalse(real["ok"])
+        self.assertEqual((self.home / ".config" / "app" / "conf").read_text(encoding="utf-8"), "real\n")
+
+
+class SetupPlanMachineSkipTests(SetupTestBase):
+    """C7: the setup plan honours `machines.<host>.skip_packages`."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.connect()
+
+    def test_a_package_skipped_on_this_host_is_not_in_the_plan(self) -> None:
+        host = ss.current_hostname()
+        config = self.home / ".config" / "stow-sync" / "config.json"
+        write(config, json.dumps({"version": 1, "machines": {host: {"skip_packages": ["app"]}}}))
+        plan = self.plan()
+        self.assertTrue(plan["ok"], plan)
+        packages = [entry["package"] for entry in plan["plan"]["link"]]
+        self.assertNotIn("app", packages)
+        self.assertIn("fish", packages)
+        self.assertNotIn("odd", packages)  # the recipe's own skip still applies
+
+    def test_no_machines_section_keeps_the_recipe_plan(self) -> None:
+        plan = self.plan()
+        packages = [entry["package"] for entry in plan["plan"]["link"]]
+        self.assertIn("app", packages)
+        self.assertNotIn("machine_error", plan)
+

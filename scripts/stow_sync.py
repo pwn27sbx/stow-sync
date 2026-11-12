@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -259,6 +260,79 @@ def expand_config_paths(config: dict[str, Any]) -> dict[str, Any]:
     for key in ("watch", "ignore"):
         result[key] = [expand_path(p) if isinstance(p, str) else p for p in result.get(key, [])]
     return result
+
+
+def current_hostname() -> str:
+    """The hostname this machine reports; the key of its ``machines`` section."""
+    try:
+        return str(socket.gethostname() or "")
+    except OSError:
+        return ""
+
+
+# The only keys a ``machines.<host>`` section understands.
+MACHINE_KEYS = ("skip_packages", "skip_paths")
+
+
+def _machine_overrides(config: dict[str, Any], host: str | None = None) -> dict[str, Any]:
+    """This machine's validated ``machines.<host>`` section (S3).
+
+    Returns ``{"host", "skip_packages", "skip_paths", "error"}``. A missing
+    ``machines`` key, a section for another host, or a missing key is today's
+    behaviour: empty lists and no error. Any wrong type is one clear error and
+    the whole section is ignored, so a bad shared config never crashes a
+    command (C7). ``skip_paths`` come back expanded and normalized.
+    """
+    resolved = current_hostname() if host is None else str(host)
+    result: dict[str, Any] = {"host": resolved, "skip_packages": [], "skip_paths": [], "error": ""}
+    machines = config.get("machines") if isinstance(config, dict) else None
+    if machines is None:
+        return result
+    if not isinstance(machines, dict):
+        result["error"] = "config: machines must be an object keyed by hostname; ignoring it"
+        return result
+    section = machines.get(resolved)
+    if section is None:
+        return result
+    if not isinstance(section, dict):
+        result["error"] = "config: machines." + resolved + " must be an object; ignoring it"
+        return result
+    packages = section.get("skip_packages", [])
+    if not isinstance(packages, list) or not all(isinstance(name, str) and name for name in packages):
+        result["error"] = (
+            "config: machines." + resolved + ".skip_packages must be a list of package names; ignoring it"
+        )
+        return result
+    paths = section.get("skip_paths", [])
+    if not isinstance(paths, list) or not all(isinstance(path, str) and path for path in paths):
+        result["error"] = (
+            "config: machines." + resolved + ".skip_paths must be a list of paths; ignoring it"
+        )
+        return result
+    names: list[str] = []
+    for name in packages:
+        try:
+            names.append(validate_package_name(name))
+        except CommandError:
+            result["error"] = (
+                "config: machines." + resolved + ".skip_packages has an invalid package name: " + str(name)
+            )
+            return result
+    result["skip_packages"] = names
+    result["skip_paths"] = [os.path.normpath(expand_path(path)) for path in paths]
+    return result
+
+
+def machine_overrides_for(config_path: str | None = None) -> dict[str, Any]:
+    """This machine's overrides read from ``config_path`` (or the default).
+
+    A missing config file is not created here: it means today's behaviour, and
+    a read-only command must not write one (S3).
+    """
+    path = expand_path(config_path) if config_path else default_config_path()
+    if not os.path.lexists(path):
+        return _machine_overrides({})
+    return _machine_overrides(load_config(path))
 
 
 def load_config(config_path: str | None = None) -> dict[str, Any]:
@@ -1418,13 +1492,18 @@ def parse_conflict_entries(text: str, target_dir: str) -> list[dict[str, str]]:
 
 # A stow ``-v`` line is ``ACTION: body`` (LINK, UNLINK, MKDIR, RMDIR, ...).
 _STOW_ACTION_LINE = re.compile(r"^(?P<action>[A-Z]+): (?P<body>.*)$")
+# Stow prints ``UNLINK: <path> (reverts previous action)`` when a later plan
+# undoes an earlier one; the pair cancels out and is not part of the final plan.
+_STOW_REVERT_SUFFIX = " (reverts previous action)"
 
 
 def parse_stow_actions(text: str, target_dir: str) -> list[dict[str, str]]:
     """Parse ``stow -v`` output into an ``actions[]`` list.
 
     ``LINK`` lines carry both ``target`` and ``source`` (both ``~``-relative);
-    every other action carries only ``target``.
+    every other action carries only ``target``. A ``(reverts previous action)``
+    line drops the action it undoes instead of appearing as a step of its own,
+    so the plan the panel shows is what really stays.
     """
     actions: list[dict[str, str]] = []
     for line in text.splitlines():
@@ -1435,6 +1514,17 @@ def parse_stow_actions(text: str, target_dir: str) -> list[dict[str, str]]:
         if name == "WARNING":
             continue
         body = match.group("body")
+        if body.endswith(_STOW_REVERT_SUFFIX):
+            reverted = to_tilde(
+                os.path.normpath(
+                    os.path.join(target_dir, body[: -len(_STOW_REVERT_SUFFIX)].strip())
+                )
+            )
+            for index in range(len(actions) - 1, -1, -1):
+                if actions[index]["target"] == reverted:
+                    del actions[index]
+                    break
+            continue
         if name == "LINK" and " => " in body:
             target_rel, source_rel = body.split(" => ", 1)
             target_abs = os.path.normpath(os.path.join(target_dir, target_rel.strip()))
@@ -1557,6 +1647,78 @@ def _package_health_safe(repo_path: str, target_dir: str, name: str) -> dict[str
             "dangling": [],
             "error": (str(exc) or "stow failed")[:200],
         }
+
+
+def _touches_skip_path(target: str, skip_paths: list[str]) -> bool:
+    """True when a ``LINK`` target touches a path skipped on this machine.
+
+    Both directions count: a link *under* a skipped path, and a link that folds
+    a whole parent *covering* it (S3/C6).
+    """
+    if not target:
+        return False
+    absolute = os.path.normpath(expand_path(str(target)))
+    for skip in skip_paths:
+        if _under(absolute, skip) or _under(skip, absolute):
+            return True
+    return False
+
+
+def _apply_skip_paths(health: dict[str, Any], skip_paths: list[str]) -> dict[str, Any]:
+    """Drop the pending links a skipped path covers and recompute ``health``."""
+    pending = [
+        link
+        for link in health.get("pending_links", [])
+        if not _touches_skip_path(str(link.get("target", "")), skip_paths)
+    ]
+    if len(pending) == len(health.get("pending_links", [])):
+        return health
+    result = dict(health)
+    result["pending_links"] = pending
+    if health.get("conflicts"):
+        result["health"] = "conflicts"
+    elif health.get("dangling"):
+        result["health"] = "dangling"
+    else:
+        result["health"] = "pending" if pending else "ok"
+    return result
+
+
+def _package_entries(
+    repo_path: str,
+    target_dir: str,
+    package_names: list[str],
+    machine: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Health for every package, with this machine's skips applied once (C6).
+
+    A ``skip_packages`` entry is reported ``skipped`` with ``health: "ok"`` and
+    no pending/conflict/dangling entries, so the summary, the badge, the
+    notifications, attention and the panel all ignore it. ``skip_paths`` only
+    removes the pending links that touch a skipped path.
+    """
+    overrides = machine or {}
+    skip_packages = set(overrides.get("skip_packages") or [])
+    skip_paths = list(overrides.get("skip_paths") or [])
+    packages: list[dict[str, Any]] = []
+    for name in package_names:
+        if name in skip_packages:
+            packages.append(
+                {
+                    "name": name,
+                    "health": "ok",
+                    "skipped": True,
+                    "pending_links": [],
+                    "conflicts": [],
+                    "dangling": [],
+                }
+            )
+            continue
+        health = _package_health_safe(repo_path, target_dir, name)
+        if skip_paths:
+            health = _apply_skip_paths(health, skip_paths)
+        packages.append(health)
+    return packages
 
 
 def _has_glob(value: str) -> bool:
@@ -2378,6 +2540,7 @@ def _repo_status(
     repo_cfg: dict[str, Any],
     do_fetch: bool = False,
     publish_times: dict[str, str] | None = None,
+    machine: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_path = repo_cfg.get("path", "")
     path = expand_path(raw_path) if raw_path else ""
@@ -2433,9 +2596,7 @@ def _repo_status(
             "changes": status["changes"],
             "untracked": status["untracked"],
             "operation": operation,
-            "packages": [
-                _package_health_safe(path, target_dir, name) for name in package_names
-            ],
+            "packages": _package_entries(path, target_dir, package_names, machine),
             "state": compute_state(
                 exists=True,
                 operation=operation,
@@ -2449,7 +2610,11 @@ def _repo_status(
         }
     )
     info = repo_info(path, status["upstream"])
-    healthy = [p for p in entry["packages"] if str(p.get("health", "ok")) == "ok"]
+    healthy = [
+        p
+        for p in entry["packages"]
+        if str(p.get("health", "ok")) == "ok" and not p.get("skipped")
+    ]
     entry.update(
         {
             "remote_url": info["remote_url"],
@@ -2509,10 +2674,11 @@ def cmd_status(
     """
     do_fetch = "--fetch" in args
     config = load_config(config_path)
+    machine = _machine_overrides(config)
     state = resolve_state_dir(state_dir)
     publish_times = load_publish_times(state)
     repos = [
-        _repo_status(repo_cfg, do_fetch, publish_times)
+        _repo_status(repo_cfg, do_fetch, publish_times, machine)
         for repo_cfg in config.get("repos", [])
     ]
     candidates = compute_candidates(config)
@@ -2526,7 +2692,7 @@ def cmd_status(
     annotate_verdicts(candidates)
     badge_count = compute_badge(candidates)
     notifications_sent = update_notifications(repos, state, config)
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "repos": repos,
         "summary": compute_summary(repos, badge_count),
@@ -2534,6 +2700,11 @@ def cmd_status(
         "baseline_error": baseline["error"],
         "notifications_sent": notifications_sent,
     }
+    # Only a broken shared section adds a key, so a config without `machines`
+    # keeps today's byte-identical payload (S3).
+    if machine["error"]:
+        result["machine_error"] = machine["error"]
+    return result
 
 
 def cmd_baseline(
@@ -3065,24 +3236,57 @@ def cmd_restow(
     config_path: str | None = None,
     state_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Dry-run stow first; on conflicts refuse, else restow (README section 5)."""
+    """Dry-run stow first; on conflicts refuse, else restow (README section 5).
+
+    ``--dry-run`` returns the whole plan — every action from ``stow -n -v`` plus
+    every conflict — so the panel can show it path by path before asking
+    (S2/C3). A package skipped on this machine, or a plan that touches a skipped
+    path, is refused (C6); conflicts are never applied.
+    """
     config = load_config(config_path)
+    machine = _machine_overrides(config)
     repo = resolve_repo(config, opt_value(args, "--repo"))
     package = validate_package_name(opt_value(args, "--package"))
     dry_run = "--dry-run" in args
     repo_path = repo["path"]
     target_dir = expand_path(repo.get("target", "~") or "~")
+    refused = ""
+    if package in (machine.get("skip_packages") or []):
+        refused = (
+            "Refusing: " + package + " is skipped on this machine (machines." +
+            machine["host"] + ".skip_packages)."
+        )
     dry = stow_dry_run(repo_path, target_dir, package)
     dry_text = _decode(dry.stderr)
     conflicts = parse_conflicts(dry_text, target_dir)
+    actions = parse_stow_actions(dry_text, target_dir)
+    if not refused:
+        touched = [
+            str(action.get("target", ""))
+            for action in actions
+            if _touches_skip_path(str(action.get("target", "")), machine.get("skip_paths") or [])
+        ]
+        if touched:
+            refused = (
+                "Refusing: this plan would link " + touched[0] +
+                ", which is skipped on this machine (machines." + machine["host"] + ".skip_paths)."
+            )
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "actions": actions,
+            "conflicts": conflicts,
+            "refused": refused,
+        }
+    if refused:
+        raise CommandError(refused)
     if conflicts:
         return {
             "ok": False,
             "error": "Stow conflict: " + _shorten(conflicts[0]["message"]),
             "conflicts": conflicts,
         }
-    if dry_run:
-        return {"ok": True, "dry_run": True, "actions": parse_stow_actions(dry_text, target_dir)}
     real = stow_real(repo_path, target_dir, package)
     if real.returncode != 0:
         raise CommandError(_short_error(real))
@@ -3283,14 +3487,34 @@ def _read_raw_config(path: str) -> dict[str, Any]:
 
 
 def _write_config_atomic(path: str, data: dict[str, Any]) -> None:
-    """Atomically replace the config file, preserving its permission mode."""
-    directory = os.path.dirname(path) or "."
+    """Atomically write the config, through a Stow-managed symlink when it is one.
+
+    The owner's ``config.json`` is a Stow link into the dotfiles repo, and
+    :func:`_write_json_atomic` replaces a symlink at the destination instead of
+    following it. So a symlinked config is resolved with ``realpath`` and its
+    real file is written — but only while that real file stays inside ``$HOME``,
+    the same rule ``read_text_bounded(allow_symlink=True)`` uses (C2). Every
+    other link is refused, and the link itself is never replaced.
+    """
+    target = path
+    if os.path.islink(path):
+        try:
+            real = os.path.realpath(path)
+        except OSError:
+            real = ""
+        home = os.path.realpath(os.path.expanduser("~"))
+        if not real or not (real == home or real.startswith(home + os.sep)):
+            raise CommandError(
+                "cannot write " + to_tilde(path) + ": its link points outside your home folder"
+            )
+        target = real
+    directory = os.path.dirname(target) or "."
     os.makedirs(directory, exist_ok=True)
     try:
-        mode = os.stat(path).st_mode & 0o777
+        mode = os.stat(target).st_mode & 0o777
     except OSError:
         mode = 0o644
-    _write_json_atomic(path, data, mode, prefix=".config-", indent=2)
+    _write_json_atomic(target, data, mode, prefix=".config-", indent=2)
 
 
 def _update_ignore(args: list[str], config_path: str | None, add: bool) -> dict[str, Any]:
@@ -3325,6 +3549,100 @@ def cmd_unignore(
 ) -> dict[str, Any]:
     """Remove exact matches from the config ``ignore`` list (README section 5)."""
     return _update_ignore(args, config_path, False)
+
+
+def _machine_section(raw: dict[str, Any], host: str) -> dict[str, Any]:
+    """The writable ``machines.<host>`` object of an on-disk config.
+
+    Missing containers are created; a wrong type is refused with a clear error
+    instead of being overwritten, so a hand-broken config never loses data.
+    """
+    machines = raw.get("machines")
+    if machines is None:
+        machines = {}
+        raw["machines"] = machines
+    if not isinstance(machines, dict):
+        raise CommandError("config: machines must be an object keyed by hostname; fix it first")
+    section = machines.get(host)
+    if section is None:
+        section = {}
+        machines[host] = section
+    if not isinstance(section, dict):
+        raise CommandError("config: machines." + host + " must be an object; fix it first")
+    return section
+
+
+def _skip_change_lines(host: str, key: str, value: str, added: bool) -> list[str]:
+    """The confirm-card lines for one skip, in the config's own words."""
+    if added:
+        return ["machines." + host + "." + key + " += " + value]
+    return ["machines." + host + "." + key + " already lists " + value]
+
+
+def cmd_skip(
+    args: list[str],
+    config_path: str | None = None,
+    state_dir: str | None = None,
+) -> dict[str, Any]:
+    """Skip a package or a path on this machine (S3, ``skip``).
+
+    ``skip --package NAME`` / ``skip --path PATH`` writes the entry under
+    ``machines.<host>`` for the current host and keeps every other key of the
+    file as it is. ``--dry-run`` returns the same plan without writing, so the
+    panel can show the change before saving. The config may be a Stow link: it
+    is written through, never replaced (C2).
+    """
+    dry_run = "--dry-run" in args
+    package = opt_value(args, "--package")
+    path = opt_value(args, "--path")
+    if (package is None) == (path is None):
+        raise CommandError("skip needs exactly one of --package or --path")
+    host = current_hostname()
+    if not host:
+        raise CommandError("cannot read this machine's hostname")
+    config_file = expand_path(config_path) if config_path else default_config_path()
+    raw = _read_raw_config(config_file)
+    section = _machine_section(raw, host)
+    if package is not None:
+        key = "skip_packages"
+        value = validate_package_name(package)
+    else:
+        key = "skip_paths"
+        value = to_tilde(os.path.normpath(expand_path(str(path))))
+    values = section.get(key, [])
+    if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+        raise CommandError("config: machines." + host + "." + key + " must be a list; fix it first")
+    added = value not in values
+    if added:
+        section[key] = values + [value]
+    changed = added
+    if changed and not dry_run:
+        _write_config_atomic(config_file, raw)
+    # Stow-managed either way: the leaf is a link, or its folder is one (the
+    # owner's own layout: ~/.config/stow-sync -> ~/.dotfiles/stow-sync).
+    parent = os.path.dirname(config_file)
+    is_link = os.path.islink(config_file) or os.path.realpath(parent) != os.path.abspath(parent)
+    if is_link:
+        message = (
+            "This saves your choice in " + to_tilde(config_file) +
+            ", a Stow link into your dotfiles: dotfiles will show 1 change to publish."
+        )
+    else:
+        message = "This saves your choice in " + to_tilde(config_file) + "."
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "host": host,
+        "changed": changed,
+        "package": value if package is not None else "",
+        "path": value if package is None else "",
+        "skip_packages": list(section.get("skip_packages", []) or []),
+        "skip_paths": list(section.get("skip_paths", []) or []),
+        "config": to_tilde(config_file),
+        "config_is_link": is_link,
+        "message": message,
+        "lines": _skip_change_lines(host, key, value, added),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -4615,10 +4933,16 @@ def _build_setup_requires(recipe: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
-def build_setup_plan(recipe: dict[str, Any]) -> dict[str, Any]:
-    """Build the deterministic setup plan (README section 8a step 1)."""
+def build_setup_plan(recipe: dict[str, Any], machine_skip: list[str] | None = None) -> dict[str, Any]:
+    """Build the deterministic setup plan (README section 8a step 1).
+
+    ``machine_skip`` adds this machine's ``machines.<host>.skip_packages`` to the
+    recipe's own list, so a package skipped on this host is never linked here
+    while another machine still links it (C7).
+    """
     target_dir = os.path.expanduser("~")
     skip = set(recipe["skip_packages"])
+    skip.update(machine_skip or [])
     clone: list[dict[str, Any]] = []
     links: list[dict[str, Any]] = []
     for repo in sorted(recipe["repos"], key=lambda item: item["order"]):
@@ -4768,10 +5092,11 @@ def cmd_setup_plan(
     recipe_arg = opt_value(args, "--recipe")
     recipe_path = expand_path(recipe_arg) if recipe_arg else _default_recipe_path()
     recipe = load_setup_recipe_file(recipe_path)
-    plan = build_setup_plan(recipe)
+    machine = machine_overrides_for(config_path)
+    plan = build_setup_plan(recipe, machine["skip_packages"])
     state = resolve_state_dir(state_dir)
     token, created = save_setup_plan(state, recipe_path, plan)
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "token": token,
         "created": created,
@@ -4779,6 +5104,9 @@ def cmd_setup_plan(
         "plan": plan,
         "summary": plan["summary"],
     }
+    if machine["error"]:
+        result["machine_error"] = machine["error"]
+    return result
 
 
 def _new_backup_id(state_dir: str) -> str:
@@ -5591,6 +5919,7 @@ COMMANDS = {
     "adopt": cmd_adopt,
     "ignore": cmd_ignore,
     "unignore": cmd_unignore,
+    "skip": cmd_skip,
     "suggest-message": cmd_suggest_message,
 }
 
