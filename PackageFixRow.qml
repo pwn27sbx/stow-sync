@@ -5,9 +5,11 @@ import qs.Ui
 
 // One row in the Overview "Needs fixing" group (S2): the package name, its
 // state in plain words, the affected paths (first 3, then "+N more") and the
-// two per-package choices — the one recommended action and "Skip on this
-// machine". The panel computes every string (Model.packageFix); this component
-// only renders them and reports the two clicks.
+// two per-package choices — the action for that state and "Skip on this
+// machine". Neither button is highlighted: the plugin cannot know whether
+// linking a package is right for this machine, so nothing here is a
+// recommendation. The panel computes every string (Model.packageFix); this
+// component only renders them and reports the two clicks.
 Item {
   id: root
 
@@ -80,17 +82,18 @@ Item {
           }
         }
 
-        // The one recommended action, accent-filled (the panel's colour rule).
+        // No button here is the recommended one: the plugin cannot know
+        // whether linking this package is right for this machine, so Link and
+        // Skip share one quiet outline.
         Button {
           Layout.alignment: Qt.AlignVCenter
           visible: String(root.fix.actionText || "") !== ""
           text: String(root.fix.actionText || "")
+          bordered: true
           fontSize: Style.font.caption
           horizontalPadding: Style.spacing.sm
           verticalPadding: Style.spacing.xxs
           enabled: !root.busy
-          background: Color.accent
-          foreground: Color.background
           onClicked: root.planRequested()
         }
 

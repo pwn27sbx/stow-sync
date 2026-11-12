@@ -197,13 +197,19 @@ that is ahead, exactly like the `p` key's Upload action.
 
 The Overview **Needs fixing** group lists one row per package, never a single
 "fix everything" button. Each row says the state in plain words, the affected
-paths (first three, then "+N more") and one recommended action:
+paths (first three, then "+N more") and the action for that state:
 
-| Package health | The row says | Recommended action |
+| Package health | The row says | Action |
 | --- | --- | --- |
 | `pending` | **Missing links** | **Link this** |
 | `conflicts` | **A real file is in the way** | **Review** — a conflict is never overwritten |
 | `dangling` | **Broken links** | **Review** — there is no repair for a broken link, so it is shown, not re-linked |
+
+**No button in this row is highlighted, because none is a recommendation.** The
+plugin cannot know whether linking a package is right for this machine: a
+Mac-only package such as `mise-mac` is listed exactly like one that should be
+linked, and both actions are quiet outlines. The accent colour stays reserved
+for the new-config rows, where the verdict is the plugin's own.
 
 Every row also offers **Skip on this machine**, which writes the per-host entry
 described in [Per-machine skips](#per-machine-skips). A package skipped on this

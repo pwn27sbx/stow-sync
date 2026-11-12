@@ -7109,7 +7109,6 @@ class PackageGuidanceSourceTests(unittest.TestCase):
         row = (ROOT / "PackageFixRow.qml").read_text(encoding="utf-8")
         self.assertIn('text: "Skip on this machine"', row)
         self.assertIn("String(root.fix.pathsText || \"\")", row)
-        self.assertIn("background: Color.accent", row)
 
     def test_panel_shows_the_dry_run_plan_before_a_restow(self) -> None:
         panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
@@ -7145,3 +7144,24 @@ class PackageGuidanceSourceTests(unittest.TestCase):
         self.assertIn('"Skipped on this machine: left out of health and Fix here."', grid)
         self.assertIn('"Check failed: " + String(card.error)', grid)
         self.assertIn('"Needs fixing: " + state', grid)
+
+
+class FixRowStyleTests(unittest.TestCase):
+    """Owner live check: no button in a Needs fixing row is the recommended one.
+
+    A Mac-only package must not look like the plugin recommends linking it, so
+    every row button shares the neutral outline style.
+    """
+
+    def test_no_row_button_is_filled_with_the_accent(self) -> None:
+        row = (ROOT / "PackageFixRow.qml").read_text(encoding="utf-8")
+        self.assertNotIn("background: Color.accent", row)
+        self.assertNotIn("foreground: Color.background", row)
+
+    def test_every_row_button_is_a_quiet_outline(self) -> None:
+        row = (ROOT / "PackageFixRow.qml").read_text(encoding="utf-8")
+        segments = row.split("Button {")[1:]
+        self.assertGreaterEqual(len(segments), 2)
+        for segment in segments:
+            block = segment[: segment.index("}\n")]
+            self.assertIn("bordered: true", block, block)

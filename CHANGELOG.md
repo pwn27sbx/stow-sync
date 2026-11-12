@@ -41,6 +41,12 @@ All notable changes to Stow Sync. The format follows
 
 ### Changed
 
+- **No button in a Needs fixing row is highlighted.** The plugin cannot know
+  whether linking a package is right for this machine — a Mac-only package such
+  as `mise-mac` looked exactly as recommended as one that should be linked — so
+  **Link this** and **Skip on this machine** now share the same quiet outline
+  and the accent colour stays on the new-config rows, where the verdict is the
+  plugin's own.
 - **Fix packages is gone.** It restowed only the first unhealthy package and
   gave no guidance; every package now has its own row and its own action, so
   there is no multi-package walk to explain.
