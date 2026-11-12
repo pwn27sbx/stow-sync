@@ -1714,6 +1714,7 @@ class StatusIntegrationTests(unittest.TestCase):
                     "pending_links": [{"target": "~/.config", "source": "~/.dotfiles/mypkg/.config"}],
                     "conflicts": [],
                     "dangling": [],
+                    "linked_files": 0,
                 }
             ],
         )
@@ -1969,7 +1970,19 @@ class StatusCommandTests(unittest.TestCase):
         self.assertTrue(entry["exists"])
         self.assertEqual(entry["state"], "clean")
         self.assertEqual(entry["branch"], "main")
-        self.assertEqual(entry["packages"], [{"name": "fish", "health": "ok", "pending_links": [], "conflicts": [], "dangling": []}])
+        self.assertEqual(
+            entry["packages"],
+            [
+                {
+                    "name": "fish",
+                    "health": "ok",
+                    "pending_links": [],
+                    "conflicts": [],
+                    "dangling": [],
+                    "linked_files": 1,
+                }
+            ],
+        )
         self.assertIsNone(entry["operation"])
         self.assertIsNone(entry["last_fetch"])
         self.assertIsNone(entry["fetch_error"])
@@ -6878,6 +6891,40 @@ class SkipCommandTests(unittest.TestCase):
         self.assertFalse(again["changed"])
         self.assertEqual(again["skip_packages"], ["mise-mac"])
 
+    def test_several_paths_are_previewed_and_written_together(self) -> None:
+        first = str(self.home / "Pictures" / "Wallpapers" / "a")
+        second = str(self.home / "Pictures" / "Wallpapers" / "b")
+        before = self.config.read_bytes()
+        preview = self.skip("--path", first, "--path", second, "--dry-run")
+        self.assertTrue(preview["ok"], preview)
+        self.assertEqual(preview["scope"], "paths")
+        self.assertEqual(preview["paths"], ["~/Pictures/Wallpapers/a", "~/Pictures/Wallpapers/b"])
+        self.assertEqual(
+            preview["lines"],
+            [
+                "machines." + self.host + ".skip_paths += ~/Pictures/Wallpapers/a",
+                "machines." + self.host + ".skip_paths += ~/Pictures/Wallpapers/b",
+            ],
+        )
+        self.assertEqual(self.config.read_bytes(), before)
+        result = self.skip("--path", first, "--path", second)
+        self.assertTrue(result["ok"], result)
+        data = json.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(
+            data["machines"][self.host]["skip_paths"],
+            ["~/Pictures/Wallpapers/a", "~/Pictures/Wallpapers/b"],
+        )
+        # A repeated path is listed once and changes nothing the second time.
+        again = self.skip("--path", first, "--dry-run")
+        self.assertFalse(again["changed"])
+        self.assertEqual(
+            again["lines"],
+            ["machines." + self.host + ".skip_paths already lists ~/Pictures/Wallpapers/a"],
+        )
+
+    def test_a_package_and_a_path_cannot_be_mixed(self) -> None:
+        self.assertFalse(self.skip("--package", "mise-mac", "--path", "~/x")["ok"])
+
     def test_skip_path_is_stored_in_tilde_form(self) -> None:
         path = str(self.home / "Pictures" / "Wallpapers" / "solarized-osaka-mac")
         result = self.skip("--path", path)
@@ -7105,9 +7152,9 @@ class PackageGuidanceSourceTests(unittest.TestCase):
         section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
         self.assertIn("PackageFixRow {", section)
         self.assertIn("onPlanRequested: root.packagePlanRequested(", section)
-        self.assertIn("onSkipRequested: root.skipPackageRequested(", section)
+        self.assertIn("onSkipPackageRequested: root.skipPackageRequested(", section)
         row = (ROOT / "PackageFixRow.qml").read_text(encoding="utf-8")
-        self.assertIn('text: "Skip on this machine"', row)
+        self.assertIn('"Skip on this machine"', row)
         self.assertIn("String(root.fix.pathsText || \"\")", row)
 
     def test_panel_shows_the_dry_run_plan_before_a_restow(self) -> None:
@@ -7127,12 +7174,12 @@ class PackageGuidanceSourceTests(unittest.TestCase):
 
     def test_panel_shows_the_skip_change_before_saving(self) -> None:
         panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
-        skip = panel[panel.index("function requestSkipPackage(packageName)") :]
-        skip = skip[: skip.index("function acceptConfirm(")]
+        skip = panel[panel.index("function requestSkipPackage(repo, packageName)") :]
+        skip = skip[: skip.index("function requestSkipPaths(")]
         self.assertIn('"skip-preview"', skip)
         self.assertIn('"--dry-run"', skip)
         self.assertIn('if (tag === "skip-preview")', panel)
-        self.assertIn('root.confirmKind = isPath ? "skip-path" : "skip-package"', panel)
+        self.assertIn('root.confirmKind = scope === "paths" ? "skip-paths" : "skip-package"', panel)
 
     def test_panel_surfaces_a_broken_machines_section(self) -> None:
         panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
@@ -7144,6 +7191,77 @@ class PackageGuidanceSourceTests(unittest.TestCase):
         self.assertIn('"Skipped on this machine: left out of health and Fix here."', grid)
         self.assertIn('"Check failed: " + String(card.error)', grid)
         self.assertIn('"Needs fixing: " + state', grid)
+
+
+# --------------------------------------------------------------------------
+# 0.3.1b: a row knows what a package already has linked
+# --------------------------------------------------------------------------
+
+
+class PackageLinkedFilesTests(unittest.TestCase):
+    """The panel needs to tell "nothing linked" from "only some paths pending"."""
+
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(os.environ, {"HOME": str(self.env.home)})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.home = self.env.home
+        self.config = self.env.root / "config.json"
+        self.state = self.env.root / "state"
+        self.repo = self.home / ".dotfiles"
+        write(self.repo / "app" / ".config" / "app" / "conf", "hello\n")
+        write(self.repo / "app" / ".config" / "app" / "keep", "keep\n")
+        # A real sibling in the target folder forces per-file links.
+        write(self.home / ".config" / "app" / "sibling", "s\n")
+        init_repo(self.repo)
+        commit_all(self.repo, "c1")
+        write_config(self.config, [{"path": str(self.repo), "target": str(self.home), "packages": "auto"}])
+
+    def status(self, machines=None) -> dict:
+        write_config(
+            self.config,
+            [{"path": str(self.repo), "target": str(self.home), "packages": "auto"}],
+            machines=machines,
+        )
+        return ss.dispatch(["status"], str(self.config), str(self.state))
+
+    def test_nothing_linked_is_zero(self) -> None:
+        package = self.status()["repos"][0]["packages"][0]
+        self.assertEqual(package["linked_files"], 0)
+        self.assertEqual(package["health"], "pending")
+
+    def test_a_partly_linked_package_counts_only_its_own_links(self) -> None:
+        stow_apply(self.repo, self.home, "app")
+        write(self.repo / "app" / ".config" / "app" / "new", "new\n")
+        commit_all(self.repo, "c2")
+        package = self.status()["repos"][0]["packages"][0]
+        self.assertEqual(package["linked_files"], 2)
+        self.assertEqual(package["health"], "pending")
+        self.assertEqual([link["target"] for link in package["pending_links"]], ["~/.config/app/new"])
+
+    def test_a_folded_directory_link_counts_as_linked(self) -> None:
+        # With no real sibling in the way, stow folds the whole tree into one
+        # directory link; the files under it are linked even though no file
+        # path is a symlink of its own.
+        write(self.repo / "solo" / ".config" / "solo" / "x", "x\n")
+        commit_all(self.repo, "c2")
+        stow_apply(self.repo, self.home, "solo")
+        self.assertTrue(os.path.islink(self.home / ".config" / "solo"))
+        package = next(
+            p for p in self.status()["repos"][0]["packages"] if p["name"] == "solo"
+        )
+        self.assertEqual(package["linked_files"], 1)
+        self.assertEqual(package["health"], "ok")
+
+    def test_a_skipped_package_reports_no_links(self) -> None:
+        stow_apply(self.repo, self.home, "app")
+        package = self.status(machines={ss.current_hostname(): {"skip_packages": ["app"]}})[
+            "repos"
+        ][0]["packages"][0]
+        self.assertTrue(package["skipped"])
+        self.assertEqual(package["linked_files"], 0)
 
 
 class FixRowStyleTests(unittest.TestCase):
@@ -7165,3 +7283,35 @@ class FixRowStyleTests(unittest.TestCase):
         for segment in segments:
             block = segment[: segment.index("}\n")]
             self.assertIn("bordered: true", block, block)
+
+
+class PathSkipSourceTests(unittest.TestCase):
+    """0.3.1b: a partly linked package offers the path-level skip."""
+
+    def test_the_row_offers_the_path_skip_and_the_package_skip(self) -> None:
+        row = (ROOT / "PackageFixRow.qml").read_text(encoding="utf-8")
+        self.assertIn("String(root.fix.skipPathsLabel || \"\")", row)
+        self.assertIn("root.fix.skipLabel", row)
+        self.assertIn("signal skipPathsRequested()", row)
+        self.assertIn("signal skipPackageRequested()", row)
+        section = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn("onSkipPathsRequested: root.skipPathsRequested(", section)
+        self.assertIn("signal skipPathsRequested(string repo, string packageName)", section)
+
+    def test_panel_previews_the_path_skip_through_skip_path(self) -> None:
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        paths = panel[panel.index("function requestSkipPaths(") :]
+        paths = paths[: paths.index("function acceptConfirm(")]
+        self.assertIn('"--path"', paths)
+        self.assertIn("Model.packagePendingPaths(", paths)
+        self.assertIn('"skip-preview"', paths)
+        self.assertIn("Model.packageSkipWarning(", panel)
+        self.assertIn('"skip-paths"', panel)
+        self.assertIn("onSkipPathsRequested: function(repo, packageName) { root.requestSkipPaths(repo, packageName) }", panel)
+
+    def test_the_package_skip_preview_carries_the_warning(self) -> None:
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        preview = panel[panel.index('if (tag === "skip-preview")') :]
+        preview = preview[: preview.index("if (root.batchKind === \"publish\")")]
+        self.assertIn("Model.packageSkipWarning(", preview)
+        self.assertIn("scope === \"package\"", preview)

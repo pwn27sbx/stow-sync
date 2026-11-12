@@ -3166,3 +3166,80 @@ test("actionSuccessText names the per-package actions", () => {
   assert.equal(Model.actionSuccessText("restow"), "Fixed the package")
   assert.equal(Model.actionSuccessText("skip"), "Skipped on this machine")
 })
+
+// --- 0.3.1b: no recommended button, and the path-level skip ----------------
+
+test("packageFix offers a path skip only when the package is partly linked", () => {
+  const notLinked = Model.packageFix("~/.dotfiles", {
+    name: "mise-mac",
+    health: "pending",
+    linked_files: 0,
+    pending_links: [{ target: "~/.config/mise" }]
+  })
+  assert.equal(notLinked.skipPathsLabel, "")
+  assert.equal(notLinked.skipLabel, "Skip on this machine")
+  same(notLinked.skipPaths, [])
+
+  const partly = Model.packageFix("~/.dotfiles", {
+    name: "omarchy",
+    health: "pending",
+    linked_files: 7,
+    pending_links: [
+      { target: "~/Pictures/Wallpapers/solarized-osaka-mac" },
+      { target: "~/Pictures/Wallpapers/other" }
+    ]
+  })
+  assert.equal(partly.skipPathsLabel, "Skip these paths on this machine")
+  assert.equal(partly.skipLabel, "Skip the whole package")
+  same(partly.skipPaths, [
+    "~/Pictures/Wallpapers/solarized-osaka-mac",
+    "~/Pictures/Wallpapers/other"
+  ])
+  // The visible list stays three paths plus a count, the skip keeps them all.
+  assert.equal(partly.pathsText, "~/Pictures/Wallpapers/solarized-osaka-mac, ~/Pictures/Wallpapers/other")
+
+  // A conflict row has no pending paths to skip one by one.
+  const conflict = Model.packageFix("~/.dotfiles", {
+    name: "ghostty",
+    health: "conflicts",
+    linked_files: 3,
+    conflicts: [{ target: "~/.config/ghostty/config" }]
+  })
+  assert.equal(conflict.skipPathsLabel, "")
+  assert.equal(conflict.skipLabel, "Skip on this machine")
+})
+
+test("packagePendingPaths lists every pending target once", () => {
+  same(Model.packagePendingPaths({
+    pending_links: [{ target: "~/a" }, { target: "~/b" }, { target: "~/a" }]
+  }), ["~/a", "~/b"])
+  same(Model.packagePendingPaths({ pending_links: [] }), [])
+  same(Model.packagePendingPaths(null), [])
+})
+
+test("packageSkipWarning warns only when something is linked", () => {
+  assert.equal(Model.packageSkipWarning(null), "")
+  assert.equal(Model.packageSkipWarning({ name: "mise-mac", linked_files: 0 }), "")
+  const warning = Model.packageSkipWarning({ name: "omarchy", linked_files: 7 })
+  assert.ok(warning.indexOf("every link of omarchy will be left out on this machine") !== -1, warning)
+  assert.ok(warning.indexOf("7 already-linked files") !== -1, warning)
+  assert.ok(warning.indexOf("Skip these paths on this machine") !== -1, warning)
+  const one = Model.packageSkipWarning({ name: "x", linked_files: 1 })
+  assert.ok(one.indexOf("1 already-linked file") !== -1, one)
+})
+
+test("mutationFor and confirmSpec handle the path-level skip", () => {
+  same(Model.mutationFor("skip-paths", { paths: ["~/a", "~/b"] }), {
+    tag: "skip",
+    args: ["skip", "--path", "~/a", "--path", "~/b"],
+    stdin: ""
+  })
+  const card = Model.confirmSpec("skip-paths", {
+    paths: ["~/a", "~/b"],
+    message: "This saves your choice.",
+    lines: ["machines.h.skip_paths += ~/a", "machines.h.skip_paths += ~/b"]
+  })
+  assert.equal(card.title, "Skip 2 paths on this machine")
+  assert.equal(card.confirmText, "Skip")
+  same(card.lines, ["machines.h.skip_paths += ~/a", "machines.h.skip_paths += ~/b"])
+})

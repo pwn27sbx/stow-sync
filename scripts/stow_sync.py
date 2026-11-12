@@ -1025,6 +1025,24 @@ def opt_value(args: list[str], flag: str) -> str | None:
     return None
 
 
+def opt_values(args: list[str], flag: str) -> list[str]:
+    """Return every value of a repeatable ``--flag VALUE``/``--flag=VALUE``."""
+    values: list[str] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == flag:
+            if index + 1 >= len(args):
+                raise CommandError(flag + " needs a value")
+            values.append(args[index + 1])
+            index += 2
+            continue
+        if token.startswith(flag + "="):
+            values.append(token[len(flag) + 1:])
+        index += 1
+    return values
+
+
 
 _STATUS_KIND = {
     "M": "modified",
@@ -1606,6 +1624,52 @@ def scan_dangling(repo_dir: str, target_dir: str, package: str) -> list[dict[str
     return dangling
 
 
+def _linked_source(src: str, target: str, target_dir: str) -> bool:
+    """True when ``target`` already reaches ``src``, directly or through a fold.
+
+    Stow may link one file, or fold a whole directory into a single link; both
+    mean the source is in place, so the check walks up the target to the stow
+    target directory and compares each linked ancestor with its source.
+    """
+    src_real = os.path.realpath(src)
+    if os.path.islink(target) and os.path.realpath(target) == src_real:
+        return True
+    stop = os.path.normpath(target_dir)
+    parent = os.path.dirname(target)
+    src_parent = os.path.dirname(src)
+    while parent and os.path.normpath(parent) != stop:
+        if os.path.islink(parent):
+            return os.path.realpath(parent) == os.path.realpath(src_parent)
+        parent = os.path.dirname(parent)
+        src_parent = os.path.dirname(src_parent)
+    return False
+
+
+def linked_file_count(repo_dir: str, target_dir: str, package: str) -> int:
+    """Regular source files of ``package`` already linked at their target.
+
+    ``0`` means nothing of the package is linked on this machine, so skipping
+    the whole package leaves nothing behind; a positive count means only some
+    paths are missing, and the panel offers the per-path skip instead. A folded
+    directory link counts every file under it.
+    """
+    pkg_root = os.path.join(repo_dir, package)
+    if not os.path.isdir(pkg_root):
+        return 0
+    count = 0
+    for dirpath, _dirnames, filenames in os.walk(pkg_root):
+        for name in filenames:
+            src = os.path.join(dirpath, name)
+            if os.path.islink(src) or not os.path.isfile(src):
+                continue
+            target = os.path.join(target_dir, os.path.relpath(src, pkg_root))
+            if _linked_source(src, target, target_dir):
+                count += 1
+                if count >= MAX_STOWED_FILE_SCAN:
+                    return count
+    return count
+
+
 def package_health(
     repo_dir: str,
     target_dir: str,
@@ -1631,6 +1695,7 @@ def package_health(
         "pending_links": pending,
         "conflicts": conflicts,
         "dangling": dangling,
+        "linked_files": linked_file_count(repo_dir, target_dir, package),
     }
 
 
@@ -1711,6 +1776,7 @@ def _package_entries(
                     "pending_links": [],
                     "conflicts": [],
                     "dangling": [],
+                    "linked_files": 0,
                 }
             )
             continue
@@ -3584,18 +3650,18 @@ def cmd_skip(
     config_path: str | None = None,
     state_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Skip a package or a path on this machine (S3, ``skip``).
+    """Skip a package or one or more paths on this machine (S3, ``skip``).
 
-    ``skip --package NAME`` / ``skip --path PATH`` writes the entry under
-    ``machines.<host>`` for the current host and keeps every other key of the
-    file as it is. ``--dry-run`` returns the same plan without writing, so the
-    panel can show the change before saving. The config may be a Stow link: it
-    is written through, never replaced (C2).
+    ``skip --package NAME`` / ``skip --path PATH [--path PATH ...]`` writes the
+    entries under ``machines.<host>`` for the current host and keeps every other
+    key of the file as it is. ``--dry-run`` returns the same plan without
+    writing, so the panel can show the change before saving. The config may be a
+    Stow link: it is written through, never replaced (C2).
     """
     dry_run = "--dry-run" in args
     package = opt_value(args, "--package")
-    path = opt_value(args, "--path")
-    if (package is None) == (path is None):
+    raw_paths = opt_values(args, "--path")
+    if (package is None) == (len(raw_paths) == 0):
         raise CommandError("skip needs exactly one of --package or --path")
     host = current_hostname()
     if not host:
@@ -3605,17 +3671,27 @@ def cmd_skip(
     section = _machine_section(raw, host)
     if package is not None:
         key = "skip_packages"
-        value = validate_package_name(package)
+        values_to_add = [validate_package_name(package)]
     else:
         key = "skip_paths"
-        value = to_tilde(os.path.normpath(expand_path(str(path))))
+        values_to_add = []
+        for item in raw_paths:
+            value = to_tilde(os.path.normpath(expand_path(str(item))))
+            if value not in values_to_add:
+                values_to_add.append(value)
     values = section.get(key, [])
     if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
         raise CommandError("config: machines." + host + "." + key + " must be a list; fix it first")
-    added = value not in values
-    if added:
-        section[key] = values + [value]
-    changed = added
+    lines: list[str] = []
+    changed = False
+    for value in values_to_add:
+        added = value not in values
+        if added:
+            values = values + [value]
+            changed = True
+        lines.extend(_skip_change_lines(host, key, value, added))
+    if changed:
+        section[key] = values
     if changed and not dry_run:
         _write_config_atomic(config_file, raw)
     # Stow-managed either way: the leaf is a link, or its folder is one (the
@@ -3634,14 +3710,15 @@ def cmd_skip(
         "dry_run": dry_run,
         "host": host,
         "changed": changed,
-        "package": value if package is not None else "",
-        "path": value if package is None else "",
+        "scope": "package" if package is not None else "paths",
+        "package": values_to_add[0] if package is not None else "",
+        "paths": values_to_add if package is None else [],
         "skip_packages": list(section.get("skip_packages", []) or []),
         "skip_paths": list(section.get("skip_paths", []) or []),
         "config": to_tilde(config_file),
         "config_is_link": is_link,
         "message": message,
-        "lines": _skip_change_lines(host, key, value, added),
+        "lines": lines,
     }
 
 

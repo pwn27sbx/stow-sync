@@ -534,6 +534,12 @@ function confirmSpec(kind, payload) {
     lines: (p.lines || []).slice(),
     confirmText: "Skip", destructive: false
   }
+  if (kind === "skip-paths") return {
+    title: "Skip " + pluralCount((p.paths || []).length, "path") + " on this machine",
+    message: String(p.message || ""),
+    lines: (p.lines || []).slice(),
+    confirmText: "Skip", destructive: false
+  }
   // S2: the per-package dry-run plan. The card only offers Link when the
   // backend would really restow; every other case is Review with Close.
   if (kind === "package-plan") return {
@@ -566,6 +572,12 @@ function mutationFor(kind, payload) {
   if (kind === "ignore-all") return { tag: "ignore", args: ["ignore"], stdin: JSON.stringify(p.paths || []) }
   if (kind === "skip-package") return { tag: "skip", args: ["skip", "--package", String(p.package || "")], stdin: "" }
   if (kind === "skip-path") return { tag: "skip", args: ["skip", "--path", String(p.path || "")], stdin: "" }
+  if (kind === "skip-paths") {
+    var skipArgs = ["skip"]
+    var skipList = p.paths || []
+    for (var i = 0; i < skipList.length; i++) skipArgs = skipArgs.concat(["--path", String(skipList[i])])
+    return { tag: "skip", args: skipArgs, stdin: "" }
+  }
   if (kind === "baseline") return { tag: "baseline", args: ["baseline", "--reset"], stdin: "" }
   return { tag: kind, args: [], stdin: "" }
 }
@@ -1029,17 +1041,48 @@ function pathListText(paths) {
   return shown.join(", ") + (extra > 0 ? " +" + extra + " more" : "")
 }
 
+// Every pending link target of a package, once, in stow's order.
+function packagePendingPaths(pkg) {
+  var p = pkg || {}
+  var links = p.pending_links || []
+  var paths = []
+  for (var i = 0; i < links.length; i++) {
+    var target = links[i] && links[i].target ? String(links[i].target) : ""
+    if (target !== "" && paths.indexOf(target) === -1) paths.push(target)
+  }
+  return paths
+}
+
+// Why skipping the whole package is bigger than skipping its pending paths:
+// only a package with links already in place has anything to lose.
+function packageSkipWarning(pkg) {
+  var p = pkg || {}
+  var linked = num(p.linked_files, 0)
+  if (linked <= 0) return ""
+  var name = String(p.name || "this package")
+  return "Warning: every link of " + name + " will be left out on this machine, including its " +
+    pluralCount(linked, "already-linked file") +
+    ". To keep the rest, use \u201cSkip these paths on this machine\u201d."
+}
+
 // One "Needs fixing" row: the state in plain words, its affected paths and
-// exactly one recommended action. A conflict or a broken link is only ever
-// reviewed; a missing link can be linked. A skipped package is not a row (S3).
+// exactly one action. A conflict or a broken link is only ever reviewed; a
+// missing link can be linked. No button here is the recommended one: the panel
+// cannot know whether linking this package is right for this machine, so Link
+// and Skip share one neutral style. A package with links already in place gets
+// the per-path skip as well, because skipping the whole package would drop
+// every link it already has. A skipped package is not a row (S3).
 function packageFix(repoPath, pkg) {
   var p = pkg || {}
   var health = String(p.health || "ok")
   var name = String(p.name || "")
   var repo = String(repoPath || "")
   var paths = packagePathList(p)
+  var pendingPaths = packagePendingPaths(p)
   var link = health === "pending"
   var known = health !== "ok"
+  var linked = num(p.linked_files, 0)
+  var partly = link && linked > 0 && pendingPaths.length > 0
   return {
     type: "health",
     key: "health:" + repo + ":" + name,
@@ -1055,6 +1098,10 @@ function packageFix(repoPath, pkg) {
     action: known ? (link ? "link" : "review") : "",
     actionText: known ? (link ? "Link this" : "Review") : "",
     canLink: link,
+    linkedFiles: linked,
+    skipPaths: partly ? pendingPaths : [],
+    skipPathsLabel: partly ? "Skip these paths on this machine" : "",
+    skipLabel: partly ? "Skip the whole package" : "Skip on this machine",
     title: name,
     subtitle: repoDisplayName(repo) + " \u00b7 " + fixStateText(health),
     skipped: p.skipped === true,

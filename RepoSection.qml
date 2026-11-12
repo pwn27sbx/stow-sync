@@ -15,7 +15,7 @@ Column {
   property bool showHidden: false; property bool showExisting: false; property bool setupNeeded: false; property bool notSetUp: false; property string focusedKey: ""; property var packages: []; property var setupBackups: []
   property color foreground: Color.foreground
   signal reviewRequested(); signal publishRequested(); signal updateRequested(); signal uploadRequested()
-  signal restowRequested(string repo, string packageName); signal packagePlanRequested(string repo, string packageName); signal skipPackageRequested(string repo, string packageName)
+  signal restowRequested(string repo, string packageName); signal packagePlanRequested(string repo, string packageName); signal skipPackageRequested(string repo, string packageName); signal skipPathsRequested(string repo, string packageName)
   signal adoptRequested(var candidate); signal ignoreRequested(var candidate)
   signal copyRequested(string value); signal selectAllRequested(); signal selectRepoRequested(); signal clearSelectionRequested()
   signal showHiddenToggled(); signal showExistingToggled(); signal setupRequested(); signal changeToggled(string key, bool value); signal changeHovered(string key)
@@ -222,7 +222,8 @@ Column {
               busy: root.busy
               foreground: root.foreground
               onPlanRequested: root.packagePlanRequested(String(modelData.repo), String(modelData.package))
-              onSkipRequested: root.skipPackageRequested(String(modelData.repo), String(modelData.package))
+              onSkipPathsRequested: root.skipPathsRequested(String(modelData.repo), String(modelData.package))
+              onSkipPackageRequested: root.skipPackageRequested(String(modelData.repo), String(modelData.package))
             }
             CandidateRow {
               id: candLine

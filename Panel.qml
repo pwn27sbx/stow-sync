@@ -32,9 +32,10 @@ Panel {
   property bool publishAllowSecrets: false; property string publishError: ""; property string publishRepoFilter: ""; property string publishUpstream: "origin/main"
   property int publishCommitDone: 0; property bool publishHadError: false
   property string batchKind: ""; property int batchRemaining: 0; property int batchTotal: 0; property int batchFailures: 0; property string batchError: ""
-  // S2/S3: the package whose dry-run plan is being fetched, and the skip
-  // preview's answer, so each confirm card shows exactly what will run.
+  // S2/S3: the package whose dry-run plan is being fetched, the skip preview's
+  // answer, and the package a skip preview belongs to.
   property var planTarget: ({})
+  property var skipTarget: ({})
   // Adopt and diff cards.
   property string adoptRepo: ""; property string adoptPath: ""; property string adoptPackage: ""; property var adoptSuggestions: []
   property string adoptError: ""; property string diffTitle: ""; property string diffBody: ""; property bool diffTruncated: false
@@ -119,10 +120,26 @@ Panel {
     root.planTarget = { repo: String(repo || ""), package: String(packageName || "") }
     runner.runAction("restow-plan", ["restow", "--repo", String(repo || ""), "--package", String(packageName || ""), "--dry-run"])
   }
-  // S3: the config change is shown before it is saved.
-  function requestSkipPackage(packageName) {
+  // S3: the config change is shown before it is saved. Skipping the whole
+  // package is the bigger action: its preview warns when the package already
+  // has links in place.
+  function requestSkipPackage(repo, packageName) {
     if (root.busy) return
+    root.skipTarget = { repo: String(repo || ""), package: String(packageName || "") }
     runner.runAction("skip-preview", ["skip", "--package", String(packageName || ""), "--dry-run"])
+  }
+  // 0.3.1b: skip only the pending paths of a package that is otherwise linked,
+  // through the same skip --path backend and the same preview card.
+  function requestSkipPaths(repo, packageName) {
+    if (root.busy) return
+    var pkg = Model.packageByName(root.statusData, String(repo || ""), String(packageName || ""))
+    var paths = Model.packagePendingPaths(pkg)
+    if (paths.length === 0) { root.setResult("This package has no pending paths.", true); return }
+    root.skipTarget = { repo: String(repo || ""), package: String(packageName || "") }
+    var args = ["skip"]
+    for (var i = 0; i < paths.length; i++) args = args.concat(["--path", paths[i]])
+    args.push("--dry-run")
+    runner.runAction("skip-preview", args)
   }
   function acceptConfirm() {
     if (root.busy) return
@@ -232,12 +249,19 @@ Panel {
     // S3: the skip card lists the exact config change before saving.
     if (tag === "skip-preview") {
       if (!payload || payload.ok !== true) { root.overlayMode = ""; root.setResult(String((payload && payload.error) || "The skip preview failed."), true); return }
-      var isPath = String((payload && payload.path) || "") !== ""
-      root.confirmKind = isPath ? "skip-path" : "skip-package"
+      var scope = String((payload && payload.scope) || "package")
+      var skipped = root.skipTarget || {}
+      root.skipTarget = ({})
+      // 0.3.1b: dropping a package that already has links must say so.
+      var warning = scope === "package"
+        ? Model.packageSkipWarning(Model.packageByName(root.statusData, String(skipped.repo || ""), String(skipped.package || "")))
+        : ""
+      var skipMessage = String((payload && payload.message) || "")
+      root.confirmKind = scope === "paths" ? "skip-paths" : "skip-package"
       root.confirmPayload = {
         package: String((payload && payload.package) || ""),
-        path: String((payload && payload.path) || ""),
-        message: String((payload && payload.message) || ""),
+        paths: ((payload && payload.paths) || []).slice(),
+        message: warning !== "" ? skipMessage + " " + warning : skipMessage,
         lines: ((payload && payload.lines) || []).slice()
       }
       root.overlayMode = "confirm"
@@ -426,7 +450,8 @@ Panel {
             onUploadRequested: root.requestUpload()
             onRestowRequested: function(repo, packageName) { root.requestPackagePlan(repo, packageName) }
             onPackagePlanRequested: function(repo, packageName) { root.requestPackagePlan(repo, packageName) }
-            onSkipPackageRequested: function(repo, packageName) { root.requestSkipPackage(packageName) }
+            onSkipPackageRequested: function(repo, packageName) { root.requestSkipPackage(repo, packageName) }
+            onSkipPathsRequested: function(repo, packageName) { root.requestSkipPaths(repo, packageName) }
             onAdoptRequested: function(candidate) { root.adoptCandidate(candidate) }
             onIgnoreRequested: function(candidate) { root.openConfirm("ignore", { path: String(candidate.path || "") }) }
             onAcceptRecommendationsRequested: root.acceptRecommendations()

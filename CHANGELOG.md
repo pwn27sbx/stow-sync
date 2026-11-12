@@ -36,6 +36,15 @@ All notable changes to Stow Sync. The format follows
   from a terminal. The setup wizard also honours `machines.<host>.skip_packages`.
 - **A broken `machines` section never crashes.** One clear error is reported in
   the panel and the section is ignored, which keeps today's behaviour.
+- **Skip only the pending paths of a partly linked package.** A package that is
+  otherwise linked — `omarchy`, where only the Mac wallpaper is unlinked on
+  purpose — now offers **Skip these paths on this machine**, which writes those
+  paths into `machines.<host>.skip_paths` through the same preview card, so the
+  rest of the package keeps being checked. The whole-package skip stays for
+  packages with nothing linked (`mise-mac`), and on a partly linked package its
+  preview warns that every link of that package will be left out on this
+  machine. `skip` accepts `--path` more than once, so one preview and one write
+  cover every pending path.
 - **Packages tab says when a check failed.** A package whose `stow` check
   crashed now shows **Check failed: <error>** instead of looking healthy.
 

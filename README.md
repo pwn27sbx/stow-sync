@@ -211,9 +211,24 @@ Mac-only package such as `mise-mac` is listed exactly like one that should be
 linked, and both actions are quiet outlines. The accent colour stays reserved
 for the new-config rows, where the verdict is the plugin's own.
 
-Every row also offers **Skip on this machine**, which writes the per-host entry
-described in [Per-machine skips](#per-machine-skips). A package skipped on this
-host is not listed at all.
+### Skipping on this machine, by path or by package
+
+A package with nothing linked (the owner's `mise-mac`, for instance) offers
+**Skip on this machine**, which writes the per-host `skip_packages` entry
+described in [Per-machine skips](#per-machine-skips). A package that is
+otherwise linked but has some paths missing (the owner's `omarchy`, where only
+`~/Pictures/Wallpapers/solarized-osaka-mac` is unlinked on purpose) offers
+**Skip these paths on this machine** instead: it writes those paths into
+`skip_paths` through the same preview card, so the rest of the package keeps
+being checked. The same row also offers **Skip the whole package**, and that
+preview says exactly what it costs:
+
+> Warning: every link of omarchy will be left out on this machine, including
+> its 7 already-linked files. To keep the rest, use "Skip these paths on this
+> machine".
+
+Both skips show the config change before saving it, and a package skipped on
+this host is not listed at all.
 
 Pressing the action runs `stow --dry-run` for that one package and opens a
 confirm card with the plan, path by path:
