@@ -2895,13 +2895,13 @@ test("overviewGroups lists a config-sync-owned folder that is already known", ()
   ])
 })
 
-test("Model.js declares every top-level function once", () => {
-  // A duplicated declaration keeps only the last copy reachable and can be a
-  // SyntaxError in a strict loader; the tests call whichever copy survived, so
-  // only a source-level check catches it.
+test("Model.js declares every top-level function at most once", () => {
+  // Two declarations of the same name keep only the last one reachable and are
+  // a SyntaxError in a strict loader; the runtime tests call whichever copy
+  // survived, so the structural invariant is checked on the source.
   const seen = new Map()
   const duplicated = []
-  const declaration = /^function ([A-Za-z_$][\w$]*)/gm
+  const declaration = /^[ \t]*(?:export[ \t]+|async[ \t]+)?function[ \t]+([A-Za-z_$][\w$]*)/gm
   let match
   while ((match = declaration.exec(source)) !== null) {
     const name = match[1]

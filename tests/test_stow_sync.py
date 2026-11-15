@@ -1305,13 +1305,26 @@ class CandidateVerdictTests(unittest.TestCase):
     def test_a_marker_deep_in_the_body_is_not_a_shim(self) -> None:
         # Only the header is scanned: a heredoc or template quoting the marker
         # further down never makes the owner's script look generated.
-        padding = "# filler\n" * 400
+        padding = "# filler\n" * (ss.GENERATED_SHIM_HEADER_LINES + 5)
         write(
             self.home / ".local" / "bin" / "mine",
             "#!/bin/sh\n" + padding + "# JUNIE_MANAGED_SHIM\nexec foo\n",
         )
         verdict, _reason = self.verdict(".local/bin/mine")
         self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_a_marker_on_the_last_header_line_is_a_shim(self) -> None:
+        # A long licence header still keeps its marker inside the window, so a
+        # real shim is never turned into an adoptable config by the bound.
+        # The shebang is line 1, so the marker lands on the last header line.
+        padding = "# filler\n" * (ss.GENERATED_SHIM_HEADER_LINES - 2)
+        write(
+            self.home / ".local" / "bin" / "junie",
+            "#!/bin/bash\n" + padding + "# JUNIE_MANAGED_SHIM\nexec junie-real\n",
+        )
+        verdict, reason = self.verdict(".local/bin/junie")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("Junie CLI", reason)
 
     def test_a_secret_in_a_shim_stays_never(self) -> None:
         write(

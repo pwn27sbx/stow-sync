@@ -344,9 +344,11 @@ class World:
             os.close(slave)
             os.close(master)
         try:
-            return json.loads(result.stdout)
+            payload = json.loads(result.stdout)
         except ValueError as exc:
             raise SystemExit(f"CLI produced no JSON on a terminal for {args}: {exc}")
+        payload["_exit"] = result.returncode
+        return payload
 
     def panel(self, payload: dict) -> dict:
         """The facts the panel derives, through the real Model.js."""
@@ -584,6 +586,7 @@ def check_present_world(world: World) -> None:
     # for an EOF that never comes, so the arguments alone must decide.
     terminal = world.cli_on_a_terminal("ignore", "~/.config/ghostty")
     check("ignore on a terminal answers", terminal.get("ok"), True)
+    check("ignore on a terminal exits zero", terminal.get("_exit"), 0)
     check(
         "ignore on a terminal wrote the path",
         "~/.config/ghostty" in json.loads(world.config.read_text(encoding="utf-8"))["ignore"],
