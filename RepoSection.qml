@@ -208,7 +208,7 @@ Column {
               width: parent.width
               visible: modelData.type !== "candidate" && modelData.type !== "health"
               primary: modelData.type === "incoming" ? (String(modelData.hash) + "  " + String(modelData.subject)) : String(modelData.pathLabel || modelData.path)
-              secondary: modelData.type === "incoming" ? Model.repoDisplayName(modelData.repo) : String(modelData.package)
+              secondary: modelData.type === "incoming" ? Model.repoDisplayName(modelData.repo) : (modelData.type === "crossing" ? String(modelData.note) : String(modelData.package))
               chip: modelData.type === "change" ? String(modelData.chip) : ""
               foreground: root.foreground
             }

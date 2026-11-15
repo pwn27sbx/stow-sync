@@ -2851,6 +2851,64 @@ test("overviewGroups hides a config group with no counted candidate", () => {
   same(groups.map((g) => g.key), ["hiddenConfigs"])
 })
 
+test("overviewGroups adds the config-sync crossings group after Hidden", () => {
+  const data = {
+    repos: [],
+    candidates: [verdictCandidate("~/.config/kitty", "ignore")],
+    config_sync_crossings: [
+      {
+        path: "~/.config/omarchy/hooks/post-update.d/herdr-plugins-update",
+        package: "omarchy",
+        repo_rel: "omarchy/.config/omarchy/hooks/post-update.d/herdr-plugins-update"
+      },
+      { path: "~/.config/kitty/kitty.conf", package: "kitty", repo_rel: "kitty/.config/kitty/kitty.conf" }
+    ]
+  }
+  const groups = Model.overviewGroups(data)
+  same(groups.map((g) => g.key), ["hiddenConfigs", "configSync"])
+  const carried = groups[1]
+  assert.equal(carried.title, "Also carried by config-sync")
+  assert.equal(carried.count, 2)
+  assert.equal(carried.unit, "files")
+  assert.equal(carried.subtitle, "Read-only; both tools carry these, nothing changes here")
+  assert.equal(carried.actionText, undefined)
+  assert.equal(carried.expanded, false)
+  same(carried.items.map((i) => i.path), [
+    "~/.config/kitty/kitty.conf",
+    "~/.config/omarchy/hooks/post-update.d/herdr-plugins-update"
+  ])
+  same(carried.items.map((i) => i.type), ["crossing", "crossing"])
+  same(carried.items.map((i) => i.package), ["kitty", "omarchy"])
+  assert.equal(carried.items[0].note, "package kitty \u00b7 config-sync carries it too")
+})
+
+test("overviewGroups adds no crossings group without crossings", () => {
+  const data = { repos: [], candidates: [], config_sync_crossings: [] }
+  same(Model.overviewGroups(data).map((g) => g.key), [])
+})
+
+test("crossings never change the counted configs or the badge", () => {
+  const withCrossings = {
+    repos: [],
+    candidates: [verdictCandidate("~/.config/nuncio", "upload")],
+    summary: { state: "clean", count: 1 },
+    config_sync_crossings: [
+      { path: "~/.config/kitty/kitty.conf", package: "kitty", repo_rel: "kitty/.config/kitty/kitty.conf" }
+    ]
+  }
+  const withoutCrossings = {
+    repos: [],
+    candidates: [verdictCandidate("~/.config/nuncio", "upload")],
+    summary: { state: "clean", count: 1 }
+  }
+  const fresh = Model.overviewGroups(withCrossings).find((g) => g.key === "newConfigs")
+  assert.equal(fresh.count, 1)
+  assert.equal(fresh.actionText, "Accept recommendations (1)")
+  assert.equal(Model.badgeCount(withCrossings), Model.badgeCount(withoutCrossings))
+  assert.equal(Model.badgeCount(withCrossings), 1)
+})
+
+
 test("confirmationSteps replays the frozen plan, not a later scan", () => {
   const repos = [{ path: "~/.dotfiles", exists: true, packages: [] }]
   const plan = Model.recommendationPlan(

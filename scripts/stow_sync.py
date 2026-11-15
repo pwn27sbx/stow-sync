@@ -1973,6 +1973,308 @@ def _build_candidate(
 
 
 # --------------------------------------------------------------------------
+# config-sync ownership (README "Config-sync ownership")
+#
+# config-sync (gladimdim.config-sync) already carries the Omarchy side of the
+# desktop: Hyprland, the bar and menu, hooks, agents, theme, plugins and the
+# helpers they call. Stow Sync must never offer to adopt what config-sync
+# already owns, so it reads that ownership from config-sync's own clone rather
+# than importing its code: `git ls-files` in the clone, mapped back to home
+# paths with the same tables `config_sync.py` uses (its inventory at
+# :1924-2015, its terminal map at :1418-1424). Read-only, one git call per
+# command, no hashing, and any error means "absent" so today's payload and
+# behaviour survive on a machine without config-sync.
+# --------------------------------------------------------------------------
+
+CONFIG_SYNC_PLUGIN_REL = os.path.join(".config", "omarchy", "plugins", "gladimdim.config-sync")
+CONFIG_SYNC_STATE_DIRNAME = "omarchy-config-sync"
+CONFIG_SYNC_CLONE_DIRNAME = "repo"
+CONFIG_SYNC_STATE_FILENAME = "state.json"
+CONFIG_SYNC_MARKER_NAME = ".omarchy-config.json"
+# The full reason stays well under MAX_REASON_CHARS (58).
+CONFIG_SYNC_REASON = "Managed by config-sync"
+# Same cap as config-sync's MAX_INVENTORY_FILES: past it, treat it as absent.
+CONFIG_SYNC_MAX_FILES = 20000
+CONFIG_SYNC_GIT_TIMEOUT = 2
+# config-sync never carries these, so they neither own a folder nor block one.
+CONFIG_SYNC_MACHINE_LOCAL = frozenset({"hypr/monitors.lua"})
+_CONFIG_SYNC_SKIP_NAME_RE = re.compile(r"\.bak(\.|$)")
+_CONFIG_SYNC_SKIP_DIR_NAMES = frozenset(
+    {".git", "__pycache__", ".mypy_cache", ".pytest_cache", "node_modules"}
+)
+_CONFIG_SYNC_TERMINALS = {
+    "terminals/alacritty.toml": ".config/alacritty/alacritty.toml",
+    "terminals/ghostty.config": ".config/ghostty/config",
+    "terminals/kitty.conf": ".config/kitty/kitty.conf",
+    "terminals/foot.ini": ".config/foot/foot.ini",
+}
+_CONFIG_SYNC_THEME_ASSET_SUFFIXES = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".avif", ".heic",
+    ".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi",
+})
+_CONFIG_SYNC_OMARCHY_DIRS = frozenset({"branding", "extensions", "hooks", "agents"})
+_CONFIG_SYNC_OMARCHY_FILES = frozenset({"shell.json", "shell.toml"})
+_CONFIG_SYNC_THEME_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+_CONFIG_SYNC_PLUGIN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_CONFIG_SYNC_HELPER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+_CONFIG_SYNC_LOCAL_OVERLAY_NAMES = frozenset({"local.conf", "local.lua", "local.toml"})
+
+
+def _home_dir() -> str:
+    """``$HOME`` as a string; every home path here is built from it."""
+    return os.path.expanduser("~")
+
+
+def _config_sync_skip_name(name: str) -> bool:
+    """True for a name config-sync never carries.
+
+    Its walk skips every dotfile (except the marker), `.DS_Store` and any
+    `*.bak*` name, so those are not config-sync material: they neither own a
+    folder nor block one, and a backup file on its own keeps today's verdict.
+    """
+    if not name or name == CONFIG_SYNC_MARKER_NAME:
+        return True
+    if name.startswith("."):
+        return True
+    return bool(_CONFIG_SYNC_SKIP_NAME_RE.search(name))
+
+
+def _config_sync_clone_path() -> str:
+    """config-sync's clone: ``state.json`` `clone_path`, else its default path.
+
+    Only that one key is read; `file_hashes` in the same file is stale (1418
+    entries, most of them from one plugin) and is never used.
+    """
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(_home_dir(), ".local", "share")
+    state_root = os.path.join(data_home, CONFIG_SYNC_STATE_DIRNAME)
+    default = os.path.join(state_root, CONFIG_SYNC_CLONE_DIRNAME)
+    try:
+        text = read_text_bounded(os.path.join(state_root, CONFIG_SYNC_STATE_FILENAME), MAX_STATE_BYTES)
+        data = json.loads(text) if text else {}
+    except (CommandError, ValueError):
+        return default
+    if not isinstance(data, dict):
+        return default
+    clone = data.get("clone_path")
+    if isinstance(clone, str) and clone.strip():
+        return expand_path(clone.strip())
+    return default
+
+
+def _config_sync_machine_local(clone: str) -> set[str]:
+    """Repo paths the marker keeps machine-local, plus config-sync's defaults."""
+    paths = set(CONFIG_SYNC_MACHINE_LOCAL)
+    try:
+        text = read_text_bounded(os.path.join(clone, CONFIG_SYNC_MARKER_NAME), MAX_CONFIG_BYTES)
+        data = json.loads(text) if text else {}
+    except (CommandError, ValueError):
+        return paths
+    extra = data.get("machine_local") if isinstance(data, dict) else None
+    if not isinstance(extra, list):
+        return paths
+    for item in extra:
+        if isinstance(item, str) and item.strip():
+            paths.add(item.strip())
+    return paths
+
+
+def _config_sync_home_rel(rel: str) -> str | None:
+    """Home-relative path config-sync maps repo ``rel`` to, or ``None``.
+
+    Mirrors `config_sync.py`'s inventory: `hypr/*.lua|.conf`, the
+    `omarchy/{branding,extensions,hooks,agents}` trees, `shell.json`,
+    `shell.toml`, `omarchy/themes/<slug>`, `omarchy/theme.name`, the terminal
+    map, `bin/<name>` and `plugins/<id>`; `plugins.json` and the marker itself
+    travel as data, not as a home file.
+    """
+    if rel in _CONFIG_SYNC_TERMINALS:
+        return _CONFIG_SYNC_TERMINALS[rel]
+    if rel.startswith("terminals/"):
+        return None
+    if rel == "omarchy/theme.name":
+        return ".local/state/omarchy/current/theme.name"
+    if rel.startswith("plugins/"):
+        parts = rel.split("/")
+        if len(parts) < 3 or not _CONFIG_SYNC_PLUGIN_ID_RE.fullmatch(parts[1]):
+            return None
+        return ".config/omarchy/" + rel
+    if rel.startswith("bin/"):
+        parts = rel.split("/")
+        if len(parts) != 2 or not _CONFIG_SYNC_HELPER_NAME_RE.fullmatch(parts[1]):
+            return None
+        return ".local/bin/" + parts[1]
+    if rel.startswith("omarchy/themes/"):
+        parts = rel.split("/")
+        if len(parts) < 4 or not _CONFIG_SYNC_THEME_SLUG_RE.fullmatch(parts[2]):
+            return None
+        if os.path.splitext(rel)[1].lower() in _CONFIG_SYNC_THEME_ASSET_SUFFIXES:
+            return None
+        return ".config/" + rel
+    if rel.startswith("omarchy/"):
+        rest = rel[len("omarchy/"):]
+        head = rest.split("/")[0]
+        if head in _CONFIG_SYNC_OMARCHY_FILES and "/" not in rest:
+            return ".config/" + rel
+        if head in _CONFIG_SYNC_OMARCHY_DIRS and "/" in rest:
+            return ".config/" + rel
+        return None
+    if rel.startswith("hypr/"):
+        name = rel[len("hypr/"):]
+        if not name or "/" in name:
+            return None
+        if os.path.splitext(name)[1] not in {".lua", ".conf"}:
+            return None
+        if name in _CONFIG_SYNC_LOCAL_OVERLAY_NAMES or _config_sync_skip_name(name):
+            return None
+        return ".config/hypr/" + name
+    return None
+
+
+def config_sync_owned_paths() -> set[str] | None:
+    """Absolute home paths config-sync carries here; ``None`` when absent.
+
+    Present means the plugin directory exists and its clone has a ``.git``.
+    Every failure — a missing clone, a git error or timeout, more files than
+    the cap, an unreadable state or marker — means absent, so a machine
+    without config-sync keeps exactly today's payload.
+    """
+    plugin = os.path.join(_home_dir(), CONFIG_SYNC_PLUGIN_REL)
+    if not os.path.isdir(plugin):
+        return None
+    clone = _config_sync_clone_path()
+    if not clone or not os.path.isdir(os.path.join(clone, ".git")):
+        return None
+    try:
+        result = run_git(clone, ["ls-files", "-z"], timeout=CONFIG_SYNC_GIT_TIMEOUT)
+    except Exception:  # noqa: BLE001 - any git failure means absent
+        return None
+    if result.returncode != 0:
+        return None
+    rels = [rel for rel in _decode(result.stdout).split("\0") if rel]
+    if len(rels) > CONFIG_SYNC_MAX_FILES:
+        return None
+    excluded = _config_sync_machine_local(clone)
+    home = _home_dir()
+    owned: set[str] = set()
+    for rel in rels:
+        if rel in excluded:
+            continue
+        home_rel = _config_sync_home_rel(rel)
+        if home_rel:
+            owned.add(os.path.join(home, home_rel))
+    return owned
+
+
+def config_sync_owns(path: str, owned: set[str] | None) -> bool:
+    """True when config-sync owns ``path``: the file, or the whole folder.
+
+    Comparison is lexical, never ``realpath``: a stowed candidate resolves into
+    ``~/.dotfiles`` while config-sync still carries its home path, and
+    config-sync follows a symlinked parent. A folder counts as owned only when
+    every regular file inside it is owned; a symlinked entry, a dotfile and a
+    `*.bak*` name are not config-sync material and decide nothing either way.
+    """
+    if not owned:
+        return False
+    target = os.path.normpath(expand_path(path))
+    if target in owned:
+        return True
+    if not os.path.isdir(target):
+        return False
+    found = False
+    blocked = False
+
+    def _onerror(_exc: OSError) -> None:
+        nonlocal blocked
+        blocked = True
+
+    for dirpath, dirnames, filenames in os.walk(target, onerror=_onerror):
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in _CONFIG_SYNC_SKIP_DIR_NAMES
+            and not _config_sync_skip_name(name)
+            and not os.path.islink(os.path.join(dirpath, name))
+        ]
+        for name in sorted(filenames):
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full) or _config_sync_skip_name(name):
+                continue
+            if full not in owned:
+                return False
+            found = True
+    if blocked:
+        return False
+    return found
+
+
+def compute_config_sync_crossings(
+    config: dict[str, Any],
+    repos: list[dict[str, Any]],
+    owned: set[str] | None,
+    machine: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Stow package target paths that config-sync also carries (S3).
+
+    A crossing is ``target_dir`` plus the package-relative path of a regular
+    file the package would link, when that target is in config-sync's owned
+    set. Read-only: nothing is fixed, skipped or written, the walk is bounded
+    like every other package scan, and a package this machine skips is left
+    out of the list. ``repos`` is the status payload's own repo list, so the
+    package names and targets are the ones status already resolved.
+    """
+    if not owned:
+        return []
+    skip_paths = [str(p) for p in ((machine or {}).get("skip_paths") or [])]
+    crossings: list[dict[str, str]] = []
+    for repo_cfg, entry in zip(config.get("repos", []), repos):
+        if not isinstance(repo_cfg, dict) or not isinstance(entry, dict):
+            continue
+        if not entry.get("exists"):
+            continue
+        raw_path = repo_cfg.get("path", "")
+        repo_path = expand_path(raw_path) if raw_path else ""
+        if not repo_path:
+            continue
+        target_dir = expand_path(repo_cfg.get("target", "~") or "~")
+        for package in entry.get("packages", []):
+            if not isinstance(package, dict) or package.get("skipped"):
+                continue
+            name = str(package.get("name", ""))
+            pkg_root = os.path.join(repo_path, name)
+            if not name or not os.path.isdir(pkg_root):
+                continue
+            scanned = 0
+            oversized = False
+            for dirpath, _dirnames, filenames in os.walk(pkg_root):
+                if oversized:
+                    break
+                for filename in filenames:
+                    src = os.path.join(dirpath, filename)
+                    if os.path.islink(src) or not os.path.isfile(src):
+                        continue
+                    scanned += 1
+                    if scanned > MAX_STOWED_FILE_SCAN:
+                        oversized = True
+                        break
+                    rel = os.path.relpath(src, pkg_root)
+                    target = os.path.normpath(os.path.join(target_dir, rel))
+                    if target not in owned:
+                        continue
+                    if skip_paths and _touches_skip_path(to_tilde(target), skip_paths):
+                        continue
+                    crossings.append(
+                        {
+                            "path": to_tilde(target),
+                            "package": name,
+                            "repo_rel": "/".join([name, *rel.split(os.sep)]),
+                        }
+                    )
+    crossings.sort(key=lambda entry: (entry["path"], entry["package"]))
+    return crossings
+
+
+# --------------------------------------------------------------------------
 # Candidate verdicts (README "New config candidates")
 #
 # Every new candidate is judged from its own bytes: no network, no model, so the
@@ -2444,18 +2746,28 @@ def candidate_verdict(path: str) -> tuple[str, str]:
     return _file_verdict(path)
 
 
-def annotate_verdicts(candidates: list[dict[str, Any]]) -> None:
+def annotate_verdicts(
+    candidates: list[dict[str, Any]],
+    config_sync_owned: set[str] | None = None,
+) -> None:
     """Attach ``verdict``/``reason`` to every new candidate, in place.
 
     Candidates already in the baseline are not judged — the panel never lists
-    them — and carry empty strings so every candidate keeps the same keys.
+    them — and carry empty strings so every candidate keeps the same keys. A
+    path config-sync already owns is ``ignore`` with
+    :data:`CONFIG_SYNC_REASON`, unless the file itself matched a secret: a
+    secret is ``never`` and ownership never lowers that. ``None`` means
+    config-sync is absent and every verdict stays exactly as before.
     """
     for candidate in candidates:
         if candidate.get("known"):
             candidate["verdict"] = ""
             candidate["reason"] = ""
             continue
-        verdict, reason = candidate_verdict(expand_path(str(candidate.get("path", ""))))
+        path = expand_path(str(candidate.get("path", "")))
+        verdict, reason = candidate_verdict(path)
+        if verdict != VERDICT_NEVER and config_sync_owns(path, config_sync_owned):
+            verdict, reason = VERDICT_IGNORE, CONFIG_SYNC_REASON
         candidate["verdict"] = verdict
         candidate["reason"] = reason
 
@@ -2755,7 +3067,10 @@ def cmd_status(
     known = baseline["paths"]
     for candidate in candidates:
         candidate["known"] = candidate["path"] in known
-    annotate_verdicts(candidates)
+    # Ownership is read once per command (S1/A8): one `git ls-files`, and both
+    # the badge and the panel see the same verdicts.
+    config_sync_owned = config_sync_owned_paths()
+    annotate_verdicts(candidates, config_sync_owned)
     badge_count = compute_badge(candidates)
     notifications_sent = update_notifications(repos, state, config)
     result: dict[str, Any] = {
@@ -2770,6 +3085,11 @@ def cmd_status(
     # keeps today's byte-identical payload (S3).
     if machine["error"]:
         result["machine_error"] = machine["error"]
+    # Read-only crossings, and only when there are any: they never reach the
+    # summary, the badge or notifications (S3).
+    crossings = compute_config_sync_crossings(config, repos, config_sync_owned, machine)
+    if crossings:
+        result["config_sync_crossings"] = crossings
     return result
 
 
@@ -3865,7 +4185,7 @@ def cmd_status_short(
     known = baseline["paths"]
     for candidate in candidates:
         candidate["known"] = candidate["path"] in known
-    annotate_verdicts(candidates)
+    annotate_verdicts(candidates, config_sync_owned_paths())
     unknown = compute_badge(candidates)
     if unknown > 0:
         segments.append(f"{unknown} new config")

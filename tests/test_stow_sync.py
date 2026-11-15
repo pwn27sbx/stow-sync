@@ -3441,6 +3441,389 @@ class StatusShortTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# Recognise config-sync (README "Config-sync ownership")
+# --------------------------------------------------------------------------
+
+
+def empty_baseline(state_dir: Path) -> None:
+    """Seed an empty baseline so every candidate is judged, not "known"."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "baseline.json").write_text(
+        json.dumps({"version": 1, "created": "2026-01-01T00:00:00+00:00", "paths": []}),
+        encoding="utf-8",
+    )
+
+
+def config_sync_plugin(home: Path) -> Path:
+    """Create the installed config-sync plugin directory; return it."""
+    plugin = home / ".config" / "omarchy" / "plugins" / "gladimdim.config-sync"
+    plugin.mkdir(parents=True, exist_ok=True)
+    write(plugin / "manifest.json", "{}\n")
+    return plugin
+
+
+def config_sync_clone() -> Path:
+    """The default clone location config-sync uses under this temp XDG_DATA_HOME."""
+    clone = Path(os.environ["XDG_DATA_HOME"]) / "omarchy-config-sync" / "repo"
+    init_repo(clone)
+    return clone
+
+
+def commit_config_sync(clone: Path, rels: list, marker: dict | None = None) -> None:
+    """Commit the given repo-relative paths, with an optional marker file."""
+    for rel in rels:
+        write(clone / rel, "carried\n")
+    if marker is not None:
+        write(clone / ".omarchy-config.json", json.dumps(marker) + "\n")
+    git(clone, "add", "-A")
+    # The author is set per command, so the fake clone never reads a global
+    # identity (GIT_CONFIG_GLOBAL is /dev/null through git_test_env).
+    git(
+        clone,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "config-sync",
+    )
+
+
+class ConfigSyncTestBase(unittest.TestCase):
+    """Shared temp HOME/XDG_DATA_HOME and a real fake config-sync clone.
+
+    Every test also puts stubs for the desktop commands on ``PATH``, so a stray
+    ``hyprctl``/``omarchy-shell``/``omarchy-restart-*``/notifier call is logged
+    and fails the test instead of touching the owner's session.
+    """
+
+    def setUp(self) -> None:
+        self.env = TempHome()
+        self.addCleanup(self.env.close)
+        self._patch = patch.dict(
+            os.environ,
+            {"HOME": str(self.env.home), "XDG_DATA_HOME": str(self.env.root / "xdg-data")},
+        )
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        os.environ.pop("STOW_SYNC_STATE_DIR", None)
+        self.addCleanup(lambda: os.environ.pop("STOW_SYNC_STATE_DIR", None))
+        self.home = self.env.home
+        self.config = self.env.root / "config.json"
+        self.state_dir = self.env.root / "state"
+        empty_baseline(self.state_dir)
+        self.stub_log = self.env.root / "desktop-calls.log"
+        self.stub_desktop_commands()
+
+    def stub_desktop_commands(self) -> Path:
+        """Prepend a stub dir so no test can reach the real desktop."""
+        bin_dir = self.env.root / "stub-bin"
+        bin_dir.mkdir(exist_ok=True)
+        for name in (
+            "hyprctl",
+            "omarchy-shell",
+            "omarchy-restart-waybar",
+            "omarchy-restart-hyprctl",
+            "notify-send",
+        ):
+            path = bin_dir / name
+            path.write_text(
+                "#!/bin/sh\n"
+                'printf "%s\\n" "$(basename "$0")" >> ' + str(self.stub_log) + "\n",
+                encoding="utf-8",
+            )
+            path.chmod(0o755)
+        self._path_patch = patch.dict(
+            os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
+        )
+        self._path_patch.start()
+        self.addCleanup(self._path_patch.stop)
+        self.addCleanup(self.assert_no_desktop_command)
+        return bin_dir
+
+    def assert_no_desktop_command(self) -> None:
+        calls = self.stub_log.read_text(encoding="utf-8") if self.stub_log.exists() else ""
+        self.assertEqual(calls, "", "a desktop command ran during the tests")
+
+    def status(self) -> dict:
+        return ss.dispatch(["status"], str(self.config), str(self.state_dir))
+
+    def candidates(self) -> dict:
+        return {c["path"]: c for c in self.status()["candidates"]}
+
+    def install(self, rels: list, marker: dict | None = None) -> Path:
+        """A present config-sync: plugin dir plus a real clone with a commit."""
+        config_sync_plugin(self.home)
+        clone = config_sync_clone()
+        commit_config_sync(clone, rels, marker)
+        return clone
+
+
+class ConfigSyncOwnershipTests(ConfigSyncTestBase):
+    """S1: what config-sync owns on this machine, read from its clone."""
+
+    # --- absent ---------------------------------------------------------
+
+    def test_absent_config_sync_keeps_todays_payload(self) -> None:
+        write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
+        write(self.home / ".local" / "bin" / "my-tool", "#!/bin/sh\ntrue\n")
+        write_config(self.config, [], watch=["~/.config/kitty", "~/.local/bin"])
+        result = self.status()
+        fixture = json.loads((FIXTURES / "status-candidates.json").read_text(encoding="utf-8"))
+        # Nothing new except the notification count the fixtures predate: the
+        # absent case must stay byte-identical in shape to today's payload.
+        self.assertEqual(set(result) - set(fixture), {"notifications_sent"})
+        self.assertNotIn("config_sync_crossings", result)
+        self.assertIsNone(ss.config_sync_owned_paths())
+        self.assertEqual(
+            [c for c in result["candidates"] if c["reason"] == ss.CONFIG_SYNC_REASON], []
+        )
+
+    def test_absent_config_sync_runs_no_git(self) -> None:
+        self.install(["bin/hyprglass-bar"])
+        shutil.rmtree(self.home / ".config" / "omarchy" / "plugins" / "gladimdim.config-sync")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        calls: list = []
+        real = ss.run_git
+
+        def counting(repo, args, *rest, **kwargs):
+            if list(args) == ["ls-files", "-z"]:
+                calls.append(repo)
+            return real(repo, args, *rest, **kwargs)
+
+        with patch.object(ss, "run_git", counting):
+            self.status()
+        self.assertEqual(calls, [])
+
+    def test_a_clone_without_git_means_absent(self) -> None:
+        config_sync_plugin(self.home)
+        clone = Path(os.environ["XDG_DATA_HOME"]) / "omarchy-config-sync" / "repo"
+        write(clone / "bin" / "hyprglass-bar", "carried\n")
+        write(self.home / ".local" / "bin" / "hyprglass-bar", "#!/bin/sh\ntrue\n")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        self.assertIsNone(ss.config_sync_owned_paths())
+        self.assertNotEqual(self.candidates()["~/.local/bin/hyprglass-bar"]["reason"], ss.CONFIG_SYNC_REASON)
+
+    # --- present --------------------------------------------------------
+
+    def test_state_json_clone_path_wins_over_the_default(self) -> None:
+        config_sync_plugin(self.home)
+        custom = self.env.root / "elsewhere"
+        init_repo(custom)
+        commit_config_sync(custom, ["bin/hyprglass-bar"])
+        state = Path(os.environ["XDG_DATA_HOME"]) / "omarchy-config-sync" / "state.json"
+        write(state, json.dumps({"version": 1, "clone_path": str(custom)}) + "\n")
+        write(self.home / ".local" / "bin" / "hyprglass-bar", "#!/bin/sh\ntrue\n")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        self.assertIn(
+            str(self.home / ".local" / "bin" / "hyprglass-bar"),
+            ss.config_sync_owned_paths(),
+        )
+
+    def test_the_mapping_covers_every_carried_root(self) -> None:
+        self.install(
+            [
+                "hypr/input.lua",
+                "hypr/dev-webview.conf",
+                "omarchy/branding/about.txt",
+                "omarchy/extensions/omarchy-menu.jsonc",
+                "omarchy/hooks/font-set.d/ghostty-resize.sh",
+                "omarchy/agents/agent.md",
+                "omarchy/shell.json",
+                "omarchy/shell.toml",
+                "omarchy/themes/heavengirl/theme.toml",
+                "omarchy/theme.name",
+                "terminals/alacritty.toml",
+                "terminals/kitty.conf",
+                "terminals/foot.ini",
+                "plugins/pwnsxb.stow-sync/manifest.json",
+                "bin/hyprglass-bar",
+                "plugins.json",
+            ],
+            {"format": "omarchy-config", "version": 1},
+        )
+        owned = ss.config_sync_owned_paths()
+        expected = {
+            ".config/hypr/input.lua",
+            ".config/hypr/dev-webview.conf",
+            ".config/omarchy/branding/about.txt",
+            ".config/omarchy/extensions/omarchy-menu.jsonc",
+            ".config/omarchy/hooks/font-set.d/ghostty-resize.sh",
+            ".config/omarchy/agents/agent.md",
+            ".config/omarchy/shell.json",
+            ".config/omarchy/shell.toml",
+            ".config/omarchy/themes/heavengirl/theme.toml",
+            ".local/state/omarchy/current/theme.name",
+            ".config/alacritty/alacritty.toml",
+            ".config/kitty/kitty.conf",
+            ".config/foot/foot.ini",
+            ".config/omarchy/plugins/pwnsxb.stow-sync/manifest.json",
+            ".local/bin/hyprglass-bar",
+        }
+        self.assertEqual({ss.to_tilde(p) for p in owned}, {"~/" + rel for rel in expected})
+
+    def test_machine_local_blocks_ownership_of_its_folder(self) -> None:
+        self.install(
+            ["terminals/ghostty.config"],
+            {"format": "omarchy-config", "version": 1, "machine_local": ["terminals/ghostty.config"]},
+        )
+        write(self.home / ".config" / "ghostty" / "config", "font-size = 11\n")
+        write_config(self.config, [], watch=["~/.config"])
+        owned = ss.config_sync_owned_paths()
+        self.assertNotIn(str(self.home / ".config" / "ghostty" / "config"), owned)
+        self.assertNotEqual(self.candidates()["~/.config/ghostty"]["reason"], ss.CONFIG_SYNC_REASON)
+
+    def test_hypr_monitors_is_machine_local_by_default(self) -> None:
+        self.install(["hypr/input.lua", "hypr/monitors.lua"])
+        owned = ss.config_sync_owned_paths()
+        self.assertIn(str(self.home / ".config" / "hypr" / "input.lua"), owned)
+        self.assertNotIn(str(self.home / ".config" / "hypr" / "monitors.lua"), owned)
+
+    def test_ownership_is_read_once_per_command(self) -> None:
+        self.install(["terminals/kitty.conf"])
+        write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
+        write_config(self.config, [], watch=["~/.config/kitty"])
+        real = ss.run_git
+        self.calls: list = []
+
+        def counting(repo, args, *rest, **kwargs):
+            if list(args) == ["ls-files", "-z"]:
+                self.calls.append(repo)
+            return real(repo, args, *rest, **kwargs)
+
+        with patch.object(ss, "run_git", counting):
+            self.status()
+            self.assertEqual(len(self.calls), 1)
+            ss.cmd_status_short(["--short"], str(self.config), str(self.state_dir))
+            self.assertEqual(len(self.calls), 2)
+
+    def test_status_never_runs_a_desktop_command(self) -> None:
+        self.install(["bin/hyprglass-bar"])
+        write(self.home / ".local" / "bin" / "hyprglass-bar", "#!/bin/sh\ntrue\n")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        self.status()
+        self.assertFalse(self.stub_log.exists())
+
+    # --- lexical comparison --------------------------------------------
+
+    def test_a_symlinked_parent_still_matches_lexically(self) -> None:
+        owned = {str(self.home / ".config" / "omarchy" / "shell.json")}
+        elsewhere = self.env.root / "folded-omarchy"
+        write(elsewhere / "shell.json", "{}\n")
+        (self.home / ".config").mkdir(parents=True, exist_ok=True)
+        (self.home / ".config" / "omarchy").symlink_to(elsewhere, target_is_directory=True)
+        candidate = str(self.home / ".config" / "omarchy" / "shell.json")
+        self.assertNotEqual(os.path.realpath(candidate), candidate)
+        self.assertTrue(ss.config_sync_owns(candidate, owned))
+
+
+class ConfigSyncVerdictTests(ConfigSyncTestBase):
+    """S2: an owned path is recommended Ignore, and never overrides `never`."""
+
+    def test_owned_file_and_folder_are_ignored(self) -> None:
+        self.install(["bin/hyprglass-bar", "terminals/kitty.conf"])
+        write(self.home / ".local" / "bin" / "hyprglass-bar", "#!/bin/sh\nexec true\n")
+        write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
+        write_config(self.config, [], watch=["~/.local/bin", "~/.config"])
+        candidates = self.candidates()
+        for path in ("~/.local/bin/hyprglass-bar", "~/.config/kitty"):
+            self.assertEqual(candidates[path]["verdict"], ss.VERDICT_IGNORE, path)
+            self.assertEqual(candidates[path]["reason"], ss.CONFIG_SYNC_REASON, path)
+        self.assertEqual(ss.CONFIG_SYNC_REASON, "Managed by config-sync")
+        self.assertLessEqual(len(ss.CONFIG_SYNC_REASON), ss.MAX_REASON_CHARS)
+
+    def test_a_folder_is_owned_only_when_every_file_is_owned(self) -> None:
+        self.install(["terminals/kitty.conf"])
+        write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
+        write(self.home / ".config" / "kitty" / "theme.conf", "background #000000\n")
+        write_config(self.config, [], watch=["~/.config"])
+        candidate = self.candidates()["~/.config/kitty"]
+        self.assertNotEqual(candidate["verdict"], ss.VERDICT_IGNORE)
+        self.assertNotEqual(candidate["reason"], ss.CONFIG_SYNC_REASON)
+
+    def test_a_backup_file_neither_owns_nor_blocks_a_folder(self) -> None:
+        # config-sync skips `*.bak*` names, so they are not its material: the
+        # folder stays owned, and on its own a backup keeps today's reason.
+        self.install(["terminals/kitty.conf"])
+        write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
+        backup = self.home / ".config" / "kitty" / "kitty.conf.bak"
+        write(backup, "font_size 10\n")
+        write_config(self.config, [], watch=["~/.config"])
+        self.assertEqual(self.candidates()["~/.config/kitty"]["reason"], ss.CONFIG_SYNC_REASON)
+        verdict, reason = ss.candidate_verdict(str(backup))
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("backup", reason.lower())
+
+    def test_a_secret_inside_an_owned_path_stays_never(self) -> None:
+        self.install(["bin/hyprglass-bar"])
+        write(
+            self.home / ".local" / "bin" / "hyprglass-bar",
+            "#!/bin/sh\nTOKEN=ghp_" + "a1B2c3D4" * 5 + "\n",
+        )
+        write_config(self.config, [], watch=["~/.local/bin"])
+        candidate = self.candidates()["~/.local/bin/hyprglass-bar"]
+        self.assertEqual(candidate["verdict"], ss.VERDICT_NEVER)
+        self.assertNotEqual(candidate["reason"], ss.CONFIG_SYNC_REASON)
+
+    def test_the_badge_and_the_short_line_both_use_ownership(self) -> None:
+        self.install(["bin/hyprglass-bar"])
+        write(self.home / ".local" / "bin" / "hyprglass-bar", "#!/bin/sh\ntrue\n")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        self.assertEqual(self.status()["summary"]["count"], 0)
+        self.assertEqual(ss.cmd_status_short(["--short"], str(self.config), str(self.state_dir)), "")
+        write(self.home / ".local" / "bin" / "my-tool", "#!/bin/sh\ntrue\n")
+        self.assertEqual(
+            ss.cmd_status_short(["--short"], str(self.config), str(self.state_dir)),
+            "1 new config",
+        )
+
+
+class ConfigSyncCrossingTests(ConfigSyncTestBase):
+    """S3: Stow-managed paths config-sync also carries, listed read-only."""
+
+    def test_a_crossing_is_listed_and_never_counted(self) -> None:
+        repo = self.home / ".dotfiles"
+        init_repo(repo)
+        write(repo / "omarchy" / ".config" / "omarchy" / "hooks" / "post-update.d" / "my-hook", "#!/bin/sh\ntrue\n")
+        commit_all(repo, "c1")
+        # config-sync is installed first, so its plugin dir exists inside
+        # ~/.config/omarchy before Stow links into that tree.
+        self.install(["omarchy/hooks/post-update.d/my-hook"])
+        stow_apply(repo, self.home, "omarchy")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        result = self.status()
+        self.assertEqual(
+            result["config_sync_crossings"],
+            [
+                {
+                    "path": "~/.config/omarchy/hooks/post-update.d/my-hook",
+                    "package": "omarchy",
+                    "repo_rel": "omarchy/.config/omarchy/hooks/post-update.d/my-hook",
+                }
+            ],
+        )
+        self.assertEqual(result["summary"]["count"], 0)
+
+    def test_no_crossing_key_when_the_list_is_empty(self) -> None:
+        repo = self.home / ".dotfiles"
+        init_repo(repo)
+        write(repo / "fish" / ".config" / "fish" / "config.fish", "set -g x A 1\n")
+        commit_all(repo, "c1")
+        self.install(["terminals/kitty.conf"])
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        self.assertNotIn("config_sync_crossings", self.status())
+
+    def test_an_absent_config_sync_has_no_crossings(self) -> None:
+        repo = self.home / ".dotfiles"
+        init_repo(repo)
+        write(repo / "omarchy" / ".config" / "omarchy" / "hooks" / "my-hook", "#!/bin/sh\ntrue\n")
+        commit_all(repo, "c1")
+        write_config(self.config, [{"path": str(repo), "target": "~", "packages": "auto"}])
+        self.assertNotIn("config_sync_crossings", self.status())
+
+
+# --------------------------------------------------------------------------
 # Unit 4d Task 1: repo info fields (README section 8, Unit 4d)
 # --------------------------------------------------------------------------
 
@@ -5593,6 +5976,18 @@ class SetupGroupHeaderSourceTests(unittest.TestCase):
         for name in ("SetupReview.qml", "SetupReport.qml"):
             source = (ROOT / name).read_text(encoding="utf-8")
             self.assertIn("SetupGroupHeader {", source)
+
+
+class OverviewCrossingRowSourceTests(unittest.TestCase):
+    """The crossings group rides the generic ItemRow, with its note as subtitle."""
+
+    def test_repo_section_renders_the_crossing_note(self) -> None:
+        source = (ROOT / "RepoSection.qml").read_text(encoding="utf-8")
+        self.assertIn('modelData.type === "crossing"', source)
+        self.assertIn("String(modelData.note)", source)
+        # The same ItemRow still renders it: no new row component, no action.
+        self.assertIn("ItemRow {", source)
+        self.assertNotIn("crossingRequested", source)
 
 
 class SetupWizardFocusTests(unittest.TestCase):

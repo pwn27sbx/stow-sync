@@ -1938,6 +1938,31 @@ function overviewGroups(data) {
     groups.push(hidden)
   }
 
+  // Crossings: Stow-managed paths config-sync also carries. Information only —
+  // no action, not counted in the summary or the badge, never fixed for you.
+  var crossings = d.config_sync_crossings || []
+  if (crossings.length > 0) {
+    var crossingItems = []
+    for (var x = 0; x < crossings.length; x++) {
+      var cr = crossings[x] || {}
+      var carriedBy = String(cr.package || "")
+      crossingItems.push({
+        type: "crossing",
+        path: String(cr.path || ""),
+        package: carriedBy,
+        note: carriedBy
+          ? "package " + carriedBy + " \u00b7 config-sync carries it too"
+          : "config-sync carries it too"
+      })
+    }
+    crossingItems.sort(function(a, b) {
+      return compareStrings(a.path, b.path)
+    })
+    var carried = overviewGroup("configSync", "Also carried by config-sync", "file", crossingItems)
+    carried.subtitle = "Read-only; both tools carry these, nothing changes here"
+    groups.push(carried)
+  }
+
   var fixing = unhealthyPackages(d)
   if (fixing.length > 0) {
     groups.push(overviewGroup("fixing", "Needs fixing", "package", fixing))
