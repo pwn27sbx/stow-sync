@@ -871,20 +871,11 @@ function candidateSuggestion(candidate) {
   return s !== "" ? s : "new package"
 }
 
-// A candidate the backend already judged as one config-sync owns: it stays
-// visible in Hidden with its reason, exactly like an unknown owned path. Today
-// the backend sets `ignore` on a known candidate only for config-sync's paths,
-// so this one predicate keeps the row's pick and the panel listing in step.
-function isOwnedKnownCandidate(candidate) {
-  var c = candidate || {}
-  return c.known === true && String(c.verdict || "") === "ignore"
-}
-
-// A candidate the backend already judged as one config-sync owns: it stays
-// visible in Hidden with its reason, exactly like an unknown owned path. Today
-// the backend sets `ignore` on a known candidate only for config-sync's paths,
-// so this one predicate keeps the row's pick and the panel listing in step.
-function isOwnedKnownCandidate(candidate) {
+// A known candidate the backend judged `ignore`: it stays visible in Hidden
+// with its reason, exactly like an unknown hidden path, whether config-sync owns
+// it or the file is machine state such as a generated launcher shim. Every other
+// known candidate keeps an empty verdict and stays unlisted.
+function isKnownIgnoredCandidate(candidate) {
   var c = candidate || {}
   return c.known === true && String(c.verdict || "") === "ignore"
 }
@@ -897,9 +888,9 @@ function isOwnedKnownCandidate(candidate) {
 // why line; `hint` only adds the rationale for a suggested Ignore.
 function candidateRecommendation(candidate) {
   var c = candidate || {}
-  // A known candidate asks nothing, except one config-sync already owns: it is
-  // judged `ignore` in the backend, so it shows the same pick as an owned file.
-  if (c.known === true && !isOwnedKnownCandidate(c)) {
+  // A known candidate asks nothing, except one the backend already judged
+  // `ignore`: it shows the same pick as the hidden row.
+  if (c.known === true && !isKnownIgnoredCandidate(c)) {
     return { label: "", hint: "", action: "", tone: "" }
   }
   var verdict = String(c.verdict || "")
@@ -1929,10 +1920,10 @@ function overviewGroups(data) {
     if (!c) continue
     var verdict = String(c.verdict || "")
     // A known candidate is not offered again — except one the backend already
-    // judged as config-sync's, which stays under Hidden with its reason, folder
-    // or file alike. Every other known candidate keeps an empty verdict and
-    // stays unlisted.
-    if (c.known === true && !isOwnedKnownCandidate(c)) continue
+    // judged `ignore`, which stays under Hidden with its reason, folder or file
+    // alike. Every other known candidate keeps an empty verdict and stays
+    // unlisted.
+    if (c.known === true && !isKnownIgnoredCandidate(c)) continue
     var item = {
       type: "candidate",
       path: String(c.path || ""),

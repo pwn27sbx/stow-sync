@@ -2895,6 +2895,23 @@ test("overviewGroups lists a config-sync-owned folder that is already known", ()
   ])
 })
 
+test("Model.js declares every top-level function once", () => {
+  // A duplicated declaration keeps only the last copy reachable and can be a
+  // SyntaxError in a strict loader; the tests call whichever copy survived, so
+  // only a source-level check catches it.
+  const seen = new Map()
+  const duplicated = []
+  const declaration = /^function ([A-Za-z_$][\w$]*)/gm
+  let match
+  while ((match = declaration.exec(source)) !== null) {
+    const name = match[1]
+    const count = (seen.get(name) || 0) + 1
+    seen.set(name, count)
+    if (count === 2) duplicated.push(name)
+  }
+  same(duplicated, [])
+})
+
 test("overviewGroups adds the config-sync crossings group after Hidden", () => {
   const data = {
     repos: [],

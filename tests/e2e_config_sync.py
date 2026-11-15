@@ -295,15 +295,27 @@ class World:
             encoding="utf-8",
         )
 
+    def _run_cli(self, args: tuple[str, ...], stdin=None, stdin_file=None, timeout: float | None = None):
+        """One CLI invocation in this world's environment.
+
+        ``stdin`` is the text piped to the panel's JSON calls; ``stdin_file``
+        replaces it with an open file (the pty check), which subprocess cannot
+        combine with ``input``.
+        """
+        command = [sys.executable, str(CLI), *args]
+        common = {
+            "capture_output": True,
+            "text": True,
+            "env": self.env(),
+            "cwd": str(self.root),
+            "timeout": timeout,
+        }
+        if stdin_file is not None:
+            return subprocess.run(command, stdin=stdin_file, **common)
+        return subprocess.run(command, input=stdin, **common)
+
     def cli(self, *args: str, stdin: str | None = None) -> dict:
-        result = subprocess.run(
-            [sys.executable, str(CLI), *args],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            env=self.env(),
-            cwd=str(self.root),
-        )
+        result = self._run_cli(args, stdin=stdin)
         try:
             payload = json.loads(result.stdout)
         except ValueError as exc:  # a crash must be visible, never swallowed
@@ -325,26 +337,16 @@ class World:
         """The CLI with a terminal on stdin: it must answer, never wait."""
         master, slave = pty.openpty()
         try:
-            result = subprocess.run(
-                [sys.executable, str(CLI), *args],
-                stdin=slave,
-                capture_output=True,
-                text=True,
-                env=self.env(),
-                cwd=str(self.root),
-                timeout=20,
-            )
+            result = self._run_cli(args, stdin_file=slave, timeout=20)
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": "waited for input on a terminal"}
         finally:
             os.close(slave)
             os.close(master)
         try:
-            payload = json.loads(result.stdout)
+            return json.loads(result.stdout)
         except ValueError as exc:
             raise SystemExit(f"CLI produced no JSON on a terminal for {args}: {exc}")
-        payload["_exit"] = result.returncode
-        return payload
 
     def panel(self, payload: dict) -> dict:
         """The facts the panel derives, through the real Model.js."""

@@ -1302,6 +1302,17 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".local/bin/mine")
         self.assertEqual(verdict, ss.VERDICT_UPLOAD)
 
+    def test_a_marker_deep_in_the_body_is_not_a_shim(self) -> None:
+        # Only the header is scanned: a heredoc or template quoting the marker
+        # further down never makes the owner's script look generated.
+        padding = "# filler\n" * 400
+        write(
+            self.home / ".local" / "bin" / "mine",
+            "#!/bin/sh\n" + padding + "# JUNIE_MANAGED_SHIM\nexec foo\n",
+        )
+        verdict, _reason = self.verdict(".local/bin/mine")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
     def test_a_secret_in_a_shim_stays_never(self) -> None:
         write(
             self.home / ".local" / "bin" / "junie",

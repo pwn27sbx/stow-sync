@@ -2344,6 +2344,10 @@ _GENERATED_SHIM_PATTERNS = tuple(
     )
     for marker, tool in _GENERATED_SHIM_MARKERS
 )
+# A generated launcher writes its marker in the header. Only that head is
+# scanned, so a marker quoted deep inside a script's body (a heredoc, a template)
+# cannot make an owner's file look generated.
+GENERATED_SHIM_HEAD_BYTES = 2048
 
 # Machine state by name: caches, logs, history, databases and leftovers.
 # Order matters: the specific ".db-wal"/".db-shm" entries must stay above the
@@ -2433,11 +2437,13 @@ def _launcher_reason(tool: str) -> str:
 def _shim_marker_tool(text: str) -> str:
     """Tool that generated ``text``, when a shim marker names one; else ``""``.
 
-    A marker only counts on a comment line of its own: an owner's script that
-    mentions one in a sentence is still the owner's script.
+    A marker only counts on a comment line of its own inside the file's header,
+    so an owner's script that mentions one in a sentence — or quotes one deeper
+    in its body — is still the owner's script.
     """
+    head = text[:GENERATED_SHIM_HEAD_BYTES]
     for pattern, tool in _GENERATED_SHIM_PATTERNS:
-        if pattern.search(text):
+        if pattern.search(head):
             return tool
     return ""
 
