@@ -337,8 +337,8 @@ changes the verdict without a migration. The bar badge counts only `upload` and
 When you do want an entry in that list, the CLI writes it:
 `python3 scripts/stow_sync.py ignore PATH [PATH ...]` adds each path (and
 `unignore` removes it). Both commands also accept the JSON list on stdin that
-the panel sends, and an unknown option fails with a clear error instead of the
-silent no-op an argument used to get.
+the panel sends, they never read a terminal, and an unknown option fails with a
+clear error instead of the silent no-op an argument used to get.
 
 Reads are bounded (128 KB per file; a directory contributes at most 400 entries
 and 512 KB), so a pathological candidate can never stall `status`. Hitting a

@@ -1295,6 +1295,21 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".local/bin/mine")
         self.assertEqual(verdict, ss.VERDICT_UPLOAD)
 
+    def test_a_bare_marker_without_a_comment_sigil_is_not_a_shim(self) -> None:
+        # The marker must be a comment line: a plain line of text is not a
+        # generated shim, so the rule never hides an owner-written script.
+        write(self.home / ".local" / "bin" / "mine", "#!/bin/sh\nJUNIE_MANAGED_SHIM\nexec foo\n")
+        verdict, _reason = self.verdict(".local/bin/mine")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_a_secret_in_a_shim_stays_never(self) -> None:
+        write(
+            self.home / ".local" / "bin" / "junie",
+            "#!/bin/bash\n# JUNIE_MANAGED_SHIM\nTOKEN=ghp_" + "a1B2c3D4" * 5 + "\n",
+        )
+        verdict, _reason = self.verdict(".local/bin/junie")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+
     def test_tool_install_path_in_content_is_ignore(self) -> None:
         tool = str(self.home / ".local/share/uv/tools/samloader/bin")
         write(self.home / ".config" / "app" / "conf", "launcher = " + tool + "\n")
@@ -3267,6 +3282,21 @@ class IgnoreCommandTests(unittest.TestCase):
             self.assertIn("--path", result["error"], command)
             self.assertIn("stdin", result["error"], command)
             self.assertEqual(self.raw()["ignore"], ["~/.config/hypr"], command)
+
+    def test_ignore_never_reads_a_terminal(self) -> None:
+        # A human typing `ignore ~/x` has a terminal on stdin: reading it would
+        # wait for an EOF that never comes, so the arguments alone decide.
+        class NoReadTerminal(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+            def read(self, *args, **kwargs):  # pragma: no cover - must not run
+                raise AssertionError("stdin was read on a terminal")
+
+        with patch("sys.stdin", NoReadTerminal()):
+            result = ss.dispatch(["ignore", "~/.config/from-arg"], str(self.config))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.raw()["ignore"], ["~/.config/hypr", "~/.config/from-arg"])
 
 
 # --------------------------------------------------------------------------

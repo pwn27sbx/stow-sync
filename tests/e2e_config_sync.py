@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import pty
 import shutil
 import subprocess
 import sys
@@ -320,6 +321,31 @@ class World:
         )
         return result.stdout.strip()
 
+    def cli_on_a_terminal(self, *args: str) -> dict:
+        """The CLI with a terminal on stdin: it must answer, never wait."""
+        master, slave = pty.openpty()
+        try:
+            result = subprocess.run(
+                [sys.executable, str(CLI), *args],
+                stdin=slave,
+                capture_output=True,
+                text=True,
+                env=self.env(),
+                cwd=str(self.root),
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "waited for input on a terminal"}
+        finally:
+            os.close(slave)
+            os.close(master)
+        try:
+            payload = json.loads(result.stdout)
+        except ValueError as exc:
+            raise SystemExit(f"CLI produced no JSON on a terminal for {args}: {exc}")
+        payload["_exit"] = result.returncode
+        return payload
+
     def panel(self, payload: dict) -> dict:
         """The facts the panel derives, through the real Model.js."""
         script = _PANEL_SCRIPT
@@ -551,6 +577,15 @@ def check_present_world(world: World) -> None:
         "unknown option wrote nothing",
         "~/.config/foot" in json.loads(world.config.read_text(encoding="utf-8"))["ignore"],
         False,
+    )
+    # A human typing the command has a terminal on stdin; reading it would wait
+    # for an EOF that never comes, so the arguments alone must decide.
+    terminal = world.cli_on_a_terminal("ignore", "~/.config/ghostty")
+    check("ignore on a terminal answers", terminal.get("ok"), True)
+    check(
+        "ignore on a terminal wrote the path",
+        "~/.config/ghostty" in json.loads(world.config.read_text(encoding="utf-8"))["ignore"],
+        True,
     )
 
     world.assert_no_desktop_command("present world")
