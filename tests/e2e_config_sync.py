@@ -197,6 +197,12 @@ class World:
         # normal new config even though the clone tracks the file.
         write(home / ".config" / "ghostty" / "config", "font-size = 11\n")
         write(home / ".config" / "newtool" / "app.conf", "theme = light\n")
+        # A generated launcher shim: Junie CLI rewrites it, so Stow Sync must
+        # recommend Ignore like the uv launchers.
+        write(
+            home / ".local" / "bin" / "junie",
+            "#!/bin/bash\n#\n# JUNIE_MANAGED_SHIM\n#\nexec junie-real\n",
+        )
         # Owned by config-sync *and* carrying a secret: `never` still wins.
         write(
             home / ".local" / "bin" / "leaky-helper",
@@ -358,7 +364,19 @@ const out = {
       key: g.key,
       title: g.title,
       items: (g.items || []).map(function (i) {
-        return { type: i.type, path: i.path, package: i.package, action: i.action }
+        var pick = Model.candidateRecommendation(i)
+        var actions = Model.candidateRowActions(i)
+        return {
+          type: i.type,
+          path: i.path,
+          package: i.package,
+          reason: String(i.reason || ""),
+          action: i.action,
+          label: String(pick.label || ""),
+          chip: String(actions.chip || ""),
+          adopt: String(actions.adopt || ""),
+          ignore: String(actions.ignore || "")
+        }
       })
     }
   }),
@@ -403,6 +421,14 @@ def check_present_world(world: World) -> None:
     # A secret inside an owned file stays `never`: ownership never lowers it.
     check("~/.local/bin/leaky-helper stays never", verdicts.get("~/.local/bin/leaky-helper", ("<missing>", ""))[0], "never")
 
+    # A generated launcher shim is machine state, like the uv launchers.
+    check("~/.local/bin/junie is ignored", verdicts.get("~/.local/bin/junie", ("<missing>", ""))[0], "ignore")
+    check(
+        "~/.local/bin/junie names its tool",
+        "Junie CLI" in verdicts.get("~/.local/bin/junie", ("", ""))[1],
+        True,
+    )
+
     # The stowed helper is a crossing, not a candidate: Stow already manages it.
     check("the stowed helper is no candidate", "~/.local/bin/hyprglass-bar" in verdicts, False)
 
@@ -428,12 +454,33 @@ def check_present_world(world: World) -> None:
     check("panel group keys", [g["key"] for g in panel["groups"]], ["newConfigs", "hiddenConfigs", "configSync"])
     hidden = next(g for g in panel["groups"] if g["key"] == "hiddenConfigs")
     check("Hidden group title", hidden["title"], "Hidden")
-    check("Hidden group paths", [i["path"] for i in hidden["items"]], ["~/.local/bin/leaky-helper"])
-    # The acknowledged config-sync folders are already known, so the panel
-    # lists them nowhere: no Adopt row, no counter, no recommendation.
-    listed = [i["path"] for g in panel["groups"] for i in g["items"]]
-    for path in ("~/.config/alacritty", "~/.config/foot", "~/.config/kitty", "~/.config/hypr"):
-        check("panel never offers " + path, path in listed, False)
+    # The terminal folders are already acknowledged (known), and config-sync
+    # owns them, so they are listed under Hidden exactly like an owned file:
+    # "Recommended: Ignore" with the backend's "Managed by config-sync" reason.
+    check("Hidden group paths", [i["path"] for i in hidden["items"]], [
+        "~/.config/alacritty",
+        "~/.config/foot",
+        "~/.config/hypr",
+        "~/.config/kitty",
+        "~/.local/bin/junie",
+        "~/.local/bin/leaky-helper",
+    ])
+    hidden_by_path = {i["path"]: i for i in hidden["items"]}
+    for path in ("~/.config/alacritty", "~/.config/foot", "~/.config/hypr", "~/.config/kitty"):
+        check("Hidden recommends Ignore for " + path, hidden_by_path[path]["label"], "Recommended: Ignore")
+        check("Hidden names config-sync for " + path, hidden_by_path[path]["reason"], CONFIG_SYNC_REASON)
+        check("Hidden keeps an Adopt anyway for " + path, hidden_by_path[path]["adopt"], "secondary")
+        check("Hidden marks " + path + " ignored", hidden_by_path[path]["chip"], "Ignored")
+    check("Hidden recommends Ignore for the shim", hidden_by_path["~/.local/bin/junie"]["label"], "Recommended: Ignore")
+    check(
+        "Hidden names the shim's tool",
+        "Junie CLI" in hidden_by_path["~/.local/bin/junie"]["reason"],
+        True,
+    )
+    # Nothing config-sync owns is offered as a new config.
+    fresh_paths = [i["path"] for i in next(g for g in panel["groups"] if g["key"] == "newConfigs")["items"]]
+    for path in ("~/.config/alacritty", "~/.config/foot", "~/.config/hypr", "~/.config/kitty", "~/.local/bin/junie"):
+        check("panel offers no adopt for " + path, path in fresh_paths, False)
     carried = next(g for g in panel["groups"] if g["key"] == "configSync")
     check("crossings group title", carried["title"], "Also carried by config-sync")
     check("crossings group items", [(i["path"], i["package"], i["type"]) for i in carried["items"]],
@@ -479,6 +526,33 @@ def check_present_world(world: World) -> None:
     check("ignored path is no candidate", "~/.config/newtool" in verdict_table(after), False)
     check("badge after ignore", after["summary"]["count"], 1)
 
+    # CLI: paths as arguments, the way a human types them, instead of the
+    # panel's stdin list; and an unknown option is an error, not a silent ok.
+    pos = world.cli("ignore", "~/.config/foot", stdin="")
+    check("ignore positional ok", pos.get("ok"), True)
+    check(
+        "ignore positional wrote the path",
+        "~/.config/foot" in json.loads(world.config.read_text(encoding="utf-8"))["ignore"],
+        True,
+    )
+    check("ignored folder is no candidate", "~/.config/foot" in verdict_table(world.cli("status")), False)
+    back = world.cli("unignore", "~/.config/foot", stdin="")
+    check("unignore positional ok", back.get("ok"), True)
+    check(
+        "unignore positional removed the path",
+        "~/.config/foot" in json.loads(world.config.read_text(encoding="utf-8"))["ignore"],
+        False,
+    )
+    check("folder is a candidate again", "~/.config/foot" in verdict_table(world.cli("status")), True)
+    bad = world.cli("unignore", "--path", "~/.config/foot", stdin="")
+    check("unknown option is an error", bad.get("ok"), False)
+    check("unknown option names the flag", "--path" in str(bad.get("error", "")), True)
+    check(
+        "unknown option wrote nothing",
+        "~/.config/foot" in json.loads(world.config.read_text(encoding="utf-8"))["ignore"],
+        False,
+    )
+
     world.assert_no_desktop_command("present world")
 
 
@@ -501,8 +575,9 @@ def check_absent_world(world: World) -> None:
     check("absent: no crossings group", [g["key"] for g in panel["groups"]],
           ["newConfigs", "hiddenConfigs"])
     absent_hidden = next(g for g in panel["groups"] if g["key"] == "hiddenConfigs")
-    check("absent: Hidden keeps only the secret", [i["path"] for i in absent_hidden["items"]],
-          ["~/.local/bin/leaky-helper"])
+    # The shim is machine state whether or not config-sync is installed.
+    check("absent: Hidden keeps the shim and the secret", [i["path"] for i in absent_hidden["items"]],
+          ["~/.local/bin/junie", "~/.local/bin/leaky-helper"])
     check("absent: badge", panel["badge"], 6)
     world.assert_no_desktop_command("absent world")
 

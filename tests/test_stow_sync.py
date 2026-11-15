@@ -1273,6 +1273,28 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".local/bin/mine")
         self.assertEqual(verdict, ss.VERDICT_UPLOAD)
 
+    def test_a_generated_shim_marker_is_ignore(self) -> None:
+        # Junie CLI rewrites this launcher on every update: stowing it would
+        # churn, so it is machine state like the uv launchers.
+        write(
+            self.home / ".local" / "bin" / "junie",
+            "#!/bin/bash\n#\n# JUNIE_MANAGED_SHIM\n#\nset -euo pipefail\n",
+        )
+        verdict, reason = self.verdict(".local/bin/junie")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertIn("Junie CLI", reason)
+        self.assertLessEqual(len(reason), ss.MAX_REASON_CHARS)
+
+    def test_a_marker_mentioned_in_a_sentence_is_not_a_shim(self) -> None:
+        # Only a marker comment line decides; the owner's own script that
+        # mentions it in prose keeps its normal verdict.
+        write(
+            self.home / ".local" / "bin" / "mine",
+            "#!/bin/sh\n# I removed the JUNIE_MANAGED_SHIM once\nexec foo\n",
+        )
+        verdict, _reason = self.verdict(".local/bin/mine")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
     def test_tool_install_path_in_content_is_ignore(self) -> None:
         tool = str(self.home / ".local/share/uv/tools/samloader/bin")
         write(self.home / ".config" / "app" / "conf", "launcher = " + tool + "\n")
@@ -3206,6 +3228,45 @@ class IgnoreCommandTests(unittest.TestCase):
         result = self.run_cmd("unignore", "~/.config/absent")
         self.assertTrue(result["ok"])
         self.assertEqual(result["ignore"], ["~/.config/hypr"])
+
+    def run_args(self, command: str, *args: str) -> dict:
+        with patch("sys.stdin", io.StringIO("")):
+            return ss.dispatch([command, *args], str(self.config))
+
+    def test_ignore_positional_path_is_added(self) -> None:
+        # `stow_sync.py ignore ~/x` used to answer ok and write nothing.
+        result = self.run_args("ignore", "~/.config/foo")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.raw()["ignore"], ["~/.config/hypr", "~/.config/foo"])
+
+    def test_ignore_positional_absolute_path_is_normalized(self) -> None:
+        result = self.run_args("ignore", str(self.home / ".config" / "bar"))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.raw()["ignore"], ["~/.config/hypr", "~/.config/bar"])
+
+    def test_unignore_positional_path_is_removed(self) -> None:
+        result = self.run_args("unignore", "~/.config/hypr")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.raw()["ignore"], [])
+
+    def test_ignore_positional_paths_and_stdin_are_merged(self) -> None:
+        with patch("sys.stdin", io.StringIO(json.dumps(["~/.config/from-stdin"]))):
+            result = ss.dispatch(
+                ["ignore", "~/.config/from-arg", "~/.config/from-stdin"], str(self.config)
+            )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            self.raw()["ignore"],
+            ["~/.config/hypr", "~/.config/from-stdin", "~/.config/from-arg"],
+        )
+
+    def test_ignore_unknown_option_is_a_clear_error(self) -> None:
+        for command in ("ignore", "unignore"):
+            result = self.run_args(command, "--path", "~/.config/foo")
+            self.assertFalse(result["ok"], command)
+            self.assertIn("--path", result["error"], command)
+            self.assertIn("stdin", result["error"], command)
+            self.assertEqual(self.raw()["ignore"], ["~/.config/hypr"], command)
 
 
 # --------------------------------------------------------------------------
