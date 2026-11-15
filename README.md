@@ -362,6 +362,12 @@ else. Stow Sync therefore never offers to adopt what config-sync already owns:
 - A new config whose path config-sync carries on this machine is recommended
   **Ignore**, with the reason **Managed by config-sync**. It stays under
   **Hidden**, and **Adopt anyway** is still there if you want it in Stow by hand.
+- A path you already acknowledged keeps that verdict too: an owned folder that
+  is in this machine's baseline — the terminal folders usually are, from a
+  first run before config-sync was recognised — still reports **Ignore** with
+  **Managed by config-sync** in `status`, so dropping a now-redundant `ignore`
+  entry never leaves it with an empty verdict. The panel still lists only the
+  paths you have not acknowledged yet.
 - A read-only group, **Also carried by config-sync**, lists the Stow-managed
   paths config-sync also carries (a package target that is in its set). It is
   information: no action, never counted in the status sentence, the badge or a

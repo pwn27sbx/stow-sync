@@ -30,6 +30,21 @@ Aimed at 0.3.2.
   the package in the row. It never adds to the status sentence, the badge, the
   notifications or **Needs fixing**, and it is absent when there are none.
 
+### Fixed
+
+- **An acknowledged path keeps config-sync's verdict.** A path already in this
+  machine's baseline was not judged at all, so an owned folder that the
+  baseline already held — `~/.config/alacritty`, `~/.config/kitty` and
+  `~/.config/foot` on the owner's machine, from a first run before ownership
+  existed — reported an **empty** verdict instead of **Ignore** with
+  **Managed by config-sync**, and dropping its `ignore` entry looked like
+  config-sync was not recognised. The ownership answer now applies to known
+  candidates too; every other known candidate keeps its empty verdict, so a
+  machine without config-sync is unchanged. `kitty.conf.bak.DIbKyz` is not
+  config-sync material (its `SKIP_NAME_RE` skips `*.bak*`), so the stray backup
+  does not block the kitty folder. Covered end to end by
+  `tests/e2e_config_sync.py`.
+
 ## 0.3.1 - 2026-11-11
 
 ### Added

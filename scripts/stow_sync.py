@@ -2770,18 +2770,22 @@ def annotate_verdicts(
     """Attach ``verdict``/``reason`` to every new candidate, in place.
 
     Candidates already in the baseline are not judged — the panel never lists
-    them — and carry empty strings so every candidate keeps the same keys. A
-    path config-sync already owns is ``ignore`` with
-    :data:`CONFIG_SYNC_REASON`, unless the file itself matched a secret: a
-    secret is ``never`` and ownership never lowers that. ``None`` means
-    config-sync is absent and every verdict stays exactly as before.
+    them — but one config-sync owns still reports :data:`CONFIG_SYNC_REASON`:
+    dropping a now-redundant ignore entry must not turn its verdict back into
+    an empty string (the machine's baseline keeps a path it saw on a first
+    run). Every other known candidate carries empty strings, so every
+    candidate keeps the same keys. A path config-sync already owns is
+    ``ignore`` with :data:`CONFIG_SYNC_REASON`, unless the file itself matched
+    a secret: a secret is ``never`` and ownership never lowers that. ``None``
+    means config-sync is absent and every verdict stays exactly as before.
     """
     for candidate in candidates:
-        if candidate.get("known"):
-            candidate["verdict"] = ""
-            candidate["reason"] = ""
-            continue
         path = expand_path(str(candidate.get("path", "")))
+        if candidate.get("known"):
+            owned = config_sync_owned is not None and config_sync_owns(path, config_sync_owned)
+            candidate["verdict"] = VERDICT_IGNORE if owned else ""
+            candidate["reason"] = CONFIG_SYNC_REASON if owned else ""
+            continue
         verdict, reason = candidate_verdict(path)
         if verdict != VERDICT_NEVER and config_sync_owns(path, config_sync_owned):
             verdict, reason = VERDICT_IGNORE, CONFIG_SYNC_REASON

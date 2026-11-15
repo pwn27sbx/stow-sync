@@ -3790,6 +3790,47 @@ class ConfigSyncVerdictTests(ConfigSyncTestBase):
         self.assertEqual(candidate["verdict"], ss.VERDICT_NEVER)
         self.assertNotEqual(candidate["reason"], ss.CONFIG_SYNC_REASON)
 
+    def test_the_real_terminal_layout_is_ignored_even_when_known(self) -> None:
+        # The owner's machine: each terminal folder holds only the file
+        # config-sync carries as `terminals/*`, kitty also keeps a stray
+        # `*.bak.<suffix>` file (config-sync's SKIP_NAME_RE skips it), and all
+        # three folders are already in the baseline from an earlier run, so
+        # their candidates are `known`. They must still report config-sync's
+        # verdict instead of an empty one: the owner drops the now-redundant
+        # ignore entries and the panel keeps hiding them with the right reason.
+        self.install(
+            ["terminals/alacritty.toml", "terminals/foot.ini", "terminals/kitty.conf"],
+            {"machine_local": ["terminals/ghostty.config"]},
+        )
+        write(self.home / ".config" / "alacritty" / "alacritty.toml", "font_size = 11\n")
+        write(self.home / ".config" / "foot" / "foot.ini", "font=monospace:size=11\n")
+        write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
+        write(self.home / ".config" / "kitty" / "kitty.conf.bak.DIbKyz", "font_size 10\n")
+        known = ["~/.config/alacritty", "~/.config/foot", "~/.config/kitty"]
+        (self.state_dir / "baseline.json").write_text(
+            json.dumps({"version": 1, "created": "2026-10-09T20:08:53+00:00", "paths": known}),
+            encoding="utf-8",
+        )
+        write_config(self.config, [], watch=["~/.config/*"])
+        candidates = self.candidates()
+        for path in known:
+            candidate = candidates[path]
+            self.assertTrue(candidate["known"], path)
+            self.assertEqual(candidate["verdict"], ss.VERDICT_IGNORE, path)
+            self.assertEqual(candidate["reason"], ss.CONFIG_SYNC_REASON, path)
+
+    def test_a_known_candidate_without_config_sync_keeps_an_empty_verdict(self) -> None:
+        write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
+        (self.state_dir / "baseline.json").write_text(
+            json.dumps({"version": 1, "created": "2026-01-01T00:00:00+00:00",
+                        "paths": ["~/.config/kitty"]}),
+            encoding="utf-8",
+        )
+        write_config(self.config, [], watch=["~/.config/*"])
+        candidate = self.candidates()["~/.config/kitty"]
+        self.assertEqual(candidate["verdict"], "")
+        self.assertEqual(candidate["reason"], "")
+
     def test_the_badge_and_the_short_line_both_use_ownership(self) -> None:
         self.install(["bin/hyprglass-bar"])
         write(self.home / ".local" / "bin" / "hyprglass-bar", "#!/bin/sh\ntrue\n")
