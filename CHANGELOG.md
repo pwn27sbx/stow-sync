@@ -4,6 +4,32 @@ All notable changes to Stow Sync. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the plugin uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+Aimed at 0.3.2.
+
+### Added
+
+- **Stow Sync recognises config-sync.** On a machine that runs
+  `gladimdim.config-sync`, a new config whose path config-sync already carries
+  is recommended **Ignore** with the reason **Managed by config-sync**, so the
+  two tools stop offering the same file: Hyprland, the bar and menu, hooks,
+  agents, theme, plugins and the helpers they call stay config-sync's, the rest
+  stays Stow's. The answer comes from config-sync's own clone, read once per
+  `status` with one `git ls-files` (2 s timeout, 20 000-file cap) and mapped
+  back to home paths with config-sync's own tables; Stow Sync never imports it
+  and never runs one of its actions. `machine_local` paths (`hypr/monitors.lua`
+  and today `terminals/ghostty.config`) stay unowned, a folder counts as owned
+  only when every file in it is owned, a secret inside an owned path is still
+  **Never stow this**, and a machine without config-sync keeps exactly today's
+  payload and badge. The `ignore` entries for `~/.local/bin/hyprglass-bar`,
+  `~/.config/alacritty`, `~/.config/kitty` and `~/.config/foot` are no longer
+  needed.
+- **Overview lists the crossings.** A read-only group, **Also carried by
+  config-sync**, shows the Stow package targets config-sync also carries, with
+  the package in the row. It never adds to the status sentence, the badge, the
+  notifications or **Needs fixing**, and it is absent when there are none.
+
 ## 0.3.1 - 2026-11-11
 
 ### Added

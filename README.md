@@ -256,7 +256,7 @@ from the file on disk — no network call, no model — and tells you why:
 | Verdict | When | In the panel |
 | --- | --- | --- |
 | `never` | a known credential store, or a secret rule (the same rules the commit scan uses) matches the content: keys, tokens, private keys, chat webhooks (Discord, Slack, Teams), a Sentry DSN or cron check-in URL, a URL that carries a password or a long token, and a setting whose name says secret (`*_WEBHOOK`, `*_DSN`, `*_TOKEN`, `*_SECRET`, `*_KEY`, `*_PASSWORD` with a non-empty value) | not counted, listed under **Hidden**, says **Never stow this** and offers no Adopt button |
-| `ignore` | tool-generated or machine state: a launcher whose shebang points into a tool-managed environment (uv, pipx, mise, npm), caches, logs, history, lock files, databases, backups, temp files, a file that only names paths installed on this machine, or an empty folder (or one holding only empty folders) — there is nothing to adopt | not counted, listed under **Hidden**, says **Recommended: Ignore**, can still be adopted by hand |
+| `ignore` | tool-generated or machine state, or a path config-sync already carries on this machine: a launcher whose shebang points into a tool-managed environment (uv, pipx, mise, npm), caches, logs, history, lock files, databases, backups, temp files, a file that only names paths installed on this machine, or an empty folder (or one holding only empty folders) — there is nothing to adopt, or another tool already owns it | not counted, listed under **Hidden**, says **Recommended: Ignore**, can still be adopted by hand |
 | `upload` | a small text config (up to 128 KB, valid UTF-8) with no secret, no machine-specific path and no group/other read; a hand-written file with comments counts as extra confidence | counted, listed first, says **Recommended: Adopt** with an accented Adopt button |
 | `review` | anything else: binary, oversized, a directory with mixed contents, an entry the scan could not read, a file only its owner can read (mode `600` or any mode without group/other read), or a user unit whose `ExecStart` (or a `.timer`/`.path` whose service) runs a script in `~/Projects` | counted, says **Suggested: Ignore** with the accented Ignore button |
 
@@ -351,6 +351,52 @@ the setting to this plugin's `shell.json` layout entry:
 then `omarchy restart shell`. The complete walkthrough — the tools to install,
 GitHub authentication, the recipe schema, the safety rules and how Undo works —
 is in [New machine](#new-machine).
+
+## Config-sync ownership
+
+[config-sync](https://github.com/gladimdim/omarchy-config-sync) carries the
+**Omarchy** side of this desktop — Hyprland, the bar and menu, hooks, agents,
+theme, plugins and the helpers they call — while Stow Sync carries everything
+else. Stow Sync therefore never offers to adopt what config-sync already owns:
+
+- A new config whose path config-sync carries on this machine is recommended
+  **Ignore**, with the reason **Managed by config-sync**. It stays under
+  **Hidden**, and **Adopt anyway** is still there if you want it in Stow by hand.
+- A read-only group, **Also carried by config-sync**, lists the Stow-managed
+  paths config-sync also carries (a package target that is in its set). It is
+  information: no action, never counted in the status sentence, the badge or a
+  notification, and nothing is fixed for you.
+- A secret still wins: a file whose content matches a secret rule is **Never
+  stow this** even when config-sync owns its path.
+
+Where the answer comes from: the clone config-sync already has, read once per
+`status` with `git ls-files` (a 2 s timeout and a 20 000-file cap). Its tracked
+paths are mapped back with the same tables config-sync's own scanner uses —
+`hypr/*.lua|conf`, `omarchy/{branding,extensions,hooks,agents}`,
+`omarchy/shell.json`, `omarchy/shell.toml`, `omarchy/themes/<slug>`, the theme
+name, `terminals/*`, `bin/<name>` and `plugins/<id>` — and compared with the
+home path Stow would link, never with `realpath`. Stow Sync never imports
+config-sync and never runs a config-sync action.
+
+Two exceptions keep ownership honest:
+
+- **`machine_local` wins.** A path under `machine_local` in the clone's
+  `.omarchy-config.json` (today `terminals/ghostty.config`) plus `hypr/monitors.lua`
+  is *not* owned here, so Ghostty keeps being offered to Stow Sync.
+- **A folder is owned only when every file in it is owned.** One file that is
+  not config-sync's keeps the whole folder as an ordinary candidate. A `*.bak*`
+  name or a dotfile is not config-sync material, so it neither owns nor blocks a
+  folder, and on its own it still gets today's "backup file" reason.
+
+config-sync is optional: when the plugin or its clone is missing, unreadable or
+erroring, Stow Sync behaves exactly as before, with no extra cost.
+
+If you added `ignore` entries for config-sync's paths, the ones for
+`~/.local/bin/hyprglass-bar`, `~/.config/alacritty`, `~/.config/kitty` and
+`~/.config/foot` are no longer needed — the ownership rule hides them with a
+clearer reason. Keep any entry that covers something config-sync does not
+carry, such as `~/.config/omarchy-backup.*`: that folder is config-sync's Apply
+backup and never travels in its repo.
 
 ## New machine
 
@@ -590,6 +636,10 @@ private repository. `notify-send` is optional and only used when
 
 ## Known limitations
 
+- **config-sync ownership is best-effort.** Stow Sync reads the paths
+  config-sync's clone tracks; a file config-sync would publish but has not
+  committed yet is not in that set, so it can still be offered once. Any error
+  reading the clone means "no config-sync" and today's behaviour.
 - **Omarchy can rewrite `~/.config/ghostty/config`.** The Text size slider
   (`omarchy-display-text-size`) and `omarchy-font-set` edit that file in place
   with `sed -i`, which replaces the Stow symlink with a regular file. Stow Sync
