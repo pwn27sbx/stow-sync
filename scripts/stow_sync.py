@@ -2061,15 +2061,28 @@ def _config_sync_clone_path() -> str:
     return default
 
 
-def _config_sync_machine_local(clone: str) -> set[str]:
-    """Repo paths the marker keeps machine-local, plus config-sync's defaults."""
-    paths = set(CONFIG_SYNC_MACHINE_LOCAL)
+def _config_sync_machine_local(clone: str) -> set[str] | None:
+    """Repo paths the marker keeps machine-local, plus config-sync's defaults.
+
+    ``None`` when the marker exists but cannot be read or parsed. A marker that
+    is there is the machine's own statement of what stays local, so an
+    unreadable one must never let a path it was meant to keep local look owned:
+    the caller treats config-sync as absent instead of guessing. A clone with
+    no marker at all keeps config-sync's own defaults, which is exactly what
+    config-sync itself does.
+    """
+    marker = os.path.join(clone, CONFIG_SYNC_MARKER_NAME)
+    if not os.path.lexists(marker):
+        return set(CONFIG_SYNC_MACHINE_LOCAL)
     try:
-        text = read_text_bounded(os.path.join(clone, CONFIG_SYNC_MARKER_NAME), MAX_CONFIG_BYTES)
+        text = read_text_bounded(marker, MAX_CONFIG_BYTES)
         data = json.loads(text) if text else {}
     except (CommandError, ValueError):
-        return paths
-    extra = data.get("machine_local") if isinstance(data, dict) else None
+        return None
+    if not isinstance(data, dict):
+        return None
+    paths = set(CONFIG_SYNC_MACHINE_LOCAL)
+    extra = data.get("machine_local")
     if not isinstance(extra, list):
         return paths
     for item in extra:
@@ -2154,6 +2167,10 @@ def config_sync_owned_paths() -> set[str] | None:
     if len(rels) > CONFIG_SYNC_MAX_FILES:
         return None
     excluded = _config_sync_machine_local(clone)
+    if excluded is None:
+        # A marker that cannot be parsed is an error like any other: degrade to
+        # "absent" rather than own a path the marker may have kept local.
+        return None
     home = _home_dir()
     owned: set[str] = set()
     for rel in rels:

@@ -382,7 +382,9 @@ Two exceptions keep ownership honest:
 
 - **`machine_local` wins.** A path under `machine_local` in the clone's
   `.omarchy-config.json` (today `terminals/ghostty.config`) plus `hypr/monitors.lua`
-  is *not* owned here, so Ghostty keeps being offered to Stow Sync.
+  is *not* owned here, so Ghostty keeps being offered to Stow Sync. If that
+  marker exists but cannot be read, Stow Sync treats config-sync as absent
+  instead of guessing what stayed local.
 - **A folder is owned only when every file in it is owned.** One file that is
   not config-sync's keeps the whole folder as an ordinary candidate. A `*.bak*`
   name or a dotfile is not config-sync material, so it neither owns nor blocks a

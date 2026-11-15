@@ -3674,6 +3674,30 @@ class ConfigSyncOwnershipTests(ConfigSyncTestBase):
         self.assertNotIn(str(self.home / ".config" / "ghostty" / "config"), owned)
         self.assertNotEqual(self.candidates()["~/.config/ghostty"]["reason"], ss.CONFIG_SYNC_REASON)
 
+    def test_an_unreadable_marker_means_absent(self) -> None:
+        # The marker is this machine's own statement of what stays local, so a
+        # marker that cannot be parsed must never turn a machine-local path into
+        # an owned one: the whole answer degrades to "absent".
+        config_sync_plugin(self.home)
+        clone = config_sync_clone()
+        write(clone / "terminals" / "ghostty.config", "carried\n")
+        write(clone / ".omarchy-config.json", "{not json\n")
+        git(clone, "add", "-A")
+        git(
+            clone,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "broken marker",
+        )
+        write(self.home / ".config" / "ghostty" / "config", "font-size = 11\n")
+        write_config(self.config, [], watch=["~/.config"])
+        self.assertIsNone(ss.config_sync_owned_paths())
+        self.assertNotEqual(self.candidates()["~/.config/ghostty"]["reason"], ss.CONFIG_SYNC_REASON)
+
     def test_hypr_monitors_is_machine_local_by_default(self) -> None:
         self.install(["hypr/input.lua", "hypr/monitors.lua"])
         owned = ss.config_sync_owned_paths()
