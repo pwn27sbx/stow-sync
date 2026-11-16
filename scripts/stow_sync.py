@@ -6020,7 +6020,10 @@ def cmd_setup_apply(
         return {"ok": False, "error": SETUP_PLAN_ERROR}
     try:
         recipe = load_setup_recipe_file(expand_path(recipe_path))
-        fresh_plan = build_setup_plan(recipe)
+        # Rebuild with the same machine overrides the plan was built with, or a
+        # plan that skips a package on this host never matches (B2).
+        machine = machine_overrides_for(config_path)
+        fresh_plan = build_setup_plan(recipe, machine["skip_packages"])
     except CommandError:
         return {"ok": False, "error": SETUP_PLAN_ERROR}
     if _setup_plan_canonical(fresh_plan) != stored["canonical"]:

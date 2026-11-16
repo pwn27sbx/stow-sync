@@ -7702,6 +7702,35 @@ class SetupPlanMachineSkipTests(SetupTestBase):
         self.assertIn("app", packages)
         self.assertNotIn("machine_error", plan)
 
+    def test_apply_revalidates_with_the_same_machine_skips(self) -> None:
+        """B2: the plan Apply revalidates is built with this machine's skips."""
+        host = ss.current_hostname()
+        config = self.home / ".config" / "stow-sync" / "config.json"
+        write(config, json.dumps({"version": 1, "machines": {host: {"skip_packages": ["app"]}}}))
+        plan = self.plan()
+        self.assertTrue(plan["ok"], plan)
+        self.assertNotIn("app", [entry["package"] for entry in plan["plan"]["link"]])
+        applied = self.apply(plan["token"])
+        self.assertTrue(applied["ok"], applied)
+        # The skipped package is not linked and its target is left untouched.
+        self.assertNotIn("app", [entry["package"] for entry in applied["packages"]])
+        self.assertFalse((self.home / ".config" / "app" / "conf").is_symlink())
+        self.assertFalse((self.home / ".config" / "app" / "conf").exists())
+        self.assertTrue((self.home / ".config" / "fish" / "config.fish").is_symlink())
+
+    def test_a_changed_machine_skip_still_invalidates_the_stored_plan(self) -> None:
+        host = ss.current_hostname()
+        config = self.home / ".config" / "stow-sync" / "config.json"
+        write(config, json.dumps({"version": 1, "machines": {host: {"skip_packages": ["app"]}}}))
+        plan = self.plan()
+        self.assertTrue(plan["ok"], plan)
+        # The effective selection changes: app is linked again and fish is skipped.
+        write(config, json.dumps({"version": 1, "machines": {host: {"skip_packages": ["fish"]}}}))
+        stale = self.apply(plan["token"])
+        self.assertFalse(stale["ok"], stale)
+        self.assertEqual(stale["error"], "The setup plan changed. Review it again.")
+        self.assertFalse((self.home / ".config" / "app" / "conf").exists())
+
 
 # --------------------------------------------------------------------------
 # 0.3.1 S1/S2/C1/C3/C5: the panel surfaces (QML source regressions)
