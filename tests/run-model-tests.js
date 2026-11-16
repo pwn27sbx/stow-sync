@@ -545,6 +545,37 @@ test("queue helpers tolerate missing input", () => {
   same(empty.queue, [])
 })
 
+test("runnerSettle settles a failed start exactly once", () => {
+  // Nothing in flight: a stop event has nothing to settle.
+  same(Model.runnerSettle({ hasCurrent: false, timedOut: false, settled: false }), {
+    settle: false,
+    reason: "idle"
+  })
+  // The watchdog already answered and cleared its invocation.
+  same(Model.runnerSettle({ hasCurrent: false, timedOut: true, settled: false }), {
+    settle: false,
+    reason: "idle"
+  })
+  // A normal completion produced its result before the stop event.
+  same(Model.runnerSettle({ hasCurrent: true, timedOut: false, settled: true }), {
+    settle: false,
+    reason: "settled"
+  })
+  // A timeout owns the invocation: the watchdog reported it.
+  same(Model.runnerSettle({ hasCurrent: true, timedOut: true, settled: false }), {
+    settle: false,
+    reason: "timed-out"
+  })
+  // Native FailedToStart: `current` is still held and nothing produced a result.
+  same(Model.runnerSettle({ hasCurrent: true, timedOut: false, settled: false }), {
+    settle: true,
+    reason: "failed-start"
+  })
+  // Missing/partial input never settles: only explicit booleans count.
+  same(Model.runnerSettle(null), { settle: false, reason: "idle" })
+  same(Model.runnerSettle({}), { settle: false, reason: "idle" })
+})
+
 // --- heroState / primaryAction (Unit 4c) ---------------------------------
 
 const HERO = fixture("hero-cases.json")

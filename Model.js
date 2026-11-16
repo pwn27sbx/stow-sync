@@ -1659,6 +1659,20 @@ function nextRequest(queue) {
   return { request: pending.shift(), queue: pending }
 }
 
+// Decide what a Process stop event means for the invocation that just ended.
+// Quickshell reports a native FailedToStart as nothing but `running false`: no
+// output, no exit. The Runner therefore has to settle it itself, exactly once,
+// and only for an invocation that is still held (`hasCurrent`), was not
+// already answered by the watchdog (`timedOut`) and did not already produce a
+// terminal result (`settled`, i.e. this invocation's id was marked).
+function runnerSettle(state) {
+  var s = state || {}
+  if (s.hasCurrent !== true) return { settle: false, reason: "idle" }
+  if (s.timedOut === true) return { settle: false, reason: "timed-out" }
+  if (s.settled === true) return { settle: false, reason: "settled" }
+  return { settle: true, reason: "failed-start" }
+}
+
 // --------------------------------------------------------------------------
 // Unit 4d: config-sync parity view models. All pure, all tested.
 //

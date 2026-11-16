@@ -6339,6 +6339,36 @@ class SettingsReadyGateTests(unittest.TestCase):
         self.assertIn("Model.runnerMayStart", runner)
 
 
+class RunnerFailedStartTests(unittest.TestCase):
+    """B1: a native FailedToStart settles its invocation exactly once and the
+    queue keeps working, with the real Quickshell Process (offscreen qs)."""
+
+    def test_a_failed_start_settles_and_the_next_requests_complete(self) -> None:
+        if shutil.which("qs") is None:
+            self.skipTest("qs is not installed")
+        runtime_dir = tempfile.mkdtemp(prefix="stow-sync-qs-")
+        self.addCleanup(shutil.rmtree, runtime_dir, True)
+        home = tempfile.mkdtemp(prefix="stow-sync-qs-home-")
+        self.addCleanup(shutil.rmtree, home, True)
+        env = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "DISPLAY")}
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        env["QT_QPA_PLATFORMTHEME"] = ""
+        env["XDG_RUNTIME_DIR"] = runtime_dir
+        env["HOME"] = home
+        env["STOW_SYNC_TEST_RUNNER"] = str(ROOT / "Runner.qml")
+        env["STOW_SYNC_TEST_STUB"] = str(ROOT / "tests" / "fixtures" / "runner_stub.py")
+        proc = subprocess.run(
+            ["timeout", "30", "qs", "-p", str(ROOT / "tests" / "runner_failed_start.qml")],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        self.assertIn("PASS", output, output)
+        self.assertNotIn("FAIL", output, output)
+
+
 class SetupRealHomeRefusalTests(unittest.TestCase):
     """The backend refuses mutating setup commands on the real HOME unless the
     caller passes an explicit --state-dir or opts in (README 10.0 incident)."""

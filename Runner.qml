@@ -16,6 +16,9 @@ Item {
   // Set true only by BarWidget.injectPanel(); nothing starts before then, so a
   // request never runs the helper with the default (real) config (README 11a fix).
   property bool settingsReady: false
+  // The interpreter is a property so the offscreen harness can point it at a
+  // path that fails to start (B1); production keeps the default.
+  property string python: "python3"
 
   // The payload parameter is `result`, not `data`: `data` is Item's default
   // property and a signal parameter of that name shadows it.
@@ -28,6 +31,13 @@ Item {
   property var queue: []
   property var current: null
   property bool timedOut: false
+  // Every dequeued request gets an increasing id. `activeId` is the id of the
+  // invocation that owns the Process right now, and `settledId` the id whose
+  // terminal result was already delivered, so a stop event can never settle an
+  // invocation twice or a new request with an old invocation's outcome.
+  property int nextRequestId: 1
+  property int activeId: 0
+  property int settledId: 0
 
   function setting(name, fallback) {
     var value = root.settings ? root.settings[name] : undefined
@@ -97,12 +107,16 @@ Item {
     if (proc.running || root.current !== null) return
     var next = Model.nextRequest(root.queue)
     if (!next.request) return
-    root.current = next.request
+    var request = next.request
+    request.id = root.nextRequestId
+    root.nextRequestId = root.nextRequestId + 1
+    root.current = request
+    root.activeId = request.id
     root.queue = next.queue
     root.timedOut = false
     // Open the write channel before starting so the helper can read stdin.
     proc.stdinEnabled = true
-    var argv = ["python3", "-u", root.scriptPath].concat(root.globalArgs()).concat(root.current.args)
+    var argv = [root.python, "-u", root.scriptPath].concat(root.globalArgs()).concat(root.current.args)
     // The panel's own apply/undo is the real (non-test) path: opt in explicitly
     // so the backend's real-HOME guard allows it (README 10.0).
     if (root.current.tag === "setup-apply" || root.current.tag === "setup-undo")
@@ -124,6 +138,9 @@ Item {
   function handle(text) {
     var request = root.current
     if (!request) return
+    // Only the invocation that owns the Process may deliver its result.
+    if (request.id !== root.activeId) return
+    root.settledId = request.id
     var raw = String(text || "").trim()
     if (raw.length > 5 * 1024 * 1024) {
       root.failed(request.tag, "Stow Sync response exceeded the buffer limit.")
@@ -154,9 +171,24 @@ Item {
 
   function afterStop() {
     // The process has actually stopped. `pump` no-ops while a run is still in
-    // `current`, so a normal completion is advanced by `finish` and a timeout
-    // is restarted here once the terminated process has finished.
+    // `current`, so a normal completion is advanced by `finish`, a timeout is
+    // restarted here once the terminated process has finished, and a native
+    // FailedToStart (which emits nothing but this stop) is settled here.
+    var request = root.current
+    var decision = Model.runnerSettle({
+      hasCurrent: request !== null,
+      timedOut: root.timedOut,
+      settled: request !== null && request.id === root.settledId
+    })
     if (root.timedOut) root.timedOut = false
+    if (decision.settle) {
+      timeoutTimer.stop()
+      root.settledId = request.id
+      root.current = null
+      root.failed(request.tag, "The Stow Sync helper could not start.")
+      root.pump()
+      return
+    }
     root.pump()
   }
 
@@ -184,6 +216,7 @@ Item {
       if (!proc.running || !root.current) return
       var tag = root.current.tag
       root.timedOut = true
+      root.settledId = root.current.id
       root.current = null
       proc.running = false
       root.failed(tag, "Stow Sync helper timed out")
