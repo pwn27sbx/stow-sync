@@ -2254,6 +2254,31 @@ test("setupUndoResult keys off undone and names a failed unit", () => {
   assert.ok(done.lines.some((l) => l.label === "1 service disabled"))
 })
 
+test("setupUndoProblems names each failed unit for the backups view", () => {
+  const pending = {
+    ok: true, undone: false, backup: "b",
+    unstowed: [], restored: [],
+    refused: [{ package: "fish" }],
+    errors: [{ path: "~/.config/x", error: "busy" }],
+    services_disabled: [
+      { unit: "ai-tools-check.timer", ok: false, error: "systemctl timed out" },
+      { unit: "sync.service", ok: true, error: null }
+    ]
+  }
+  same(Model.setupUndoProblems(pending), [
+    { label: "ai-tools-check.timer", detail: "systemctl timed out", tone: "urgent" },
+    { label: "fish", detail: "refused", tone: "urgent" },
+    { label: "~/.config/x", detail: "busy", tone: "urgent" }
+  ])
+  // A failed unit with no error text still says why it matters.
+  same(Model.setupUndoProblems({ undone: false, services_disabled: [{ unit: "a.timer", ok: false }] }),
+    [{ label: "a.timer", detail: "still enabled", tone: "urgent" }])
+  // A finished undo, an empty result and a failed call have no problem lines.
+  same(Model.setupUndoProblems({ ok: true, undone: true, services_disabled: [{ unit: "a.timer", ok: true }] }), [])
+  same(Model.setupUndoProblems(null), [])
+  same(Model.setupUndoProblems({ ok: false, error: "x" }), [])
+})
+
 test("setupUndoSummary never claims undone when the backend says pending", () => {
   assert.equal(
     Model.setupUndoSummary({

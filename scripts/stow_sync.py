@@ -5508,12 +5508,13 @@ def _service_stopped_and_disabled(unit: str) -> bool:
     """
     try:
         active = run_bounded(["systemctl", "--user", "is-active", unit], 10)
-        enabled = run_bounded(["systemctl", "--user", "is-enabled", unit], 10)
     except (subprocess.TimeoutExpired, OSError):
         return False
     if _decode(active.stdout).strip() == "active":
         return False
-    return _decode(enabled.stdout).strip() in ("disabled", "not-found")
+    # The same reading as everywhere else: an empty answer is a unit systemd no
+    # longer knows (older systemd prints nothing for it).
+    return _systemctl_state(unit) in ("disabled", "not-found")
 
 
 def _build_setup_services(recipe: dict[str, Any]) -> list[dict[str, Any]]:

@@ -21,6 +21,9 @@ Column {
   signal doneRequested()
 
   readonly property string undoSummary: Model.setupUndoSummary(root.undoResult)
+  // What still holds a pending Undo, by name (B3): the summary counts, these
+  // say which unit and why, so a retry from this view is never blind.
+  readonly property var undoProblems: Model.setupUndoProblems(root.undoResult)
 
   width: parent ? parent.width : 0
   spacing: Style.spacing.lg
@@ -43,11 +46,26 @@ Column {
     visible: root.undoSummary !== ""
     textFormat: Text.PlainText
     text: root.undoSummary
-    color: Color.accent
+    color: root.undoResult !== null && root.undoResult.undone === true ? Color.accent : Color.urgent
     font.family: Style.font.family
     font.pixelSize: Style.font.bodySmall
     font.bold: true
     wrapMode: Text.WordWrap
+  }
+
+  Repeater {
+    model: root.undoProblems
+
+    Text {
+      required property var modelData
+      width: root.width
+      textFormat: Text.PlainText
+      text: String(modelData.label) + (String(modelData.detail) !== "" ? "  \u00b7  " + String(modelData.detail) : "")
+      color: Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      wrapMode: Text.WordWrap
+    }
   }
 
   Text {

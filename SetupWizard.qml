@@ -198,7 +198,7 @@ Item {
             foreground: Color.urgent
             bordered: true
             verticalPadding: Style.space(8)
-            visible: flow.mode === "wizard" && flow.step === 4 && flow.applyResult !== null && String(flow.applyResult.backup || "") !== "" && flow.undoResult === null
+            visible: flow.mode === "wizard" && flow.step === 4 && flow.applyResult !== null && String(flow.applyResult.backup || "") !== "" && (flow.undoResult === null || flow.undoResult.undone !== true)
             enabled: !root.busy
             onClicked: flow.requestUndo(String(flow.applyResult.backup || ""))
           }

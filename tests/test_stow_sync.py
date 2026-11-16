@@ -5608,6 +5608,47 @@ class SetupUndoTests(SetupTestBase):
         self.assertFalse(fish.is_symlink())
         self.assertTrue(self._manifest(result["backup"]).get("undone"))
 
+    def test_a_timed_out_service_shutdown_keeps_undo_pending(self) -> None:
+        result = self._apply()
+        real = ss.run_bounded
+
+        def hanging_disable(argv, *args, **kwargs):
+            if list(argv[:4]) == ["systemctl", "--user", "disable", "--now"]:
+                raise subprocess.TimeoutExpired(argv, 60)
+            if list(argv[:3]) == ["systemctl", "--user", "is-active"]:
+                return subprocess.CompletedProcess(argv, 0, b"active\n", b"")
+            if list(argv[:3]) == ["systemctl", "--user", "is-enabled"]:
+                return subprocess.CompletedProcess(argv, 0, b"enabled\n", b"")
+            return real(argv, *args, **kwargs)
+
+        with patch.object(ss, "run_bounded", side_effect=hanging_disable):
+            undo = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertTrue(undo["ok"], undo)
+        self.assertFalse(undo["undone"], undo)
+        self.assertEqual(undo["services_disabled"][0]["error"], "systemctl timed out")
+        self.assertEqual(undo["unstowed"], [])
+        self.assertTrue((self.home / ".config" / "fish" / "config.fish").is_symlink())
+        self.assertFalse(self._manifest(result["backup"]).get("undone"))
+
+    def test_a_gone_unit_that_prints_no_state_confirms_the_shutdown(self) -> None:
+        # An older systemd prints nothing for a unit it no longer knows; the
+        # same rule as _systemctl_state reads that as not-found.
+        result = self._apply()
+        script = self.env.fakebin / "systemctl"
+        write(
+            script,
+            "#!/bin/sh\n"
+            'case "$*" in\n'
+            "  *is-active*) echo inactive ;;\n"
+            "  *is-enabled*) exit 1 ;;\n"
+            '  *disable*) echo "Unit ai-tools-check.timer not loaded." >&2; exit 1 ;;\n'
+            "esac\n"
+            "exit 0\n",
+        )
+        os.chmod(script, 0o755)
+        undo = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertTrue(undo["undone"], undo)
+
     def test_a_gone_unit_confirms_the_shutdown_after_a_nonzero_disable(self) -> None:
         result = self._apply()
         script = self.env.fakebin / "systemctl"
@@ -6439,6 +6480,20 @@ class SetupUndoSurfaceTests(unittest.TestCase):
         self.assertIn('"This setup was undone.', report)
         self.assertIn("root.undone", report)
         self.assertIn('(root.undone ? "  \\u00b7  undone" : "")', report)
+
+
+    def test_setup_backups_names_each_failed_unit(self) -> None:
+        backups = (ROOT / "SetupBackups.qml").read_text(encoding="utf-8")
+        self.assertIn("readonly property var undoProblems: Model.setupUndoProblems(root.undoResult)", backups)
+        self.assertIn("model: root.undoProblems", backups)
+        self.assertIn("color: Color.urgent", backups)
+        # A pending undo is not shown in the success colour.
+        self.assertIn("color: root.undoResult !== null && root.undoResult.undone === true ? Color.accent : Color.urgent", backups)
+
+    def test_wizard_keeps_undo_while_the_backend_says_pending(self) -> None:
+        wizard = (ROOT / "SetupWizard.qml").read_text(encoding="utf-8")
+        self.assertIn("(flow.undoResult === null || flow.undoResult.undone !== true)", wizard)
+        self.assertNotIn("&& flow.undoResult === null\n", wizard)
 
 
 class RunnerDeadlineTests(unittest.TestCase):

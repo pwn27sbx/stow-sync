@@ -3389,6 +3389,18 @@ function setupUndoResult(results) {
   return { backup: String(r.backup || ""), lines: lines, ok: ok, undone: undone }
 }
 
+// The problems of an Undo, one urgent line each: a unit whose shutdown failed
+// (with its error), a refused package, a file that could not be restored. The
+// backups view shows them under its summary, so a pending Undo always names
+// what is holding it (B3). Same lines as the Report card, never a second rule.
+function setupUndoProblems(results) {
+  if (results === null || results === undefined || (results || {}).ok === false) return []
+  var lines = setupUndoResult(results).lines
+  var problems = []
+  for (var i = 0; i < lines.length; i++) if (lines[i].tone === "urgent") problems.push(lines[i])
+  return problems
+}
+
 var setupWizardSteps = ["Check", "Connect", "Review", "Apply", "Report"]
 
 function setupStepName(index) {

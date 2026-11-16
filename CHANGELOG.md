@@ -84,8 +84,10 @@ All notable changes to Stow Sync. The format follows
   **Setup undone**. Undo now confirms every shutdown before it unstows anything
   (a unit that no longer exists counts as stopped), answers with the failed
   unit and its error as an urgent line, keeps the backup pending and finishes on
-  a retry. A refused or errored Undo no longer claims the setup is undone
-  either.
+  a retry. **Setup backups** names each unit still holding a pending Undo, with
+  its error, under the summary, and the wizard keeps **Undo this setup** until
+  the backend says the setup is undone. A refused or errored Undo no longer
+  claims the setup is undone either.
 - **Publish no longer dies before git finishes.** The Publish steps asked for 30
   seconds while git is allowed 300 for a push and several sequential calls for a
   commit, so a slow push was killed and its git left running. One table now
