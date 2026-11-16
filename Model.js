@@ -2808,17 +2808,26 @@ function setupLine(backups, opts) {
 
 // Plain one-line undo summary for the backups list (finding 80), mirroring the
 // Report card: "Setup undone · 17 packages unlinked · 16 files restored · 1
-// service disabled". Empty when the undo failed or produced no result.
+// service disabled". Empty when the undo failed or produced no result. Only the
+// backend's explicit `undone` makes it claim the setup is undone (B3).
 function setupUndoSummary(results) {
   var r = results || {}
   if (results === null || results === undefined || r.ok === false) return ""
-  var parts = ["Setup undone"]
+  var undone = r.undone === true
+  var parts = [undone ? "Setup undone" : "Setup not undone"]
   var pkgs = (r.unstowed || []).length
   if (pkgs > 0) parts.push(pluralCount(pkgs, "package") + " unlinked")
   var files = (r.restored || []).length
   if (files > 0) parts.push(pluralCount(files, "file") + " restored")
-  var services = (r.services_disabled || []).length
+  var services = 0
+  var pending = 0
+  var disabled = r.services_disabled || []
+  for (var i = 0; i < disabled.length; i++) {
+    if ((disabled[i] || {}).ok === false) pending++
+    else services++
+  }
   if (services > 0) parts.push(pluralCount(services, "service") + " disabled")
+  if (pending > 0) parts.push(pluralCount(pending, "service") + " still enabled")
   return parts.join(" \u00b7 ")
 }
 
@@ -3259,7 +3268,9 @@ function setupCloneProgress(progress) {
   }
 }
 
-// Undo result card data (README 11b.3).
+// Undo result card data (README 11b.3). A failed service shutdown keeps the
+// Undo pending: it never counts as disabled and its unit and error show as an
+// urgent line (B3).
 function setupUndoResult(results) {
   var r = results || {}
   var unstowed = r.unstowed || []
@@ -3267,13 +3278,28 @@ function setupUndoResult(results) {
   var disabled = r.services_disabled || []
   var refused = r.refused || []
   var errors = r.errors || []
+  var undone = r.undone === true
   var lines = []
+  var confirmed = 0
+  for (var d = 0; d < disabled.length; d++) {
+    var service = disabled[d] || {}
+    if (service.ok === false) {
+      lines.push({
+        label: String(service.unit || ""),
+        detail: String(service.error || "still enabled"),
+        tone: "urgent"
+      })
+      continue
+    }
+    confirmed++
+  }
   if (unstowed.length > 0) lines.push({ label: pluralCount(unstowed.length, "package") + " unlinked", detail: "", tone: "muted" })
   if (restored.length > 0) lines.push({ label: pluralCount(restored.length, "file") + " restored", detail: "", tone: "muted" })
-  if (disabled.length > 0) lines.push({ label: pluralCount(disabled.length, "service") + " disabled", detail: "", tone: "muted" })
+  if (confirmed > 0) lines.push({ label: pluralCount(confirmed, "service") + " disabled", detail: "", tone: "muted" })
   for (var i = 0; i < refused.length; i++) lines.push({ label: String(refused[i].package || refused[i].path || ""), detail: "refused", tone: "urgent" })
   for (var e = 0; e < errors.length; e++) lines.push({ label: String(errors[e].path || ""), detail: String(errors[e].error || "error"), tone: "urgent" })
-  return { backup: String(r.backup || ""), lines: lines, ok: results !== null && r.ok !== false }
+  var ok = results !== null && results !== undefined && r.ok !== false && undone
+  return { backup: String(r.backup || ""), lines: lines, ok: ok, undone: undone }
 }
 
 var setupWizardSteps = ["Check", "Connect", "Review", "Apply", "Report"]

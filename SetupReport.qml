@@ -23,6 +23,10 @@ Column {
 
   readonly property var sections: (root.report && root.report.sections) || []
   readonly property var undo: Model.setupUndoResult(root.undoResult)
+  // Only the backend's explicit `undone` makes the UI say the setup is undone;
+  // a pending undo (a failed service shutdown, a refusal) keeps the history
+  // live and the sentence honest (B3/A6).
+  readonly property bool undone: root.undoResult !== null && root.undo.ok
 
   width: parent ? parent.width : 0
   spacing: Style.spacing.lg
@@ -54,7 +58,7 @@ Column {
   Text {
     width: parent.width
     textFormat: Text.PlainText
-    text: root.undoResult !== null
+    text: root.undone
       ? "This setup was undone. Everything below is what it did before you undid it."
       : (root.report && root.report.stepsOnly
         ? "Steps finished. Everything below is what Stow Sync ran on this machine."
@@ -239,7 +243,7 @@ Column {
     width: parent.width
     visible: root.report !== null && root.report.backup !== ""
     textFormat: Text.PlainText
-    text: "Backup " + String(root.report ? root.report.backup : "") + (root.undoResult !== null ? "  \u00b7  undone" : "")
+    text: "Backup " + String(root.report ? root.report.backup : "") + (root.undone ? "  \u00b7  undone" : "")
     color: Util.alpha(root.foreground, 0.72)
     font.family: Style.font.family
     font.pixelSize: Style.font.caption

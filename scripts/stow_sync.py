@@ -5419,6 +5419,23 @@ def _systemctl_state(unit: str) -> str | None:
     return state or "not-found"
 
 
+def _service_stopped_and_disabled(unit: str) -> bool:
+    """True when ``unit`` is confirmed stopped and disabled (or gone).
+
+    ``systemctl --user disable --now`` can exit non-zero for a unit that no
+    longer exists. Undo needs a real state check, not just the exit code, before
+    it unstows: a still-enabled unit leaves a dangling ``*.wants`` link (B3).
+    """
+    try:
+        active = run_bounded(["systemctl", "--user", "is-active", unit], 10)
+        enabled = run_bounded(["systemctl", "--user", "is-enabled", unit], 10)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    if _decode(active.stdout).strip() == "active":
+        return False
+    return _decode(enabled.stdout).strip() in ("disabled", "not-found")
+
+
 def _build_setup_services(recipe: dict[str, Any]) -> list[dict[str, Any]]:
     services: list[dict[str, Any]] = []
     for unit in recipe["services"]:
@@ -6290,7 +6307,27 @@ def cmd_setup_undo(
         except OSError as exc:
             ok = False
             error = _shorten(str(exc))
+        if not ok and _service_stopped_and_disabled(unit):
+            # A non-zero disable still counts when the unit is really gone.
+            ok = True
+            error = None
         services_disabled.append({"unit": unit, "ok": ok, "error": error})
+
+    if any(entry["ok"] is not True for entry in services_disabled):
+        # Never unstow behind a service that is still enabled: the `*.wants`
+        # link would dangle (finding 28) and Undo would be recorded as done
+        # while the shutdown failed. Stay pending; a retry re-runs the
+        # idempotent `disable --now` (B3).
+        return {
+            "ok": True,
+            "undone": False,
+            "backup": backup_id,
+            "unstowed": [],
+            "refused": [],
+            "restored": [],
+            "errors": [],
+            "services_disabled": services_disabled,
+        }
 
     unstowed: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
@@ -6359,9 +6396,11 @@ def cmd_setup_undo(
     if not refused and not errors:
         manifest["undone"] = True
         _write_json_atomic(manifest_path, manifest, 0o600, prefix=".manifest-", fsync=True)
+    undone = manifest.get("undone") is True
 
     return {
         "ok": True,
+        "undone": undone,
         "backup": backup_id,
         "unstowed": unstowed,
         "refused": refused,

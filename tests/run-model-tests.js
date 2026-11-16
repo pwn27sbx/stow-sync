@@ -2201,6 +2201,48 @@ test("setupUndoResult: unlinked/restored/disabled counts and problems", () => {
   assert.equal(Model.setupUndoResult(null).ok, false)
 })
 
+test("setupUndoResult keys off undone and names a failed unit", () => {
+  const pending = Model.setupUndoResult({
+    ok: true, undone: false, backup: "b",
+    unstowed: [], restored: [], refused: [], errors: [],
+    services_disabled: [{ unit: "ai-tools-check.timer", ok: false, error: "Failed to disable unit" }]
+  })
+  assert.equal(pending.ok, false)
+  assert.ok(
+    pending.lines.some(
+      (l) => l.label === "ai-tools-check.timer" && l.detail === "Failed to disable unit" && l.tone === "urgent"
+    ),
+    JSON.stringify(pending.lines)
+  )
+  assert.ok(!pending.lines.some((l) => l.label === "1 service disabled"))
+  const done = Model.setupUndoResult({
+    ok: true, undone: true,
+    unstowed: [{ package: "a" }],
+    services_disabled: [{ unit: "t.timer", ok: true, error: null }]
+  })
+  assert.equal(done.ok, true)
+  assert.ok(done.lines.some((l) => l.label === "1 service disabled"))
+})
+
+test("setupUndoSummary never claims undone when the backend says pending", () => {
+  assert.equal(
+    Model.setupUndoSummary({
+      ok: true, undone: true,
+      unstowed: [{ package: "a" }, { package: "b" }],
+      services_disabled: [{ unit: "t.timer", ok: true }]
+    }),
+    "Setup undone \u00b7 2 packages unlinked \u00b7 1 service disabled"
+  )
+  assert.equal(
+    Model.setupUndoSummary({
+      ok: true, undone: false,
+      services_disabled: [{ unit: "t.timer", ok: false, error: "x" }]
+    }),
+    "Setup not undone \u00b7 1 service still enabled"
+  )
+  assert.equal(Model.setupUndoSummary({ ok: false, error: "x" }), "")
+})
+
 test("groupFor / nextGroupKey: Review keyboard navigation", () => {
   const groups = [{ key: "a" }, { key: "b" }, { key: "c" }]
   assert.equal(Model.nextGroupKey(groups, "", 1), "a")
@@ -2280,11 +2322,13 @@ test("setupUndoSummary: plain sentence from the undo result", () => {
   assert.equal(Model.setupUndoSummary(null), "")
   assert.equal(Model.setupUndoSummary({ ok: false }), "")
   assert.equal(
-    Model.setupUndoSummary({ ok: true, unstowed: [1, 2, 3], restored: [1], services_disabled: [1] }),
+    Model.setupUndoSummary({
+      ok: true, undone: true, unstowed: [1, 2, 3], restored: [1], services_disabled: [1]
+    }),
     "Setup undone \u00b7 3 packages unlinked \u00b7 1 file restored \u00b7 1 service disabled"
   )
   assert.equal(
-    Model.setupUndoSummary({ ok: true, unstowed: [1], restored: [], services_disabled: [] }),
+    Model.setupUndoSummary({ ok: true, undone: true, unstowed: [1], restored: [], services_disabled: [] }),
     "Setup undone \u00b7 1 package unlinked"
   )
 })

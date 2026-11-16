@@ -41,7 +41,7 @@ QtObject {
   readonly property bool running: flow.applying || flow.connectRunning
   readonly property var stepNames: Model.setupWizardSteps
   readonly property var stepRows: Model.setupStepState(flow.applyResult)
-  readonly property var report: Model.setupReport(flow.applyResult, flow.plan, flow.undoResult !== null)
+  readonly property var report: Model.setupReport(flow.applyResult, flow.plan, flow.undoResult !== null && flow.undoResult.undone === true)
   readonly property string undoSentence: flow.applyResult !== null ? Model.setupUndoSentence(flow.applyResult) : ""
 
   function start() {

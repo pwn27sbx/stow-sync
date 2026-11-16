@@ -5552,6 +5552,82 @@ class SetupUndoTests(SetupTestBase):
             log.index("stow -D"),
         )
 
+    def _install_breakable_systemctl(self, healed: Path) -> None:
+        """A systemctl whose ``disable --now`` fails until ``healed`` exists.
+
+        While it fails the unit still reports ``active``/``enabled``, so the
+        shutdown is not confirmed and Undo must stay pending (B3).
+        """
+        script = self.env.fakebin / "systemctl"
+        write(
+            script,
+            "#!/bin/sh\n"
+            f'echo "$@" >> "{self.env.systemctl_log}"\n'
+            'case "$*" in\n'
+            "  *is-active*)\n"
+            f'    if [ -f "{healed}" ]; then echo inactive; else echo active; fi ;;\n'
+            "  *is-enabled*)\n"
+            f'    if [ -f "{healed}" ]; then echo disabled; else echo enabled; fi ;;\n'
+            "  *disable*)\n"
+            f'    if [ -f "{healed}" ]; then exit 0; fi\n'
+            '    echo "Failed to disable unit: Unit is masked." >&2; exit 1 ;;\n'
+            "esac\n"
+            "exit 0\n",
+        )
+        os.chmod(script, 0o755)
+
+    def _manifest(self, backup_id: str) -> dict:
+        path = self.state / "setup-backups" / backup_id / "manifest.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_a_failed_service_shutdown_keeps_undo_pending_until_it_retries(self) -> None:
+        result = self._apply()
+        healed = self.env.root / "systemctl-healed"
+        self._install_breakable_systemctl(healed)
+        undo = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        # Undo answered, but it is not done and says which unit refused.
+        self.assertTrue(undo["ok"], undo)
+        self.assertFalse(undo["undone"], undo)
+        self.assertEqual(
+            [(entry["unit"], entry["ok"]) for entry in undo["services_disabled"]],
+            [("ai-tools-check.timer", False)],
+        )
+        self.assertIn("masked", undo["services_disabled"][0]["error"])
+        # Nothing was unstowed before the shutdown was confirmed.
+        self.assertEqual(undo["unstowed"], [])
+        fish = self.home / ".config" / "fish" / "config.fish"
+        self.assertTrue(fish.is_symlink())
+        self.assertFalse(self._manifest(result["backup"]).get("undone"))
+
+        # The retry re-runs the (idempotent) disable and only then finishes.
+        healed.write_text("ok\n", encoding="utf-8")
+        retry = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertTrue(retry["ok"], retry)
+        self.assertTrue(retry["undone"], retry)
+        self.assertTrue(all(entry["ok"] for entry in retry["services_disabled"]))
+        self.assertFalse(fish.is_symlink())
+        self.assertTrue(self._manifest(result["backup"]).get("undone"))
+
+    def test_a_gone_unit_confirms_the_shutdown_after_a_nonzero_disable(self) -> None:
+        result = self._apply()
+        script = self.env.fakebin / "systemctl"
+        write(
+            script,
+            "#!/bin/sh\n"
+            'case "$*" in\n'
+            "  *is-active*) echo inactive ;;\n"
+            "  *is-enabled*) echo not-found ;;\n"
+            '  *disable*) echo "Unit ai-tools-check.timer not loaded." >&2; exit 1 ;;\n'
+            "esac\n"
+            "exit 0\n",
+        )
+        os.chmod(script, 0o755)
+        undo = ss.dispatch(["setup-undo", "--backup", result["backup"]], None, str(self.state))
+        self.assertTrue(undo["ok"], undo)
+        self.assertTrue(undo["undone"], undo)
+        self.assertTrue(undo["services_disabled"][0]["ok"])
+        self.assertFalse((self.home / ".config" / "fish" / "config.fish").is_symlink())
+
 
 class SetupPrereqsTests(SetupTestBase):
     def prereqs(self, extra: list[str] | None = None) -> dict:
@@ -6337,6 +6413,24 @@ class SettingsReadyGateTests(unittest.TestCase):
         runner = (ROOT / "Runner.qml").read_text(encoding="utf-8")
         self.assertIn("settingsReady", runner)
         self.assertIn("Model.runnerMayStart", runner)
+
+
+class SetupUndoSurfaceTests(unittest.TestCase):
+    """B3/A6: an Undo is only shown as done when the backend says `undone`."""
+
+    def test_setup_flow_passes_the_backend_undone_flag(self) -> None:
+        flow = (ROOT / "SetupFlow.qml").read_text(encoding="utf-8")
+        self.assertIn(
+            "Model.setupReport(flow.applyResult, flow.plan, flow.undoResult !== null && flow.undoResult.undone === true)",
+            flow,
+        )
+
+    def test_setup_report_reads_the_undone_flag(self) -> None:
+        report = (ROOT / "SetupReport.qml").read_text(encoding="utf-8")
+        self.assertIn("readonly property bool undone: root.undoResult !== null && root.undo.ok", report)
+        self.assertIn('"This setup was undone.', report)
+        self.assertIn("root.undone", report)
+        self.assertIn('(root.undone ? "  \\u00b7  undone" : "")', report)
 
 
 class RunnerFailedStartTests(unittest.TestCase):
