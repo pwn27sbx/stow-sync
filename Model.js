@@ -1660,35 +1660,48 @@ function nextRequest(queue) {
 }
 
 // --------------------------------------------------------------------------
-// Runner budgets (B4). One source for the numbers: the Runner waits
-// `runnerBudgetSeconds(tag)` plus a 10 s grace, and passes
-// `--deadline (budget - 15)` down so the helper clamps its own children and
-// answers before the Runner gives up. A budget covers the longest bounded work
-// that command can legitimately do, so the deadline never cuts real work short.
+// Runner budgets (B4). One source for the numbers, and they nest:
+//   work <= deadline < budget < timeout
+// `work` is the longest bounded work that command can legitimately need, so
+// `--deadline` (= work) never cuts it short. The Runner waits the budget
+// (work + the answer reserve) plus its own grace after the helper's deadline.
+// A reviewer's CRITICAL on the first version of this table was right: a flat
+// 20 s budget left every short command only 5 s of real work.
 // --------------------------------------------------------------------------
 
-var RUNNER_BUDGET_SECONDS = {
+// Seconds the helper keeps back from its budget to answer and clean up.
+var RUNNER_DEADLINE_RESERVE_SECONDS = 15
+// Extra seconds the Runner waits after the helper's own deadline.
+var RUNNER_GRACE_SECONDS = 10
+
+// Longest bounded work per command, in seconds. A tag missing from this table
+// falls back to the plain `status` bound; the model test pins that every tag a
+// request can carry is a real entry, so the fallback is not a silent hole.
+var RUNNER_WORK_SECONDS = {
+  // One `git status` per repo; the helper's own per-call bound is 20 s.
   status: 20,
+  // A fetch per repo, bounded at 120 s by the helper.
   "status-fetch": 120,
-  // git push is bounded at 300 s; the budget adds its cleanup.
-  push: 315,
-  // Several sequential git calls (status, add, diff, commit, rev-parse), which
-  // are together well over 90 s.
-  commit: 150,
+  // git push is bounded at 300 s; the rest pays for argv and config setup.
+  push: 320,
+  // Several sequential git calls (status, ls-files, add, diff, commit,
+  // rev-parse), which are together well over 90 s.
+  commit: 130,
   // git status plus a bounded pull.
-  pull: 335,
-  adopt: 20,
-  restow: 20,
-  "restow-plan": 20,
-  ignore: 20,
-  unignore: 20,
-  skip: 20,
-  "skip-paths": 20,
-  "skip-preview": 20,
-  suggest: 20,
+  pull: 320,
+  // A stow dry run and the real run, 30 s each.
+  restow: 60,
+  "restow-plan": 60,
+  adopt: 40,
+  ignore: 40,
+  unignore: 40,
+  skip: 40,
+  "skip-paths": 40,
+  "skip-preview": 40,
+  suggest: 40,
   diff: 20,
-  version: 20,
-  baseline: 20,
+  version: 5,
+  baseline: 40,
   "setup-prereqs": 60,
   "setup-repos": 70,
   "setup-candidates": 40,
@@ -1700,15 +1713,29 @@ var RUNNER_BUDGET_SECONDS = {
   "setup-backups": 30
 }
 
-// The Publish button runs plain git commands: their budget is that command's.
+// The Publish button runs plain git commands: their work is that command's.
 var RUNNER_BUDGET_ALIASES = { "publish-push": "push", "publish-commit": "commit" }
 
-function runnerBudgetSeconds(tag) {
+function runnerWorkSeconds(tag) {
   var key = String(tag === undefined || tag === null ? "" : tag)
   var alias = RUNNER_BUDGET_ALIASES[key]
   if (alias !== undefined) key = alias
-  var seconds = RUNNER_BUDGET_SECONDS[key]
-  return seconds === undefined ? RUNNER_BUDGET_SECONDS.status : seconds
+  var seconds = RUNNER_WORK_SECONDS[key]
+  return seconds === undefined ? RUNNER_WORK_SECONDS.status : seconds
+}
+
+// What the helper is told it may spend on the whole invocation.
+function runnerDeadlineSeconds(tag) {
+  return runnerWorkSeconds(tag)
+}
+
+// What the Runner waits: the budget plus its grace after the deadline.
+function runnerBudgetSeconds(tag) {
+  return runnerWorkSeconds(tag) + RUNNER_DEADLINE_RESERVE_SECONDS
+}
+
+function runnerTimeoutMs(tag) {
+  return runnerBudgetSeconds(tag) * 1000 + RUNNER_GRACE_SECONDS * 1000
 }
 
 // Decide what a Process stop event means for the invocation that just ended.
@@ -2858,6 +2885,12 @@ function setupLine(backups, opts) {
   }
 }
 
+// One rule for one `services_disabled` record: anything but an explicit ok is a
+// pending service. Shared by the summary and the result card (review finding).
+function setupUndoServiceFailed(entry) {
+  return (entry || {}).ok === false
+}
+
 // Plain one-line undo summary for the backups list (finding 80), mirroring the
 // Report card: "Setup undone · 17 packages unlinked · 16 files restored · 1
 // service disabled". Empty when the undo failed or produced no result. Only the
@@ -2875,7 +2908,7 @@ function setupUndoSummary(results) {
   var pending = 0
   var disabled = r.services_disabled || []
   for (var i = 0; i < disabled.length; i++) {
-    if ((disabled[i] || {}).ok === false) pending++
+    if (setupUndoServiceFailed(disabled[i])) pending++
     else services++
   }
   if (services > 0) parts.push(pluralCount(services, "service") + " disabled")
@@ -3335,7 +3368,7 @@ function setupUndoResult(results) {
   var confirmed = 0
   for (var d = 0; d < disabled.length; d++) {
     var service = disabled[d] || {}
-    if (service.ok === false) {
+    if (setupUndoServiceFailed(service)) {
       lines.push({
         label: String(service.unit || ""),
         detail: String(service.error || "still enabled"),
@@ -3350,7 +3383,9 @@ function setupUndoResult(results) {
   if (confirmed > 0) lines.push({ label: pluralCount(confirmed, "service") + " disabled", detail: "", tone: "muted" })
   for (var i = 0; i < refused.length; i++) lines.push({ label: String(refused[i].package || refused[i].path || ""), detail: "refused", tone: "urgent" })
   for (var e = 0; e < errors.length; e++) lines.push({ label: String(errors[e].path || ""), detail: String(errors[e].error || "error"), tone: "urgent" })
-  var ok = results !== null && results !== undefined && r.ok !== false && undone
+  // `ok` is the card's tone, `undone` the authoritative state: a result that is
+  // not undone is never shown as a finished undo.
+  var ok = r.ok !== false && undone
   return { backup: String(r.backup || ""), lines: lines, ok: ok, undone: undone }
 }
 

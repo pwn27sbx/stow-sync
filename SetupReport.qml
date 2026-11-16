@@ -25,8 +25,8 @@ Column {
   readonly property var undo: Model.setupUndoResult(root.undoResult)
   // Only the backend's explicit `undone` makes the UI say the setup is undone;
   // a pending undo (a failed service shutdown, a refusal) keeps the history
-  // live and the sentence honest (B3/A6).
-  readonly property bool undone: root.undoResult !== null && root.undo.ok
+  // live and the sentence honest (B3/A6). Same field SetupFlow passes on.
+  readonly property bool undone: root.undoResult !== null && root.undoResult.undone === true
 
   width: parent ? parent.width : 0
   spacing: Style.spacing.lg

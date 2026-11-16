@@ -582,19 +582,28 @@ test("runnerBudgetSeconds covers every tag and aliases the publish steps", () =>
   let match
   while ((match = re.exec(source)) !== null) tags.add(match[1])
   assert.ok(tags.size > 5, "no tags found in Model.js")
-  for (const tag of tags) assert.ok(Model.runnerBudgetSeconds(tag) > 0, tag)
+  // Every tag a request can carry is a real table entry, not the fallback.
+  for (const tag of tags) {
+    const key = Model.RUNNER_BUDGET_ALIASES[tag] || tag
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(Model.RUNNER_WORK_SECONDS, key),
+      "no work bound for tag " + tag
+    )
+  }
   // Both publish steps are the plain git commands they run.
   assert.equal(Model.runnerBudgetSeconds("publish-push"), Model.runnerBudgetSeconds("push"))
   assert.equal(Model.runnerBudgetSeconds("publish-commit"), Model.runnerBudgetSeconds("commit"))
-  // The budgets the backend may spend are the ones the Runner waits for.
-  assert.equal(Model.runnerBudgetSeconds("status"), 20)
-  assert.equal(Model.runnerBudgetSeconds("status-fetch"), 120)
-  assert.equal(Model.runnerBudgetSeconds("push"), 315)
-  assert.equal(Model.runnerBudgetSeconds("commit"), 150)
+  // The deadlines nest: work <= deadline < timeout, with the named reserves.
+  for (const tag of ["status", "status-fetch", "push", "pull", "commit", "setup-apply"]) {
+    const work = Model.runnerWorkSeconds(tag)
+    assert.equal(Model.runnerDeadlineSeconds(tag), work, tag)
+    assert.equal(Model.runnerBudgetSeconds(tag), work + 15, tag)
+    assert.equal(Model.runnerTimeoutMs(tag), (work + 15 + 10) * 1000, tag)
+  }
   // A push must outlast git's own 300 s bound (B4).
-  assert.ok(Model.runnerBudgetSeconds("push") > 300)
+  assert.ok(Model.runnerDeadlineSeconds("push") > 300)
   // The commit is several sequential git calls: well over 90 s.
-  assert.ok(Model.runnerBudgetSeconds("commit") > 90)
+  assert.ok(Model.runnerDeadlineSeconds("commit") > 90)
 })
 
 // --- heroState / primaryAction (Unit 4c) ---------------------------------

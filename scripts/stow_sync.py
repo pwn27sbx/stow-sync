@@ -791,8 +791,10 @@ def detect_packages(repo_path: str) -> list[str]:
 # --------------------------------------------------------------------------
 
 _deadline_at: float | None = None
+# Only the main thread touches this registry (run_bounded and the SIGTERM
+# handler both run there), so it needs no lock: a lock held by an interrupted
+# run_bounded frame would deadlock the handler.
 _LIVE_GROUPS: set[int] = set()
-_LIVE_LOCK = threading.Lock()
 
 
 def set_deadline(seconds: float | None) -> None:
@@ -812,12 +814,13 @@ def _deadline_remaining() -> float | None:
 
 
 def _kill_live_groups() -> None:
-    with _LIVE_LOCK:
-        pids = list(_LIVE_GROUPS)
-    for pid in pids:
+    # No lock: only the main thread ever mutates _LIVE_GROUPS, and a signal
+    # handler also runs on the main thread, so a lock here would self-deadlock
+    # if SIGTERM arrived while run_bounded held it (review finding).
+    for pid in list(_LIVE_GROUPS):
         try:
             os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+        except OSError:
             pass
 
 
@@ -908,13 +911,11 @@ def run_bounded(
         cwd=cwd,
         start_new_session=True,
     )
-    with _LIVE_LOCK:
-        _LIVE_GROUPS.add(proc.pid)
+    _LIVE_GROUPS.add(proc.pid)
     try:
         return _collect_bounded(proc, argv, timeout, max_output, stdin, on_stderr)
     finally:
-        with _LIVE_LOCK:
-            _LIVE_GROUPS.discard(proc.pid)
+        _LIVE_GROUPS.discard(proc.pid)
 
 
 def _collect_bounded(
@@ -6604,12 +6605,18 @@ def extract_global_args(
 
 
 def _deadline_value(raw: str) -> float | None:
-    """Parse a ``--deadline`` value; anything unusable means no deadline."""
+    """Parse a ``--deadline`` value; a present but unusable value is an error.
+
+    Silently dropping the bound would let a command run past the deadline its
+    caller asked for while still answering normally (review finding).
+    """
     try:
         seconds = float(raw)
     except (TypeError, ValueError):
-        return None
-    return seconds if seconds > 0 else None
+        raise CommandError("--deadline needs a number of seconds") from None
+    if not seconds > 0 or seconds == float("inf"):
+        raise CommandError("--deadline needs a positive number of seconds")
+    return seconds
 
 
 def dispatch(

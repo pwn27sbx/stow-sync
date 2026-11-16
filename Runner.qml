@@ -38,6 +38,9 @@ Item {
   property int nextRequestId: 1
   property int activeId: 0
   property int settledId: 0
+  // The id whose Process actually started: a stop for any other id is a launch
+  // failure (FailedToStart emits nothing but `running false`), not a crash.
+  property int startedId: 0
 
   function setting(name, fallback) {
     var value = root.settings ? root.settings[name] : undefined
@@ -53,17 +56,16 @@ Item {
     if (configPath !== "") args = args.concat(["--config", configPath])
     if (stateDir !== "") args = args.concat(["--state-dir", stateDir])
     // The helper keeps its own monotonic deadline and clamps every child to
-    // what is left, so it answers and exits before this Runner's timeout (B4).
-    // 15 s of the budget stay for that answer and its cleanup.
-    var budget = Model.runnerBudgetSeconds(String((request || {}).tag || ""))
-    args = args.concat(["--deadline", String(budget - 15)])
+    // what is left, so it answers and exits before this Runner's timeout. The
+    // deadline is exactly the work bound; the reserves live in Model.js (B4).
+    var tag = String((request || {}).tag || "")
+    args = args.concat(["--deadline", String(Model.runnerDeadlineSeconds(tag))])
     return args
   }
 
-  // The one budget table lives in Model.runnerBudgetSeconds; this adds the
-  // 10 s grace the Runner keeps after the helper's own deadline.
+  // budget + the Runner's grace after the helper's own deadline (B4).
   function timeoutFor(request) {
-    return Model.runnerBudgetSeconds(String((request || {}).tag || "")) * 1000 + 10000
+    return Model.runnerTimeoutMs(String((request || {}).tag || ""))
   }
 
   function refreshStatus(fetch) {
@@ -178,7 +180,10 @@ Item {
       timeoutTimer.stop()
       root.settledId = request.id
       root.current = null
-      root.failed(request.tag, "The Stow Sync helper could not start.")
+      // A stop from a Process that never started is a launch failure; one from
+      // a started helper is a crash before it answered.
+      if (root.startedId === request.id) root.failed(request.tag, "The Stow Sync helper stopped before answering.")
+      else root.failed(request.tag, "The Stow Sync helper could not start.")
       root.pump()
       return
     }
@@ -194,6 +199,7 @@ Item {
     }
     stderr: StdioCollector { waitForEnd: true }
     onStarted: {
+      root.startedId = root.activeId
       if (root.current && root.current.stdin !== "") proc.write(String(root.current.stdin) + "\n")
       // Closing the write channel sends EOF, which the helper's stdin read
       // needs before it can answer.

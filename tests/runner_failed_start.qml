@@ -69,6 +69,13 @@ Item {
     function onStatusReady(result, fetch) {
       if (harness.stage !== 1) return harness.fail("status in stage " + harness.stage)
       if (!result || result.ok !== true) return harness.fail("status payload")
+      // The stub echoes its argv: the deadline the Runner passes is observable,
+      // not just asserted from source text (B4).
+      var args = (result && result.stub_args) || []
+      var at = args.indexOf("--deadline")
+      if (at < 0) return harness.fail("no --deadline in " + JSON.stringify(args))
+      if (String(args[at + 1]) !== "20") return harness.fail("status deadline " + String(args[at + 1]))
+      if (args.indexOf("status") <= at) return harness.fail("status not after deadline")
       harness.stage = 2
       loader.item.runAction("version", ["version"])
     }
@@ -77,6 +84,10 @@ Item {
       if (harness.stage !== 2) return harness.fail("action in stage " + harness.stage)
       if (String(tag) !== "version") return harness.fail("action tag " + String(tag))
       if (!result || result.ok !== true) return harness.fail("action payload")
+      var args = (result && result.stub_args) || []
+      var at = args.indexOf("--deadline")
+      if (at < 0) return harness.fail("no --deadline in " + JSON.stringify(args))
+      if (String(args[at + 1]) !== "5") return harness.fail("version deadline " + String(args[at + 1]))
       harness.pass()
     }
   }

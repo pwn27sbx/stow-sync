@@ -6416,9 +6416,11 @@ class SettingsReadyGateTests(unittest.TestCase):
 
     def test_runner_passes_its_own_budget_down_as_a_deadline(self) -> None:
         runner = (ROOT / "Runner.qml").read_text(encoding="utf-8")
-        # One source for the numbers: the table lives in Model.js (B4).
-        self.assertIn("Model.runnerBudgetSeconds", runner)
-        self.assertIn('args.concat(["--deadline", String(budget - 15)])', runner)
+        # One source for the numbers: the work table and both reserves live in
+        # Model.js (B4), and the Runner only reads them.
+        self.assertIn("Model.runnerDeadlineSeconds", runner)
+        self.assertIn("Model.runnerTimeoutMs", runner)
+        self.assertIn('args.concat(["--deadline", String(Model.runnerDeadlineSeconds(tag))])', runner)
 
 
 class SetupUndoSurfaceTests(unittest.TestCase):
@@ -6433,7 +6435,7 @@ class SetupUndoSurfaceTests(unittest.TestCase):
 
     def test_setup_report_reads_the_undone_flag(self) -> None:
         report = (ROOT / "SetupReport.qml").read_text(encoding="utf-8")
-        self.assertIn("readonly property bool undone: root.undoResult !== null && root.undo.ok", report)
+        self.assertIn("readonly property bool undone: root.undoResult !== null && root.undoResult.undone === true", report)
         self.assertIn('"This setup was undone.', report)
         self.assertIn("root.undone", report)
         self.assertIn('(root.undone ? "  \\u00b7  undone" : "")', report)
@@ -6505,6 +6507,27 @@ class RunnerDeadlineTests(unittest.TestCase):
         self.assertLess(elapsed, 7, "the helper ignored --deadline")
         self.assertEqual(self._stub_pids(), [])
 
+    def test_an_unusable_deadline_is_refused(self) -> None:
+        """A deadline the caller asked for is never silently dropped."""
+        for bad in ("abc", "0", "-5", "inf"):
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "stow_sync.py"),
+                    "version",
+                    "--deadline",
+                    bad,
+                ],
+                capture_output=True,
+                text=True,
+                env=self._env(),
+                timeout=30,
+            )
+            payload = json.loads(proc.stdout)
+            self.assertFalse(payload["ok"], bad)
+            self.assertIn("--deadline", payload["error"], bad)
+            self.assertEqual(proc.returncode, 1, bad)
+
     def test_sigterm_kills_the_child_process_group(self) -> None:
         proc = subprocess.Popen(
             [
@@ -6534,8 +6557,6 @@ class RunnerDeadlineTests(unittest.TestCase):
         while time.monotonic() < deadline and self._stub_pids():
             time.sleep(0.05)
         self.assertEqual(self._stub_pids(), [], "a child survived the SIGTERM")
-        for pid in self._stub_pids():
-            subprocess.run(["kill", "-9", pid], capture_output=True)
 
 
 class RunnerFailedStartTests(unittest.TestCase):
