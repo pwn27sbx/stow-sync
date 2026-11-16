@@ -4,9 +4,7 @@ All notable changes to Stow Sync. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the plugin uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-Aimed at 0.3.2.
+## 0.4.0 - 2026-11-15
 
 ### Added
 
@@ -69,6 +67,32 @@ Aimed at 0.3.2.
   config-sync material (its `SKIP_NAME_RE` skips `*.bak*`), so the stray backup
   does not block the kitty folder. Covered end to end by
   `tests/e2e_config_sync.py`.
+- **A helper that cannot start no longer freezes the panel.** If the helper
+  process failed to launch, its queue slot stayed taken for good and every later
+  refresh and action waited behind it until the shell was reloaded. The panel now
+  settles that one request exactly once ("The Stow Sync helper could not
+  start."), frees the queue and carries on with the next request; an answer that
+  arrives late can never be shown as another request's result.
+- **Apply accepts the plan you just reviewed on a machine that skips a package.**
+  The plan was built with this machine's `skip_packages`, but Apply rebuilt it
+  without them and refused the unchanged plan with **The setup plan changed.
+  Review it again.** It now rebuilds it the same way, so the skipped package
+  stays untouched and only a real change to the selection invalidates the plan.
+- **Undo stays pending when a service will not stop.** A failed
+  `systemctl --user disable --now`, a timeout or a start error used to be
+  recorded as a disabled service and Undo still unstowed everything and said
+  **Setup undone**. Undo now confirms every shutdown before it unstows anything
+  (a unit that no longer exists counts as stopped), answers with the failed
+  unit and its error as an urgent line, keeps the backup pending and finishes on
+  a retry. A refused or errored Undo no longer claims the setup is undone
+  either.
+- **Publish no longer dies before git finishes.** The Publish steps asked for 30
+  seconds while git is allowed 300 for a push and several sequential calls for a
+  commit, so a slow push was killed and its git left running. One table now
+  holds every budget (Publish's steps use the plain `push`/`commit` numbers),
+  the panel passes it down as a deadline, the helper clamps every child to the
+  time left so it always answers first, and a terminated helper kills its
+  children instead of orphaning them.
 
 ## 0.3.1 - 2026-11-11
 

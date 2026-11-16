@@ -531,9 +531,11 @@ requirement.
 - **Undo.** Each apply writes its manifest before every move, so a crash is still
   undoable. Undo disables the services the apply enabled, unstows the packages it
   stowed (only those), moves every backup back and refuses any destination that
-  is no longer the apply's own symlink. Run it from the Report step, or any time
-  later from the header's **Setup backups** view (each backup shows its date and
-  counts, or an "undone" marker).
+  is no longer the apply's own symlink. A service that will not stop and disable
+  keeps the Undo pending, with the unit and its error in the Report, and a retry
+  finishes it; nothing is unstowed behind a service that is still enabled. Run
+  it from the Report step, or any time later from the header's **Setup backups**
+  view (each backup shows its date and counts, or an "undone" marker).
 
 Stow links **files** into an existing folder; it does not replace the folder. For
 a package like `nvim`, Stow adds symlinks for the files the repo contains but
@@ -628,6 +630,9 @@ and, when you use the wizard, `gh`.
   repository or to a tracked config unless you press a mutating action.
 - **Processes.** Every external command runs as a fixed argument vector, never
   through a shell, with a hard timeout and a bounded, killable process group.
+  The panel's own timeout is always longer than the deadline it hands the helper,
+  the helper clamps every child to the time left so it answers first, and a
+  helper that is terminated kills its children instead of leaving them behind.
   Git runs with terminal prompts disabled, `GIT_ASKPASS=true` and
   `ssh -oBatchMode=yes`; `gh` runs with prompts disabled. Commit messages and
   other payloads go on **stdin**, never in `argv`, and a repository URL that
