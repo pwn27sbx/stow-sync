@@ -6414,6 +6414,12 @@ class SettingsReadyGateTests(unittest.TestCase):
         self.assertIn("settingsReady", runner)
         self.assertIn("Model.runnerMayStart", runner)
 
+    def test_runner_passes_its_own_budget_down_as_a_deadline(self) -> None:
+        runner = (ROOT / "Runner.qml").read_text(encoding="utf-8")
+        # One source for the numbers: the table lives in Model.js (B4).
+        self.assertIn("Model.runnerBudgetSeconds", runner)
+        self.assertIn('args.concat(["--deadline", String(budget - 15)])', runner)
+
 
 class SetupUndoSurfaceTests(unittest.TestCase):
     """B3/A6: an Undo is only shown as done when the backend says `undone`."""
@@ -6431,6 +6437,105 @@ class SetupUndoSurfaceTests(unittest.TestCase):
         self.assertIn('"This setup was undone.', report)
         self.assertIn("root.undone", report)
         self.assertIn('(root.undone ? "  \\u00b7  undone" : "")', report)
+
+
+class RunnerDeadlineTests(unittest.TestCase):
+    """B4: the backend bounds itself and answers before the Runner gives up."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="stow-sync-deadline-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = Path(self.tmp)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.fakebin = self.root / "fakebin"
+        self.fakebin.mkdir()
+        self.state = self.root / "state"
+        self.repo = self.home / "repo"
+        self.repo.mkdir()
+        self.config = self.home / ".config" / "stow-sync" / "config.json"
+        write(self.config, json.dumps({"version": 1, "repos": [{"path": "~/repo"}]}))
+        # A git that hangs: the marker (this tmp dir) is in every stub argv.
+        write(
+            self.fakebin / "git",
+            "#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n",
+        )
+        os.chmod(self.fakebin / "git", 0o755)
+        self.gitconfig = self.root / "gitconfig"
+        self.gitconfig.write_text("", encoding="utf-8")
+
+    def _env(self) -> dict:
+        env = {k: v for k, v in os.environ.items() if k != "STOW_SYNC_STATE_DIR"}
+        env["HOME"] = str(self.home)
+        env["PATH"] = str(self.fakebin) + os.pathsep + os.environ.get("PATH", "")
+        env["GIT_CONFIG_GLOBAL"] = str(self.gitconfig)
+        return env
+
+    def _stub_pids(self) -> list:
+        result = subprocess.run(
+            ["pgrep", "-f", str(self.fakebin)], capture_output=True, text=True
+        )
+        return [pid for pid in result.stdout.split() if pid.strip()]
+
+    def test_a_deadline_answers_in_time_and_leaves_no_child(self) -> None:
+        started = time.monotonic()
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "stow_sync.py"),
+                "push",
+                "--repo",
+                str(self.repo),
+                "--config",
+                str(self.config),
+                "--state-dir",
+                str(self.state),
+                "--deadline",
+                "2",
+            ],
+            capture_output=True,
+            text=True,
+            env=self._env(),
+            timeout=20,
+        )
+        elapsed = time.monotonic() - started
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["ok"], payload)
+        self.assertIn("timed out", payload["push_error"])
+        self.assertLess(elapsed, 7, "the helper ignored --deadline")
+        self.assertEqual(self._stub_pids(), [])
+
+    def test_sigterm_kills_the_child_process_group(self) -> None:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "stow_sync.py"),
+                "push",
+                "--repo",
+                str(self.repo),
+                "--config",
+                str(self.config),
+                "--state-dir",
+                str(self.state),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=self._env(),
+        )
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        # Wait until the stub is really running, then terminate the helper.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not self._stub_pids():
+            time.sleep(0.05)
+        self.assertNotEqual(self._stub_pids(), [], "the stub never started")
+        proc.terminate()
+        proc.wait(timeout=15)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and self._stub_pids():
+            time.sleep(0.05)
+        self.assertEqual(self._stub_pids(), [], "a child survived the SIGTERM")
+        for pid in self._stub_pids():
+            subprocess.run(["kill", "-9", pid], capture_output=True)
 
 
 class RunnerFailedStartTests(unittest.TestCase):

@@ -783,6 +783,57 @@ def detect_packages(repo_path: str) -> list[str]:
     return packages
 
 
+# --------------------------------------------------------------------------
+# One budget per helper invocation (B4). The Runner sends `--deadline <seconds>`
+# and keeps its own, longer timeout; every bounded child is clamped to the time
+# left, and a SIGTERM (the Runner giving up) kills the child process groups so
+# nothing is left running behind a dead helper.
+# --------------------------------------------------------------------------
+
+_deadline_at: float | None = None
+_LIVE_GROUPS: set[int] = set()
+_LIVE_LOCK = threading.Lock()
+
+
+def set_deadline(seconds: float | None) -> None:
+    """Start this invocation's monotonic budget (``None`` disables it)."""
+    global _deadline_at
+    if seconds is None:
+        _deadline_at = None
+        return
+    _deadline_at = time.monotonic() + max(0.0, float(seconds))
+
+
+def _deadline_remaining() -> float | None:
+    """Seconds left in this invocation's budget, or ``None`` when unbounded."""
+    if _deadline_at is None:
+        return None
+    return _deadline_at - time.monotonic()
+
+
+def _kill_live_groups() -> None:
+    with _LIVE_LOCK:
+        pids = list(_LIVE_GROUPS)
+    for pid in pids:
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def install_sigterm_handler() -> None:
+    """Kill every live child group before this helper dies on SIGTERM (B4)."""
+
+    def handler(signum: int, frame: Any) -> None:  # noqa: ARG001 - signal shape
+        _kill_live_groups()
+        raise SystemExit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, handler)
+    except (ValueError, OSError):
+        pass  # not the main thread: nothing to install
+
+
 def _drain_capped(
     pipe: Any,
     sink: list[bytes],
@@ -837,7 +888,17 @@ def run_bounded(
     raised. On output overflow the group is killed and the returned result's
     stderr notes the truncation with a non-zero return code. ``on_stderr``
     (optional) receives every raw stderr chunk as it arrives, for live progress.
+
+    When the invocation carries a deadline (``--deadline``, sent by the Runner),
+    ``timeout`` is clamped to the time left, so a command can never outlive the
+    budget its caller waits for (B4).
     """
+    remaining = _deadline_remaining()
+    if remaining is not None:
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        timeout = min(timeout, remaining)
+
     proc = subprocess.Popen(
         argv,
         stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
@@ -847,6 +908,24 @@ def run_bounded(
         cwd=cwd,
         start_new_session=True,
     )
+    with _LIVE_LOCK:
+        _LIVE_GROUPS.add(proc.pid)
+    try:
+        return _collect_bounded(proc, argv, timeout, max_output, stdin, on_stderr)
+    finally:
+        with _LIVE_LOCK:
+            _LIVE_GROUPS.discard(proc.pid)
+
+
+def _collect_bounded(
+    proc: subprocess.Popen[bytes],
+    argv: list[str],
+    timeout: float,
+    max_output: int,
+    stdin: str | None,
+    on_stderr: Any,
+) -> subprocess.CompletedProcess[bytes]:
+    """Drain, wait and reap one already-started child in its own group."""
 
     def kill_group() -> None:
         try:
@@ -6470,14 +6549,18 @@ COMMANDS = {
 }
 
 
-def extract_global_args(argv: list[str]) -> tuple[str | None, str | None, list[str]]:
-    """Pull the global ``--config`` and ``--state-dir`` flags out of an argv.
+def extract_global_args(
+    argv: list[str],
+) -> tuple[str | None, str | None, float | None, list[str]]:
+    """Pull the global ``--config``, ``--state-dir`` and ``--deadline`` flags.
 
-    Returns ``(config_path_or_None, state_dir_or_None, remaining_args)``. Both
-    ``--flag PATH`` and ``--flag=PATH`` are accepted.
+    Returns ``(config_path_or_None, state_dir_or_None, deadline_or_None,
+    remaining_args)``. Both ``--flag PATH`` and ``--flag=PATH`` are accepted;
+    a malformed ``--deadline`` is ignored rather than failing the command.
     """
     config_path: str | None = None
     state_dir: str | None = None
+    deadline: float | None = None
     rest: list[str] = []
     index = 0
     while index < len(argv):
@@ -6504,9 +6587,29 @@ def extract_global_args(argv: list[str]) -> tuple[str | None, str | None, list[s
             state_dir = token[len("--state-dir="):]
             index += 1
             continue
+        if token == "--deadline":
+            if index + 1 < len(argv):
+                deadline = _deadline_value(argv[index + 1])
+                index += 2
+                continue
+            index += 1
+            continue
+        if token.startswith("--deadline="):
+            deadline = _deadline_value(token[len("--deadline="):])
+            index += 1
+            continue
         rest.append(token)
         index += 1
-    return config_path, state_dir, rest
+    return config_path, state_dir, deadline, rest
+
+
+def _deadline_value(raw: str) -> float | None:
+    """Parse a ``--deadline`` value; anything unusable means no deadline."""
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
 
 
 def dispatch(
@@ -6530,7 +6633,12 @@ def dispatch(
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     try:
-        config_path, state_dir, rest = extract_global_args(args)
+        config_path, state_dir, deadline, rest = extract_global_args(args)
+        if argv is None:
+            # Only a real CLI process owns signal handling; in-process callers
+            # (tests) must not install one.
+            install_sigterm_handler()
+        set_deadline(deadline)
         if rest and rest[0] == "status" and "--short" in rest[1:]:
             # Starship integration: one plain line, not JSON (README section 7).
             text = cmd_status_short(rest[1:], config_path, state_dir)
@@ -6540,6 +6648,9 @@ def main(argv: list[str] | None = None) -> int:
         result = dispatch(rest, config_path, state_dir)
     except Exception as exc:  # noqa: BLE001 - CLI must never print a traceback to QML
         result = {"ok": False, "error": _shorten(scrub_credentials(str(exc) or exc.__class__.__name__))}
+    finally:
+        # A budget never outlives the invocation that set it.
+        set_deadline(None)
     text = json.dumps(result, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_RESPONSE_BYTES:
         result = {"ok": False, "error": "response exceeds the 2 MB limit"}

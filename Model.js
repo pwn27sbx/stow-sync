@@ -1659,6 +1659,58 @@ function nextRequest(queue) {
   return { request: pending.shift(), queue: pending }
 }
 
+// --------------------------------------------------------------------------
+// Runner budgets (B4). One source for the numbers: the Runner waits
+// `runnerBudgetSeconds(tag)` plus a 10 s grace, and passes
+// `--deadline (budget - 15)` down so the helper clamps its own children and
+// answers before the Runner gives up. A budget covers the longest bounded work
+// that command can legitimately do, so the deadline never cuts real work short.
+// --------------------------------------------------------------------------
+
+var RUNNER_BUDGET_SECONDS = {
+  status: 20,
+  "status-fetch": 120,
+  // git push is bounded at 300 s; the budget adds its cleanup.
+  push: 315,
+  // Several sequential git calls (status, add, diff, commit, rev-parse), which
+  // are together well over 90 s.
+  commit: 150,
+  // git status plus a bounded pull.
+  pull: 335,
+  adopt: 20,
+  restow: 20,
+  "restow-plan": 20,
+  ignore: 20,
+  unignore: 20,
+  skip: 20,
+  "skip-paths": 20,
+  "skip-preview": 20,
+  suggest: 20,
+  diff: 20,
+  version: 20,
+  baseline: 20,
+  "setup-prereqs": 60,
+  "setup-repos": 70,
+  "setup-candidates": 40,
+  "setup-connect": 600,
+  "setup-clone": 900,
+  "setup-plan": 120,
+  "setup-apply": 1800,
+  "setup-undo": 300,
+  "setup-backups": 30
+}
+
+// The Publish button runs plain git commands: their budget is that command's.
+var RUNNER_BUDGET_ALIASES = { "publish-push": "push", "publish-commit": "commit" }
+
+function runnerBudgetSeconds(tag) {
+  var key = String(tag === undefined || tag === null ? "" : tag)
+  var alias = RUNNER_BUDGET_ALIASES[key]
+  if (alias !== undefined) key = alias
+  var seconds = RUNNER_BUDGET_SECONDS[key]
+  return seconds === undefined ? RUNNER_BUDGET_SECONDS.status : seconds
+}
+
 // Decide what a Process stop event means for the invocation that just ended.
 // Quickshell reports a native FailedToStart as nothing but `running false`: no
 // output, no exit. The Runner therefore has to settle it itself, exactly once,

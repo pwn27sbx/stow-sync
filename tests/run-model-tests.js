@@ -576,6 +576,27 @@ test("runnerSettle settles a failed start exactly once", () => {
   same(Model.runnerSettle({}), { settle: false, reason: "idle" })
 })
 
+test("runnerBudgetSeconds covers every tag and aliases the publish steps", () => {
+  const tags = new Set()
+  const re = /\btag:\s*"([a-z][a-z0-9-]*)"/g
+  let match
+  while ((match = re.exec(source)) !== null) tags.add(match[1])
+  assert.ok(tags.size > 5, "no tags found in Model.js")
+  for (const tag of tags) assert.ok(Model.runnerBudgetSeconds(tag) > 0, tag)
+  // Both publish steps are the plain git commands they run.
+  assert.equal(Model.runnerBudgetSeconds("publish-push"), Model.runnerBudgetSeconds("push"))
+  assert.equal(Model.runnerBudgetSeconds("publish-commit"), Model.runnerBudgetSeconds("commit"))
+  // The budgets the backend may spend are the ones the Runner waits for.
+  assert.equal(Model.runnerBudgetSeconds("status"), 20)
+  assert.equal(Model.runnerBudgetSeconds("status-fetch"), 120)
+  assert.equal(Model.runnerBudgetSeconds("push"), 315)
+  assert.equal(Model.runnerBudgetSeconds("commit"), 150)
+  // A push must outlast git's own 300 s bound (B4).
+  assert.ok(Model.runnerBudgetSeconds("push") > 300)
+  // The commit is several sequential git calls: well over 90 s.
+  assert.ok(Model.runnerBudgetSeconds("commit") > 90)
+})
+
 // --- heroState / primaryAction (Unit 4c) ---------------------------------
 
 const HERO = fixture("hero-cases.json")

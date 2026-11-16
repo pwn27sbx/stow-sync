@@ -46,31 +46,24 @@ Item {
 
   // Global flags are appended after the command; the backend extracts them
   // from anywhere in argv.
-  function globalArgs() {
+  function globalArgs(request) {
     var args = []
     var configPath = String(root.setting("configPath", ""))
     var stateDir = String(root.setting("stateDir", ""))
     if (configPath !== "") args = args.concat(["--config", configPath])
     if (stateDir !== "") args = args.concat(["--state-dir", stateDir])
+    // The helper keeps its own monotonic deadline and clamps every child to
+    // what is left, so it answers and exits before this Runner's timeout (B4).
+    // 15 s of the budget stay for that answer and its cleanup.
+    var budget = Model.runnerBudgetSeconds(String((request || {}).tag || ""))
+    args = args.concat(["--deadline", String(budget - 15)])
     return args
   }
 
-  // Backend timeout plus a 10 s grace window.
+  // The one budget table lives in Model.runnerBudgetSeconds; this adds the
+  // 10 s grace the Runner keeps after the helper's own deadline.
   function timeoutFor(request) {
-    var seconds = 20
-    if (request.isStatus) seconds = request.fetch ? 120 : 20
-    else if (request.tag === "push" || request.tag === "pull") seconds = 300
-    else if (request.tag === "commit") seconds = 30
-    else if (request.tag === "setup-prereqs") seconds = 60
-    else if (request.tag === "setup-repos") seconds = 70
-    else if (request.tag === "setup-candidates") seconds = 40
-    else if (request.tag === "setup-connect") seconds = 600
-    else if (request.tag === "setup-clone") seconds = 900
-    else if (request.tag === "setup-plan") seconds = 120
-    else if (request.tag === "setup-apply") seconds = 1800
-    else if (request.tag === "setup-undo") seconds = 300
-    else if (request.tag === "setup-backups") seconds = 30
-    return seconds * 1000 + 10000
+    return Model.runnerBudgetSeconds(String((request || {}).tag || "")) * 1000 + 10000
   }
 
   function refreshStatus(fetch) {
@@ -116,7 +109,7 @@ Item {
     root.timedOut = false
     // Open the write channel before starting so the helper can read stdin.
     proc.stdinEnabled = true
-    var argv = [root.python, "-u", root.scriptPath].concat(root.globalArgs()).concat(root.current.args)
+    var argv = [root.python, "-u", root.scriptPath].concat(root.globalArgs(root.current)).concat(root.current.args)
     // The panel's own apply/undo is the real (non-test) path: opt in explicitly
     // so the backend's real-HOME guard allows it (README 10.0).
     if (root.current.tag === "setup-apply" || root.current.tag === "setup-undo")
