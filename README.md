@@ -367,8 +367,16 @@ theme, plugins and the helpers they call — while Stow Sync carries everything
 else. Stow Sync therefore never offers to adopt what config-sync already owns:
 
 - A new config whose path config-sync carries on this machine is recommended
-  **Ignore**, with the reason **Managed by config-sync**. It stays under
-  **Hidden**, and **Adopt anyway** is still there if you want it in Stow by hand.
+  **Ignore**, with the reason **Managed by config-sync** (or **Config Sync will
+  publish it** for a local `~/.local/bin` helper referenced by Hyprland, hooks,
+  or plugins that config-sync has not committed yet). It stays under **Hidden**,
+  and **Adopt anyway** is still there if you want it in Stow by hand.
+- Before uploading commits, if config-sync is installed and connected, Stow Sync
+  runs `config_sync.py status` once (read-only, 10 s timeout) and warns **only**
+  when a path in the upload overlaps with a change config-sync still has to
+  publish, offering **Publish Config Sync first** (cancel) or **Upload anyway**.
+  Any error, timeout, or missing config-sync install degrades silently and
+  uploads as usual.
 - A path you already acknowledged keeps that verdict too: an owned folder that
   is in this machine's baseline — the terminal folders usually are, from a
   first run before config-sync was recognised — still reports **Ignore** with
@@ -663,9 +671,12 @@ private repository. `notify-send` is optional and only used when
 ## Known limitations
 
 - **config-sync ownership is best-effort.** Stow Sync reads the paths
-  config-sync's clone tracks; a file config-sync would publish but has not
-  committed yet is not in that set, so it can still be offered once. Any error
-  reading the clone means "no config-sync" and today's behaviour.
+  config-sync's clone tracks plus local `~/.local/bin` helpers referenced by
+  `hypr/{bindings,autostart,hyprland}.lua`, `omarchy/hooks/**`, and `plugins/**`
+  (Lua `local` variable inlining in `bindings.lua` is not mirrored). Other files
+  config-sync has not committed yet can still be offered once, though a clashing
+  upload triggers a warning when `config_sync.py status` reports an overlap. Any
+  error reading the clone means "no config-sync" and today's behaviour.
 - **Omarchy can rewrite `~/.config/ghostty/config`.** The Text size slider
   (`omarchy-display-text-size`) and `omarchy-font-set` edit that file in place
   with `sed -i`, which replaces the Stow symlink with a regular file. Stow Sync

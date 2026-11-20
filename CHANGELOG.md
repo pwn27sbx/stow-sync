@@ -6,6 +6,21 @@ All notable changes to Stow Sync. The format follows
 
 ## Unreleased
 
+### Added
+
+- **Pending local Config Sync helpers are recognised before Config Sync publishes.**
+  Stow Sync now mirrors Config Sync v1.6.0's helper scan across local and cloned
+  `hypr/{bindings,autostart,hyprland}.lua`, `omarchy/hooks/**`, and `plugins/**`,
+  so a regular, non-symlinked `~/.local/bin` helper that Config Sync will carry
+  is recommended **Ignore** with the reason **Config Sync will publish it**
+  (distinct from **Managed by config-sync** for files already in the clone).
+- **Pre-upload clash warning with Config Sync.** Before `push`, when Config Sync
+  is installed and connected, Stow Sync runs `config_sync.py status` once (10 s
+  timeout, read-only) and warns only if a path in the upload overlaps with a
+  publishable change still pending in Config Sync, offering **Publish Config Sync
+  first** (cancel) or **Upload anyway** (`--allow-clash`). Any Config Sync error,
+  timeout, or missing install degrades silently and uploads as before.
+
 ### Changed
 
 - **Config-sync ownership mirror follows Config Sync v1.6.0.** Skip-name
@@ -16,6 +31,14 @@ All notable changes to Stow Sync. The format follows
   also skips those names and skipped/dot directory components across `plugins/`,
   `bin/`, `omarchy/themes/`, and `omarchy/{branding,extensions,hooks,agents}`,
   matching Config Sync's own walker.
+
+### Fixed
+
+- **Backup and editor leftovers are never recommended for upload.** Stow Sync's
+  own candidate heuristic now classifies `.bak.*`, `.bak-*`, `.backup`, `.orig`,
+  `.old`, `.swp`, `.swo`, and trailing `~` files as **Ignore** (**Backup file;
+  not a config**), while leaving `.log`, `.tmp`, and real names such as
+  `bakery.lua` unchanged.
 
 ## 0.4.0 - 2026-11-15
 
