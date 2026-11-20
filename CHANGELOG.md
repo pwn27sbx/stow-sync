@@ -4,6 +4,19 @@ All notable changes to Stow Sync. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the plugin uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **Config-sync ownership mirror follows Config Sync v1.6.0.** Skip-name
+  matching now mirrors Config Sync v1.6.0's `SKIP_NAME_RE` (PR #38), treating
+  `.bak`, `.bak.*`, `.bak-*`, `.backup`, `.orig`, `.old`, `.swp`, `.swo`, and
+  trailing `~` leftovers as non-config material while keeping real names such as
+  `bakery.lua`, `backup-plan.conf`, and `old.conf`. The clone-path mapper now
+  also skips those names and skipped/dot directory components across `plugins/`,
+  `bin/`, `omarchy/themes/`, and `omarchy/{branding,extensions,hooks,agents}`,
+  matching Config Sync's own walker.
+
 ## 0.4.0 - 2026-11-15
 
 ### Added

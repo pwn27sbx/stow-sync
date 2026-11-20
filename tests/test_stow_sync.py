@@ -3819,6 +3819,112 @@ class ConfigSyncOwnershipTests(ConfigSyncTestBase):
         self.assertIn(str(self.home / ".config" / "hypr" / "input.lua"), owned)
         self.assertNotIn(str(self.home / ".config" / "hypr" / "monitors.lua"), owned)
 
+    def test_skip_names_match_config_sync_1_6(self) -> None:
+        # Mirrors config-sync v1.6.0 BackupNameTests (PR #38).
+        for name in (
+            "kitty.conf.bak",
+            "kitty.conf.bak.1",
+            "kitty.conf.bak-spaces-merged",
+            "kitty.conf.backup",
+            "kitty.conf.orig",
+            "kitty.conf.old",
+            "kitty.conf~",
+            "kitty.conf.swp",
+            "kitty.conf.swo",
+        ):
+            self.assertTrue(ss._config_sync_skip_name(name), name)
+        for name in (
+            "bakery.lua",
+            "kitty.conf",
+            "backup-plan.conf",
+            "notes.bakery.md",
+            "old.conf",
+        ):
+            self.assertFalse(ss._config_sync_skip_name(name), name)
+
+    def test_skipped_names_and_dirs_in_clone_are_not_owned(self) -> None:
+        # Even if a clone tracks editor/backup leftovers, skipped dirs, or
+        # unmanaged root files (PR #37 / PR #38), Stow Sync must not treat
+        # them as owned by config-sync.
+        self.install(
+            [
+                "hypr/bakery.lua",
+                "hypr/backup-plan.conf",
+                "hypr/old.conf",
+                "hypr/bindings.lua.bak-merged",
+                "omarchy/hooks/post-update.d/setup-agent.hook",
+                "omarchy/hooks/post-update.d/plugin-patches-update.bak-spaces-merged",
+                "plugins/demo.widget/Main.qml",
+                "plugins/demo.widget/Main.qml.backup",
+                "plugins/demo.widget/Main.qml.swp",
+                "plugins/demo.widget/__pycache__/helper.pyc",
+                "bin/hyprglass-bar",
+                "bin/hyprglass-bar.orig",
+                "omarchy/themes/heavengirl/theme.toml",
+                "omarchy/themes/heavengirl/theme.toml.old",
+                "notes.txt",
+            ],
+            {"format": "omarchy-config", "version": 1},
+        )
+        owned = {ss.to_tilde(p) for p in ss.config_sync_owned_paths()}
+        self.assertEqual(
+            owned,
+            {
+                "~/.config/hypr/bakery.lua",
+                "~/.config/hypr/backup-plan.conf",
+                "~/.config/hypr/old.conf",
+                "~/.config/omarchy/hooks/post-update.d/setup-agent.hook",
+                "~/.config/omarchy/plugins/demo.widget/Main.qml",
+                "~/.local/bin/hyprglass-bar",
+                "~/.config/omarchy/themes/heavengirl/theme.toml",
+            },
+        )
+
+    def test_plugins_json_ids_only_option_in_marker_is_tolerated(self) -> None:
+        # PR #39: `.omarchy-config.json` may set `plugin_list.track_versions: false`
+        # and `plugins.json` may omit version/commit fields.
+        clone = self.install(
+            ["terminals/kitty.conf", "terminals/ghostty.config"],
+            {
+                "format": "omarchy-config",
+                "version": 1,
+                "machine_local": ["terminals/ghostty.config"],
+                "plugin_list": {"track_versions": False},
+            },
+        )
+        write(
+            clone / "plugins.json",
+            json.dumps(
+                {
+                    "format": "omarchy-config-plugins",
+                    "version": 1,
+                    "plugins": {
+                        "demo.widget": {
+                            "name": "Demo",
+                            "source": "https://github.com/example/demo-widget",
+                        }
+                    },
+                }
+            )
+            + "\n",
+        )
+        git(clone, "add", "plugins.json")
+        git(
+            clone,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "ids-only plugins.json",
+        )
+        owned = ss.config_sync_owned_paths()
+        self.assertEqual(
+            {ss.to_tilde(p) for p in owned},
+            {"~/.config/kitty/kitty.conf"},
+        )
+
     def test_ownership_is_read_once_per_command(self) -> None:
         self.install(["terminals/kitty.conf"])
         write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
@@ -3882,8 +3988,9 @@ class ConfigSyncVerdictTests(ConfigSyncTestBase):
         self.assertNotEqual(candidate["reason"], ss.CONFIG_SYNC_REASON)
 
     def test_a_backup_file_neither_owns_nor_blocks_a_folder(self) -> None:
-        # config-sync skips `*.bak*` names, so they are not its material: the
-        # folder stays owned, and on its own a backup keeps today's reason.
+        # config-sync skips backup and editor leftovers, so they are not its
+        # material: the folder stays owned, and on its own a backup keeps
+        # today's reason.
         self.install(["terminals/kitty.conf"])
         write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
         backup = self.home / ".config" / "kitty" / "kitty.conf.bak"
@@ -3893,6 +4000,36 @@ class ConfigSyncVerdictTests(ConfigSyncTestBase):
         verdict, reason = ss.candidate_verdict(str(backup))
         self.assertEqual(verdict, ss.VERDICT_IGNORE)
         self.assertIn("backup", reason.lower())
+
+    def test_v1_6_backup_and_editor_leftovers_do_not_block_owned_folder(self) -> None:
+        self.install(["terminals/kitty.conf"])
+        kitty = self.home / ".config" / "kitty"
+        write(kitty / "kitty.conf", "font_size 11\n")
+        for leftover in (
+            "kitty.conf.bak-spaces-merged",
+            "kitty.conf.backup",
+            "kitty.conf.orig",
+            "kitty.conf.old",
+            "kitty.conf.swp",
+            "kitty.conf.swo",
+            "kitty.conf~",
+        ):
+            write(kitty / leftover, "leftover\n")
+        write_config(self.config, [], watch=["~/.config"])
+        self.assertEqual(self.candidates()["~/.config/kitty"]["verdict"], ss.VERDICT_IGNORE)
+        self.assertEqual(self.candidates()["~/.config/kitty"]["reason"], ss.CONFIG_SYNC_REASON)
+
+        # A real file whose name merely contains "bak"/"backup"/"old" still
+        # blocks ownership when config-sync does not carry it.
+        for real_name in ("bakery.lua", "backup-plan.conf", "old.conf"):
+            extra = kitty / real_name
+            write(extra, "real config\n")
+            self.assertNotEqual(
+                self.candidates()["~/.config/kitty"]["reason"],
+                ss.CONFIG_SYNC_REASON,
+                real_name,
+            )
+            extra.unlink()
 
     def test_a_secret_inside_an_owned_path_stays_never(self) -> None:
         self.install(["bin/hyprglass-bar"])

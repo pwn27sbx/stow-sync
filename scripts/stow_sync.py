@@ -2060,8 +2060,8 @@ def _build_candidate(
 # helpers they call. Stow Sync must never offer to adopt what config-sync
 # already owns, so it reads that ownership from config-sync's own clone rather
 # than importing its code: `git ls-files` in the clone, mapped back to home
-# paths with the same tables `config_sync.py` uses (its inventory at
-# :1924-2015, its terminal map at :1418-1424). Read-only, one git call per
+# paths with the same tables `config_sync.py` v1.6.0 uses (its inventory at
+# :1897-2058, its terminal map at :1435-1441). Read-only, one git call per
 # command, no hashing, and any error means "absent" so today's payload and
 # behaviour survive on a machine without config-sync.
 # --------------------------------------------------------------------------
@@ -2078,7 +2078,12 @@ CONFIG_SYNC_MAX_FILES = 20000
 CONFIG_SYNC_GIT_TIMEOUT = 2
 # config-sync never carries these, so they neither own a folder nor block one.
 CONFIG_SYNC_MACHINE_LOCAL = frozenset({"hypr/monitors.lua"})
-_CONFIG_SYNC_SKIP_NAME_RE = re.compile(r"\.bak(\.|$)")
+# Mirrors config-sync v1.6.0's SKIP_NAME_RE (PR #38). A clone carries no
+# plugin version, so when a rule cannot be detected from the clone we prefer
+# v1.6.0's rule even on older installs: save/editor leftovers are never real
+# config, so skipping them never misclassifies a real config file and keeps
+# folder ownership verdicts accurate.
+_CONFIG_SYNC_SKIP_NAME_RE = re.compile(r"(?:\.bak(?:[.-].*)?|\.backup|\.orig|\.old|\.sw[op])$|~$")
 _CONFIG_SYNC_SKIP_DIR_NAMES = frozenset(
     {".git", "__pycache__", ".mypy_cache", ".pytest_cache", "node_modules"}
 )
@@ -2106,17 +2111,34 @@ def _home_dir() -> str:
 
 
 def _config_sync_skip_name(name: str) -> bool:
-    """True for a name config-sync never carries.
+    """True for a name config-sync v1.6.0 never carries.
 
-    Its walk skips every dotfile (except the marker), `.DS_Store` and any
-    `*.bak*` name, so those are not config-sync material: they neither own a
-    folder nor block one, and a backup file on its own keeps today's verdict.
+    Its walk skips every dotfile (except the marker), `.DS_Store`, and backup
+    or editor leftovers (`.bak`, `.bak.*`, `.bak-*`, `.backup`, `.orig`,
+    `.old`, `.swp`, `.swo`, trailing `~`), so those are not config-sync
+    material: they neither own a folder nor block one, and a backup file on
+    its own keeps today's verdict.
     """
     if not name or name == CONFIG_SYNC_MARKER_NAME:
         return True
     if name.startswith("."):
         return True
     return bool(_CONFIG_SYNC_SKIP_NAME_RE.search(name))
+
+
+def _config_sync_skip_subpath(parts: list[str]) -> bool:
+    """True when a walked subpath hits a skipped dir, dot-dir, or skipped file.
+
+    Mirrors `config_sync.py` v1.6.0's `iter_files` (:1383-1394): intermediate
+    directories in `_CONFIG_SYNC_SKIP_DIR_NAMES` or starting with `.` are
+    pruned, and the leaf filename is filtered with `_config_sync_skip_name`.
+    """
+    if not parts:
+        return True
+    for part in parts[:-1]:
+        if not part or part in _CONFIG_SYNC_SKIP_DIR_NAMES or part.startswith("."):
+            return True
+    return _config_sync_skip_name(parts[-1])
 
 
 def _config_sync_clone_path() -> str:
@@ -2174,11 +2196,11 @@ def _config_sync_machine_local(clone: str) -> set[str] | None:
 def _config_sync_home_rel(rel: str) -> str | None:
     """Home-relative path config-sync maps repo ``rel`` to, or ``None``.
 
-    Mirrors `config_sync.py`'s inventory: `hypr/*.lua|.conf`, the
+    Mirrors `config_sync.py` v1.6.0's inventory: `hypr/*.lua|.conf`, the
     `omarchy/{branding,extensions,hooks,agents}` trees, `shell.json`,
     `shell.toml`, `omarchy/themes/<slug>`, `omarchy/theme.name`, the terminal
-    map, `bin/<name>` and `plugins/<id>`; `plugins.json` and the marker itself
-    travel as data, not as a home file.
+    map, `bin/<name>` and `plugins/<id>`; `plugins.json`, the marker itself,
+    and anything outside those managed roots travel as data or stay unmanaged.
     """
     if rel in _CONFIG_SYNC_TERMINALS:
         return _CONFIG_SYNC_TERMINALS[rel]
@@ -2188,17 +2210,29 @@ def _config_sync_home_rel(rel: str) -> str | None:
         return ".local/state/omarchy/current/theme.name"
     if rel.startswith("plugins/"):
         parts = rel.split("/")
-        if len(parts) < 3 or not _CONFIG_SYNC_PLUGIN_ID_RE.fullmatch(parts[1]):
+        if (
+            len(parts) < 3
+            or not _CONFIG_SYNC_PLUGIN_ID_RE.fullmatch(parts[1])
+            or _config_sync_skip_subpath(parts[2:])
+        ):
             return None
         return ".config/omarchy/" + rel
     if rel.startswith("bin/"):
         parts = rel.split("/")
-        if len(parts) != 2 or not _CONFIG_SYNC_HELPER_NAME_RE.fullmatch(parts[1]):
+        if (
+            len(parts) != 2
+            or not _CONFIG_SYNC_HELPER_NAME_RE.fullmatch(parts[1])
+            or _config_sync_skip_name(parts[1])
+        ):
             return None
         return ".local/bin/" + parts[1]
     if rel.startswith("omarchy/themes/"):
         parts = rel.split("/")
-        if len(parts) < 4 or not _CONFIG_SYNC_THEME_SLUG_RE.fullmatch(parts[2]):
+        if (
+            len(parts) < 4
+            or not _CONFIG_SYNC_THEME_SLUG_RE.fullmatch(parts[2])
+            or _config_sync_skip_subpath(parts[3:])
+        ):
             return None
         if os.path.splitext(rel)[1].lower() in _CONFIG_SYNC_THEME_ASSET_SUFFIXES:
             return None
@@ -2209,6 +2243,8 @@ def _config_sync_home_rel(rel: str) -> str | None:
         if head in _CONFIG_SYNC_OMARCHY_FILES and "/" not in rest:
             return ".config/" + rel
         if head in _CONFIG_SYNC_OMARCHY_DIRS and "/" in rest:
+            if _config_sync_skip_subpath(rest.split("/")[1:]):
+                return None
             return ".config/" + rel
         return None
     if rel.startswith("hypr/"):
@@ -2269,7 +2305,9 @@ def config_sync_owns(path: str, owned: set[str] | None) -> bool:
     ``~/.dotfiles`` while config-sync still carries its home path, and
     config-sync follows a symlinked parent. A folder counts as owned only when
     every regular file inside it is owned; a symlinked entry, a dotfile and a
-    `*.bak*` name are not config-sync material and decide nothing either way.
+    backup/editor leftover (`.bak*`, `.backup`, `.orig`, `.old`, `.swp`,
+    `.swo`, trailing `~`) are not config-sync material and decide nothing
+    either way.
     """
     if not owned:
         return False

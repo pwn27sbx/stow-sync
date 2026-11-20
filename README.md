@@ -401,9 +401,11 @@ Two exceptions keep ownership honest:
   marker exists but cannot be read, Stow Sync treats config-sync as absent
   instead of guessing what stayed local.
 - **A folder is owned only when every file in it is owned.** One file that is
-  not config-sync's keeps the whole folder as an ordinary candidate. A `*.bak*`
-  name or a dotfile is not config-sync material, so it neither owns nor blocks a
-  folder, and on its own it still gets today's "backup file" reason.
+  not config-sync's keeps the whole folder as an ordinary candidate. A dotfile
+  or a backup/editor leftover (`.bak`, `.bak.*`, `.bak-*`, `.backup`, `.orig`,
+  `.old`, `.swp`, `.swo`, or trailing `~`) is not config-sync material, so it
+  neither owns nor blocks a folder, and on its own it still gets today's
+  "backup file" reason.
 
 config-sync is optional: when the plugin or its clone is missing, unreadable or
 erroring, Stow Sync behaves exactly as before, with no extra cost.

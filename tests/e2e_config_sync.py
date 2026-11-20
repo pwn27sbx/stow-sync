@@ -4,9 +4,9 @@
 Builds a throwaway world under a temp HOME and runs the real CLI against it:
 a genuine Stow repo with three packages, a real config-sync clone at its
 default path, a `.omarchy-config.json` marker with `machine_local`, and the
-home files the owner's machine really has (terminal folders, a stray kitty
-`*.bak.*`, a `*.bak` only config-sync skips, a symlinked parent, a secret in
-an owned file, a `machine_local` path and one real crossing).
+home files the owner's machine really has (terminal folders, stray kitty
+backup/editor leftovers that config-sync v1.6.0 skips, a symlinked parent, a
+secret in an owned file, a `machine_local` path and one real crossing).
 
 Then it drives the CLI exactly as the panel does — `status`, `status --short`,
 `adopt --dry-run`, `skip --path`, `ignore` — and asserts every verdict, reason,
@@ -189,11 +189,15 @@ class World:
             )
 
         # The owner's terminal folders: each holds only the file config-sync
-        # carries, kitty also keeps a stray `*.bak.<suffix>` (not its material).
+        # carries, kitty also keeps stray backup/editor leftovers (not its
+        # material under config-sync v1.6.0's SKIP_NAME_RE).
         write(home / ".config" / "alacritty" / "alacritty.toml", "font_size = 11\n")
         write(home / ".config" / "foot" / "foot.ini", "font=monospace:size=11\n")
         write(home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")
         write(home / ".config" / "kitty" / "kitty.conf.bak.DIbKyz", "font_size 10\n")
+        write(home / ".config" / "kitty" / "kitty.conf.bak-spaces-merged", "font_size 10\n")
+        write(home / ".config" / "kitty" / "kitty.conf.swp", "swap\n")
+        write(home / ".config" / "kitty" / "kitty.conf~", "tilde\n")
         # `machine_local`: config-sync does not carry it here, so it stays a
         # normal new config even though the clone tracks the file.
         write(home / ".config" / "ghostty" / "config", "font-size = 11\n")
