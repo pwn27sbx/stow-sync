@@ -2743,6 +2743,8 @@ def _machine_state_reason(path: str) -> str:
     for suffix, reason in _MACHINE_STATE_SUFFIXES:
         if lower.endswith(suffix):
             return reason
+    if _CONFIG_SYNC_SKIP_NAME_RE.search(lower):
+        return "Backup file; not a config"
     # Any name that mentions a cache is a cache: its app regenerates it.
     if "cache" in lower:
         return "Cache; its app regenerates it"

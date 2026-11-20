@@ -612,8 +612,11 @@ def check_absent_world(world: World) -> None:
     reasons = {c["reason"] for c in status["candidates"]}
     check("absent: no config-sync reason", CONFIG_SYNC_REASON in reasons, False)
     verdicts = verdict_table(status)
-    for path in ("~/.config/alacritty", "~/.config/foot", "~/.config/kitty", "~/.config/hypr"):
+    for path in ("~/.config/alacritty", "~/.config/foot", "~/.config/hypr"):
         check("absent: " + path + " keeps a normal verdict", verdicts.get(path, ("<missing>", ""))[0], "upload")
+    # kitty mixes kitty.conf with backup/swap leftovers, so without config-sync
+    # owning the folder, Stow Sync classifies the mixed directory as review.
+    check("absent: ~/.config/kitty keeps a review verdict", verdicts.get("~/.config/kitty", ("<missing>", ""))[0], "review")
     check("absent: badge counts them again", status["summary"]["count"], 6)
     panel = world.panel(status)
     check("absent: no crossings group", [g["key"] for g in panel["groups"]],

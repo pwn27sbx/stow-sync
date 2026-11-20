@@ -1241,6 +1241,41 @@ class CandidateVerdictTests(unittest.TestCase):
             verdict, _reason = self.verdict(".config/" + name)
             self.assertEqual(verdict, ss.VERDICT_IGNORE, name)
 
+    def test_backup_and_editor_leftovers_are_never_upload(self) -> None:
+        leftovers = (
+            "x.sh.bak-2026-11-20",
+            "x.bak-pre-snake",
+            "x.bak.1",
+            "x.backup",
+            "x.orig",
+            "x.old",
+            "x.swp",
+            "x.swo",
+            "x~",
+        )
+        for name in leftovers:
+            write(self.home / ".local" / "bin" / name, "#!/bin/sh\necho hi\n")
+            verdict, reason = self.verdict(".local/bin/" + name)
+            self.assertEqual(verdict, ss.VERDICT_IGNORE, name)
+            self.assertIn("backup", reason.lower(), name)
+            self.assertLessEqual(len(reason), ss.MAX_REASON_CHARS, name)
+
+        # Real config names containing bak/backup/old stay uploadable.
+        for real_name in ("bakery.lua", "backup-plan.conf", "old.conf"):
+            write(self.home / ".config" / real_name, "# owner config\nkey = 1\n")
+            verdict, _reason = self.verdict(".config/" + real_name)
+            self.assertEqual(verdict, ss.VERDICT_UPLOAD, real_name)
+
+        # Existing suffix reasons (.log, .tmp) stay unchanged.
+        write(self.home / ".config" / "run.log", "started\n")
+        verdict, reason = self.verdict(".config/run.log")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertEqual(reason, "Log file; changes on its own")
+        write(self.home / ".config" / "run.tmp", "scratch\n")
+        verdict, reason = self.verdict(".config/run.tmp")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertEqual(reason, "Temporary file; not a config")
+
     def test_binary_database_name_is_still_ignore(self) -> None:
         # A real SQLite file is binary; its name already says machine state.
         write_bytes(self.home / ".config" / "app.sqlite", b"SQLite format 3\x00\x01\x02")
