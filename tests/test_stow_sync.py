@@ -4086,6 +4086,40 @@ class ConfigSyncVerdictTests(ConfigSyncTestBase):
         self.assertEqual(ss.CONFIG_SYNC_REASON, "Managed by config-sync")
         self.assertLessEqual(len(ss.CONFIG_SYNC_REASON), ss.MAX_REASON_CHARS)
 
+    def test_pending_referenced_helper_gets_plain_pending_reason(self) -> None:
+        self.install(["bin/already-tracked"])
+        write(
+            self.home / ".config" / "hypr" / "autostart.lua",
+            'o.exec_once(os.getenv("HOME") .. "/.local/bin/hyprglass-patched-swap")\n',
+        )
+        write(self.home / ".local" / "bin" / "already-tracked", "#!/bin/sh\ntrue\n")
+        write(self.home / ".local" / "bin" / "hyprglass-patched-swap", "#!/bin/sh\ntrue\n")
+        write_config(self.config, [], watch=["~/.local/bin"])
+        candidates = self.candidates()
+        tracked = candidates["~/.local/bin/already-tracked"]
+        pending = candidates["~/.local/bin/hyprglass-patched-swap"]
+        self.assertEqual(tracked["verdict"], ss.VERDICT_IGNORE)
+        self.assertEqual(tracked["reason"], ss.CONFIG_SYNC_REASON)
+        self.assertEqual(pending["verdict"], ss.VERDICT_IGNORE)
+        self.assertEqual(pending["reason"], ss.CONFIG_SYNC_PENDING_REASON)
+        self.assertNotEqual(ss.CONFIG_SYNC_PENDING_REASON, ss.CONFIG_SYNC_REASON)
+        self.assertLessEqual(len(ss.CONFIG_SYNC_PENDING_REASON), ss.MAX_REASON_CHARS)
+
+    def test_a_secret_inside_a_pending_helper_stays_never(self) -> None:
+        self.install(["terminals/kitty.conf"])
+        write(
+            self.home / ".config" / "hypr" / "autostart.lua",
+            'o.exec_once("~/.local/bin/leaky-pending")\n',
+        )
+        write(
+            self.home / ".local" / "bin" / "leaky-pending",
+            "#!/bin/sh\nTOKEN=ghp_" + "a1B2c3D4" * 5 + "\n",
+        )
+        write_config(self.config, [], watch=["~/.local/bin"])
+        candidate = self.candidates()["~/.local/bin/leaky-pending"]
+        self.assertEqual(candidate["verdict"], ss.VERDICT_NEVER)
+        self.assertNotEqual(candidate["reason"], ss.CONFIG_SYNC_PENDING_REASON)
+
     def test_a_folder_is_owned_only_when_every_file_is_owned(self) -> None:
         self.install(["terminals/kitty.conf"])
         write(self.home / ".config" / "kitty" / "kitty.conf", "font_size 11\n")

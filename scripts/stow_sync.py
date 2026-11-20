@@ -2073,6 +2073,7 @@ CONFIG_SYNC_STATE_FILENAME = "state.json"
 CONFIG_SYNC_MARKER_NAME = ".omarchy-config.json"
 # The full reason stays well under MAX_REASON_CHARS (58).
 CONFIG_SYNC_REASON = "Managed by config-sync"
+CONFIG_SYNC_PENDING_REASON = "Config Sync will publish it"
 # Same cap as config-sync's MAX_INVENTORY_FILES: past it, treat it as absent.
 CONFIG_SYNC_MAX_FILES = 20000
 CONFIG_SYNC_GIT_TIMEOUT = 2
@@ -3089,29 +3090,36 @@ def candidate_verdict(path: str) -> tuple[str, str]:
 def annotate_verdicts(
     candidates: list[dict[str, Any]],
     config_sync_owned: set[str] | None = None,
+    config_sync_pending: set[str] | None = None,
 ) -> None:
     """Attach ``verdict``/``reason`` to every new candidate, in place.
 
     Candidates already in the baseline are not judged — the panel never lists
-    them — but one config-sync owns still reports :data:`CONFIG_SYNC_REASON`:
-    dropping a now-redundant ignore entry must not turn its verdict back into
-    an empty string (the machine's baseline keeps a path it saw on a first
-    run). Every other known candidate carries empty strings, so every
-    candidate keeps the same keys. A path config-sync already owns is
-    ``ignore`` with :data:`CONFIG_SYNC_REASON`, unless the file itself matched
-    a secret: a secret is ``never`` and ownership never lowers that. ``None``
-    means config-sync is absent and every verdict stays exactly as before.
+    them — but one config-sync owns still reports :data:`CONFIG_SYNC_REASON`
+    (or :data:`CONFIG_SYNC_PENDING_REASON` when owned only via the local helper
+    scan before config-sync has committed it): dropping a now-redundant ignore
+    entry must not turn its verdict back into an empty string (the machine's
+    baseline keeps a path it saw on a first run). Every other known candidate
+    carries empty strings, so every candidate keeps the same keys. A path
+    config-sync already owns is ``ignore`` with :data:`CONFIG_SYNC_REASON` (or
+    :data:`CONFIG_SYNC_PENDING_REASON` for a pending local helper), unless the
+    file itself matched a secret: a secret is ``never`` and ownership never
+    lowers that. ``None`` means config-sync is absent and every verdict stays
+    exactly as before.
     """
+    pending = config_sync_pending or set()
     for candidate in candidates:
         path = expand_path(str(candidate.get("path", "")))
+        norm = os.path.normpath(path)
+        cs_reason = CONFIG_SYNC_PENDING_REASON if norm in pending else CONFIG_SYNC_REASON
         if candidate.get("known"):
             owned = config_sync_owned is not None and config_sync_owns(path, config_sync_owned)
             candidate["verdict"] = VERDICT_IGNORE if owned else ""
-            candidate["reason"] = CONFIG_SYNC_REASON if owned else ""
+            candidate["reason"] = cs_reason if owned else ""
             continue
         verdict, reason = candidate_verdict(path)
         if verdict != VERDICT_NEVER and config_sync_owns(path, config_sync_owned):
-            verdict, reason = VERDICT_IGNORE, CONFIG_SYNC_REASON
+            verdict, reason = VERDICT_IGNORE, cs_reason
         candidate["verdict"] = verdict
         candidate["reason"] = reason
 
@@ -3413,8 +3421,10 @@ def cmd_status(
         candidate["known"] = candidate["path"] in known
     # Ownership is read once per command (S1/A8): one `git ls-files`, and both
     # the badge and the panel see the same verdicts.
-    config_sync_owned = config_sync_owned_paths()
-    annotate_verdicts(candidates, config_sync_owned)
+    cs_inventory = _config_sync_inventory()
+    config_sync_owned = (cs_inventory[0] | cs_inventory[1]) if cs_inventory is not None else None
+    config_sync_pending = cs_inventory[1] if cs_inventory is not None else None
+    annotate_verdicts(candidates, config_sync_owned, config_sync_pending)
     badge_count = compute_badge(candidates)
     notifications_sent = update_notifications(repos, state, config)
     result: dict[str, Any] = {
@@ -4566,7 +4576,10 @@ def cmd_status_short(
     known = baseline["paths"]
     for candidate in candidates:
         candidate["known"] = candidate["path"] in known
-    annotate_verdicts(candidates, config_sync_owned_paths())
+    cs_inventory = _config_sync_inventory()
+    cs_owned = (cs_inventory[0] | cs_inventory[1]) if cs_inventory is not None else None
+    cs_pending = cs_inventory[1] if cs_inventory is not None else None
+    annotate_verdicts(candidates, cs_owned, cs_pending)
     unknown = compute_badge(candidates)
     if unknown > 0:
         segments.append(f"{unknown} new config")
