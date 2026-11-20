@@ -494,6 +494,14 @@ function confirmSpec(kind, payload) {
     message: "Push the current branch to GitHub.",
     lines: (p.repos || []).slice(), confirmText: "Upload", destructive: false
   }
+  if (kind === "push-clash") return {
+    title: "Config Sync has unpublished changes",
+    message: "These files are in this upload and still waiting to be published in Config Sync. Publishing Config Sync first avoids a conflict.",
+    lines: (p.clashes || []).slice(),
+    cancelText: "Publish Config Sync first",
+    confirmText: "Upload anyway",
+    destructive: true
+  }
   if (kind === "update") return {
     title: "Update from GitHub",
     message: "Fast-forward only; refuses when a repo is dirty or diverged.",
@@ -651,8 +659,21 @@ function actionOutcome(tag, payload) {
     return { kind: "commit-ok" }
   }
   if (!data.ok) return { kind: "mutation-error", error: String(data.error || "Action failed.") }
+  if (data.clash === true && data.clashes && data.clashes.length > 0) {
+    return { kind: "push-clash", repo: String(data.repo || ""), clashes: data.clashes.slice() }
+  }
   if (data.push_error) return { kind: "mutation-error", error: String(data.push_error) }
   return { kind: "mutation-ok" }
+}
+
+function pushClashPlan(repos) {
+  var list = repos || []
+  var steps = []
+  for (var i = 0; i < list.length; i++) {
+    var repo = String(list[i] || "")
+    if (repo !== "") steps.push({ tag: "push", args: ["push", "--repo", repo, "--allow-clash"], stdin: "" })
+  }
+  return steps
 }
 
 function failureOutcome(tag, message) {

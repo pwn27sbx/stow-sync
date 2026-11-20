@@ -2077,6 +2077,8 @@ CONFIG_SYNC_PENDING_REASON = "Config Sync will publish it"
 # Same cap as config-sync's MAX_INVENTORY_FILES: past it, treat it as absent.
 CONFIG_SYNC_MAX_FILES = 20000
 CONFIG_SYNC_GIT_TIMEOUT = 2
+CONFIG_SYNC_STATUS_TIMEOUT = 10
+_CONFIG_SYNC_PUBLISHABLE_STATUSES = frozenset({"local", "added-local", "differs"})
 # config-sync never carries these, so they neither own a folder nor block one.
 CONFIG_SYNC_MACHINE_LOCAL = frozenset({"hypr/monitors.lua"})
 # Mirrors config-sync v1.6.0's SKIP_NAME_RE (PR #38). A clone carries no
@@ -3910,6 +3912,111 @@ def _push_error_text(text: str) -> str:
     return short or "Push failed."
 
 
+def _config_sync_pending_publish_paths() -> set[str]:
+    """Absolute home paths Config Sync still has to publish; empty on any failure.
+
+    Runs `config_sync.py status` (read-only, no `--fetch`, bounded by
+    `CONFIG_SYNC_STATUS_TIMEOUT`) only when Config Sync is installed and
+    connected. Collects publishable paths from both `diff.files` and
+    `diff.bundles[].files` (since `compact_snapshot_payload()` strips bundled
+    paths from `diff.files`). Any error, timeout, or unexpected payload
+    degrades silently so uploads are never blocked.
+    """
+    plugin = os.path.join(_home_dir(), CONFIG_SYNC_PLUGIN_REL)
+    script = os.path.join(plugin, "scripts", "config_sync.py")
+    if not os.path.isfile(script):
+        return set()
+    clone = _config_sync_clone_path()
+    if not clone or not os.path.isdir(os.path.join(clone, ".git")):
+        return set()
+    try:
+        result = run_bounded(
+            [sys.executable, script, "status"],
+            timeout=CONFIG_SYNC_STATUS_TIMEOUT,
+            max_output=MAX_OUTPUT,
+        )
+    except Exception:  # noqa: BLE001 - never block an upload on config-sync failure
+        return set()
+    if result.returncode != 0:
+        return set()
+    try:
+        data = json.loads(_decode(result.stdout))
+    except (ValueError, TypeError):
+        return set()
+    if not isinstance(data, dict) or data.get("ok") is not True or data.get("configured") is not True:
+        return set()
+    diff = data.get("diff")
+    if not isinstance(diff, dict):
+        return set()
+
+    def _is_publishable(item: Any) -> bool:
+        return (
+            isinstance(item, dict)
+            and item.get("default_publish") is True
+            and not item.get("hidden")
+            and not item.get("removal")
+            and item.get("status") in _CONFIG_SYNC_PUBLISHABLE_STATUSES
+        )
+
+    rels: set[str] = set()
+    files = diff.get("files")
+    if isinstance(files, list):
+        for entry in files:
+            if _is_publishable(entry) and isinstance(entry.get("path"), str):
+                rels.add(entry["path"])
+    bundles = diff.get("bundles")
+    if isinstance(bundles, list):
+        for bundle in bundles:
+            if not _is_publishable(bundle):
+                continue
+            bfiles = bundle.get("files")
+            if isinstance(bfiles, list):
+                for rel in bfiles:
+                    if isinstance(rel, str):
+                        rels.add(rel)
+
+    home = _home_dir()
+    pending: set[str] = set()
+    for rel in rels:
+        home_rel = _config_sync_home_rel(rel)
+        if home_rel:
+            pending.add(os.path.normpath(os.path.join(home, home_rel)))
+    return pending
+
+
+def _repo_push_home_paths(repo: dict[str, Any]) -> set[str]:
+    """Absolute home paths touched by unpushed commits in ``repo``."""
+    repo_path = repo["path"]
+    try:
+        diff = run_git(repo_path, ["diff", "--name-only", "-z", "@{upstream}..HEAD"], timeout=10)
+    except Exception:  # noqa: BLE001 - no upstream or git error means no clash list
+        return set()
+    if diff.returncode != 0:
+        return set()
+    rels = [rel for rel in _decode(diff.stdout).split("\0") if rel]
+    if not rels:
+        return set()
+    raw_packages = repo.get("packages", "auto")
+    if raw_packages == "auto":
+        packages = set(detect_packages(repo_path))
+    elif isinstance(raw_packages, list):
+        packages = {str(p) for p in raw_packages if isinstance(p, str)}
+    else:
+        packages = set()
+    if not packages:
+        return set()
+    target_dir = expand_path(repo.get("target", "~") or "~")
+    home_paths: set[str] = set()
+    for rel in rels:
+        if "/" not in rel:
+            continue
+        pkg, inner = rel.split("/", 1)
+        if pkg not in packages or not inner:
+            continue
+        home_paths.add(os.path.normpath(os.path.join(target_dir, inner)))
+    return home_paths
+
+
 def cmd_push(
     args: list[str],
     config_path: str | None = None,
@@ -3917,7 +4024,20 @@ def cmd_push(
 ) -> dict[str, Any]:
     """Push the current branch; a remote rejection is non-fatal (README section 5)."""
     config = load_config(config_path)
-    repo = resolve_repo(config, opt_value(args, "--repo"))
+    repo_arg = opt_value(args, "--repo")
+    repo = resolve_repo(config, repo_arg)
+    if "--allow-clash" not in args:
+        push_paths = _repo_push_home_paths(repo)
+        if push_paths:
+            clashes = sorted(to_tilde(p) for p in (push_paths & _config_sync_pending_publish_paths()))
+            if clashes:
+                return {
+                    "ok": True,
+                    "pushed": False,
+                    "clash": True,
+                    "clashes": clashes,
+                    "repo": repo_arg or to_tilde(repo["path"]),
+                }
     try:
         result = run_git(repo["path"], ["push"], timeout=300)
     except subprocess.TimeoutExpired:

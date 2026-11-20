@@ -4238,6 +4238,158 @@ class ConfigSyncVerdictTests(ConfigSyncTestBase):
         )
 
 
+class ConfigSyncPushClashTests(ConfigSyncTestBase):
+    """Improvement 4: warn before a Stow Sync upload that clashes with Config Sync."""
+
+    def _setup_repo_ahead(self, files: dict[str, str]) -> tuple[Path, Path]:
+        remote = self.env.root / "remote.git"
+        git(self.env.root, "init", "--bare", str(remote))
+        repo = self.home / ".dotfiles"
+        init_repo(repo)
+        write(repo / "README.md", "# dotfiles\n")
+        commit_all(repo, "init")
+        git(repo, "remote", "add", "origin", str(remote))
+        git(repo, "push", "-u", "origin", "main")
+        for rel, content in files.items():
+            write(repo / rel, content)
+        commit_all(repo, "add files")
+        write_config(self.config, [{"path": "~/.dotfiles", "target": "~", "packages": "auto"}])
+        return repo, remote
+
+    def _install_stub_config_sync(self, body: str, install_clone: bool = True) -> Path:
+        if install_clone:
+            self.install(["terminals/kitty.conf"])
+        script = self.home / ss.CONFIG_SYNC_PLUGIN_REL / "scripts" / "config_sync.py"
+        write(script, body)
+        return script
+
+    def _remote_head(self, remote: Path) -> str:
+        return git(remote, "rev-parse", "main").stdout.strip()
+
+    def _local_head(self, repo: Path) -> str:
+        return git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    def test_push_warns_on_overlap_and_pushes_with_allow_clash(self) -> None:
+        repo, remote = self._setup_repo_ahead({
+            "bin/.local/bin/hyprglass-patched-swap": "#!/bin/sh\ntrue\n",
+            "kitty/.config/kitty/kitty.conf": "font_size 12\n",
+        })
+        argv_log = self.env.root / "cs-argv.log"
+        payload = {
+            "ok": True,
+            "configured": True,
+            "diff": {
+                "files": [
+                    {
+                        "path": "terminals/kitty.conf",
+                        "status": "local",
+                        "default_publish": True,
+                        "hidden": False,
+                        "removal": False,
+                    }
+                ],
+                "bundles": [
+                    {
+                        "id": "helpers",
+                        "status": "added-local",
+                        "default_publish": True,
+                        "hidden": False,
+                        "removal": False,
+                        "files": ["bin/hyprglass-patched-swap"],
+                    }
+                ],
+                "plugin_list": [],
+            },
+        }
+        self._install_stub_config_sync(
+            "import json, sys\n"
+            f"open({str(argv_log)!r}, 'a', encoding='utf-8').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            f"print(json.dumps({payload!r}))\n"
+        )
+        before_remote = self._remote_head(remote)
+        res = ss.cmd_push(["--repo", "~/.dotfiles"], str(self.config), str(self.state_dir))
+        self.assertTrue(res["ok"])
+        self.assertFalse(res.get("pushed"))
+        self.assertTrue(res.get("clash"))
+        self.assertEqual(
+            res.get("clashes"),
+            ["~/.config/kitty/kitty.conf", "~/.local/bin/hyprglass-patched-swap"],
+        )
+        # Never pushed, and config_sync.py was called ONLY with ["status"].
+        self.assertEqual(self._remote_head(remote), before_remote)
+        self.assertEqual(
+            [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()],
+            [["status"]],
+        )
+        # --allow-clash proceeds with the push.
+        forced = ss.cmd_push(
+            ["--repo", "~/.dotfiles", "--allow-clash"], str(self.config), str(self.state_dir)
+        )
+        self.assertEqual(forced, {"ok": True, "pushed": True})
+        self.assertEqual(self._remote_head(remote), self._local_head(repo))
+
+    def test_push_stays_silent_when_no_overlap_or_non_publishable(self) -> None:
+        repo, remote = self._setup_repo_ahead({
+            "bin/.local/bin/hyprglass-patched-swap": "#!/bin/sh\ntrue\n",
+        })
+        payload = {
+            "ok": True,
+            "configured": True,
+            "diff": {
+                "files": [
+                    {"path": "terminals/alacritty.toml", "status": "local", "default_publish": True},
+                    {"path": "bin/hyprglass-patched-swap", "status": "identical", "default_publish": True},
+                    {"path": "bin/hyprglass-patched-swap", "status": "local", "default_publish": False},
+                    {"path": "bin/hyprglass-patched-swap", "status": "local", "default_publish": True, "hidden": True},
+                    {"path": "bin/hyprglass-patched-swap", "status": "local", "default_publish": True, "removal": True},
+                ],
+                "bundles": [
+                    {
+                        "id": "hidden-helpers",
+                        "status": "added-local",
+                        "default_publish": True,
+                        "hidden": True,
+                        "files": ["bin/hyprglass-patched-swap"],
+                    }
+                ],
+            },
+        }
+        self._install_stub_config_sync(f"import json\nprint(json.dumps({payload!r}))\n")
+        res = ss.cmd_push(["--repo", "~/.dotfiles"], str(self.config), str(self.state_dir))
+        self.assertEqual(res, {"ok": True, "pushed": True})
+        self.assertEqual(self._remote_head(remote), self._local_head(repo))
+
+    def test_push_skips_warning_on_every_config_sync_failure(self) -> None:
+        self.install(["terminals/kitty.conf"])
+        cases = (
+            ("absent", None),
+            ("nonzero", "import sys\nsys.exit(2)\n"),
+            ("invalid_json", "print('not json')\n"),
+            ("unconfigured", "import json\nprint(json.dumps({'ok': True, 'configured': False, 'diff': {}}))\n"),
+            ("timeout", "import time\ntime.sleep(5)\n"),
+        )
+        for idx, (label, stub_body) in enumerate(cases):
+            with self.subTest(label):
+                repo = self.home / ".dotfiles"
+                if idx == 0:
+                    repo, remote = self._setup_repo_ahead({
+                        "bin/.local/bin/helper-0": "#!/bin/sh\ntrue\n",
+                    })
+                else:
+                    write(repo / f"bin/.local/bin/helper-{idx}", "#!/bin/sh\ntrue\n")
+                    commit_all(repo, f"add helper-{idx}")
+                script = self.home / ss.CONFIG_SYNC_PLUGIN_REL / "scripts" / "config_sync.py"
+                if stub_body is None:
+                    if script.exists():
+                        script.unlink()
+                else:
+                    self._install_stub_config_sync(stub_body, install_clone=False)
+                with patch.object(ss, "CONFIG_SYNC_STATUS_TIMEOUT", 0.2):
+                    res = ss.cmd_push(["--repo", "~/.dotfiles"], str(self.config), str(self.state_dir))
+                self.assertEqual(res, {"ok": True, "pushed": True}, label)
+                self.assertEqual(self._remote_head(remote), self._local_head(repo), label)
+
+
 class ConfigSyncCrossingTests(ConfigSyncTestBase):
     """S3: Stow-managed paths config-sync also carries, listed read-only."""
 

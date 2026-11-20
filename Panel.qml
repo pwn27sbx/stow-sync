@@ -32,6 +32,7 @@ Panel {
   property bool publishAllowSecrets: false; property string publishError: ""; property string publishRepoFilter: ""; property string publishUpstream: "origin/main"
   property int publishCommitDone: 0; property bool publishHadError: false
   property string batchKind: ""; property int batchRemaining: 0; property int batchTotal: 0; property int batchFailures: 0; property string batchError: ""
+  property var pushClashRepos: []; property var pushClashPaths: []
   // S2/S3: the package whose dry-run plan is being fetched, the skip preview's
   // answer, and the package a skip preview belongs to.
   property var planTarget: ({})
@@ -145,6 +146,7 @@ Panel {
     if (root.busy) return
     if (root.confirmKind === "setup-undo") { runner.runAction("setup-undo", ["setup-undo", "--backup", String(root.confirmPayload.backup || "")]); return }
     if (root.confirmKind === "upload") { root.startBatch("push", Model.uploadPlan(root.statusData)); return }
+    if (root.confirmKind === "push-clash") { root.startBatch("push", Model.pushClashPlan(root.confirmPayload.repos)); return }
     if (root.confirmKind === "update") { root.startBatch("pull", Model.updatePlan(root.statusData)); return }
     // S2: a plan card that offers no Link (a conflict, a broken link, a skipped
     // path, or nothing to change) only closes. A restow is never auto-applied.
@@ -165,10 +167,30 @@ Panel {
   }
   function startBatch(kind, steps) {
     root.overlayMode = ""
+    root.pushClashRepos = []; root.pushClashPaths = []
     if (!steps || steps.length === 0) { root.setResult("Nothing to do.", true); return }
     root.batchKind = kind; root.batchRemaining = steps.length; root.batchTotal = steps.length; root.batchFailures = 0; root.batchError = ""
     root.busyVerb = kind === "publish" ? "Publishing" : (kind === "push" ? "Uploading" : (kind === "adopt" ? "Adopting" : "Updating"))
     for (var i = 0; i < steps.length; i++) runner.runAction(steps[i].tag, steps[i].args, steps[i].stdin)
+  }
+  function recordPushClash(outcome) {
+    var repo = String(outcome.repo || "")
+    if (repo !== "" && root.pushClashRepos.indexOf(repo) < 0) root.pushClashRepos = root.pushClashRepos.concat([repo])
+    var paths = outcome.clashes || []
+    var next = root.pushClashPaths.slice()
+    for (var i = 0; i < paths.length; i++) {
+      var p = String(paths[i] || "")
+      if (p !== "" && next.indexOf(p) < 0) next.push(p)
+    }
+    root.pushClashPaths = next
+  }
+  function openPushClashConfirm() {
+    var repos = root.pushClashRepos.slice()
+    var clashes = root.pushClashPaths.slice()
+    root.pushClashRepos = []; root.pushClashPaths = []
+    root.confirmKind = "push-clash"
+    root.confirmPayload = { repos: repos, clashes: clashes }
+    root.overlayMode = "confirm"
   }
   function finishBatch(text, isError) { root.busyVerb = ""; root.batchKind = ""; root.batchRemaining = 0; root.batchTotal = 0; root.batchFailures = 0; root.setResult(text, isError) }
   function openPublish(repoFilter) {
@@ -277,20 +299,27 @@ Panel {
   function publishResult(outcome) {
     if (outcome.kind === "commit-secrets") { root.publishSecrets = outcome.secrets; root.publishAllowSecrets = true; root.publishError = "" }
     else if (outcome.kind === "commit-ok") root.publishCommitDone++
+    else if (outcome.kind === "push-clash") root.recordPushClash(outcome)
     else if (outcome.kind === "mutation-error" || outcome.kind === "commit-error") { root.publishHadError = true; root.publishError = outcome.error }
     root.batchRemaining--
     if (root.batchRemaining > 0) return
     root.busyVerb = ""; root.batchKind = ""
     if (root.publishSecrets.length > 0) { root.overlayMode = "publish"; return }
+    if (root.pushClashPaths.length > 0) { root.openPushClashConfirm(); root.refresh(); return }
     root.overlayMode = ""
     if (root.publishHadError) root.setResult(root.publishError || "Publish failed.", true)
     else root.setResult(Model.publishSummaryText(root.publishCommitDone, root.publishUpstream), false)
     root.refresh()
   }
   function batchStep(outcome) {
-    if (outcome.kind === "mutation-error") { root.batchError = outcome.error; root.batchFailures++ }
+    if (outcome.kind === "push-clash") root.recordPushClash(outcome)
+    else if (outcome.kind === "mutation-error") { root.batchError = outcome.error; root.batchFailures++ }
     root.batchRemaining--
     if (root.batchRemaining > 0) return
+    if (root.pushClashPaths.length > 0) {
+      root.busyVerb = ""; root.batchKind = ""; root.batchRemaining = 0; root.batchTotal = 0; root.batchFailures = 0
+      root.openPushClashConfirm(); root.refresh(); return
+    }
     var done = root.batchTotal - root.batchFailures
     var text = root.batchKind === "push" ? "Uploaded commits"
       : (root.batchKind === "adopt" ? Model.adoptSummaryText(done, root.batchTotal) : "Updated from GitHub")

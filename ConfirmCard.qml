@@ -47,6 +47,7 @@ Item {
   readonly property var lines: root.mode === "confirm" ? root.spec.lines : []
   readonly property var secretLines: Model.secretLines(root.publishSecrets)
   readonly property string confirmText: root.mode === "publish" ? (root.publishAllowSecrets ? "Publish anyway" : "Publish") : root.mode === "diff" ? "Close" : root.mode === "adopt" ? "Adopt" : root.spec.confirmText
+  readonly property string cancelText: root.mode === "diff" ? "Back" : (root.mode === "confirm" && root.spec.cancelText ? String(root.spec.cancelText) : "Cancel")
   readonly property bool destructive: root.mode === "publish" ? root.publishSecrets.length > 0 : (root.mode === "confirm" ? root.spec.destructive : false)
   readonly property string errorText: root.mode === "publish" ? root.publishError : root.mode === "adopt" ? root.adoptError : (root.mode === "confirm" ? root.confirmError : "")
   readonly property bool bodyMode: root.mode === "diff"
@@ -200,7 +201,7 @@ Item {
           spacing: Style.spacing.sm
 
           Button {
-            text: root.mode === "diff" ? "Back" : "Cancel"
+            text: root.cancelText
             enabled: !root.busy
             onClicked: root.canceled()
           }

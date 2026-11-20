@@ -3492,3 +3492,38 @@ test("mutationFor and confirmSpec handle the path-level skip", () => {
   assert.equal(card.confirmText, "Skip")
   same(card.lines, ["machines.h.skip_paths += ~/a", "machines.h.skip_paths += ~/b"])
 })
+
+test("push-clash outcome, confirmSpec, and pushClashPlan", () => {
+  const outcome = Model.actionOutcome("push", {
+    ok: true,
+    pushed: false,
+    clash: true,
+    repo: "~/.dotfiles",
+    clashes: ["~/.local/bin/hyprglass-patched-swap"]
+  })
+  same(outcome, {
+    kind: "push-clash",
+    repo: "~/.dotfiles",
+    clashes: ["~/.local/bin/hyprglass-patched-swap"]
+  })
+  const pubOutcome = Model.actionOutcome("publish-push", {
+    ok: true,
+    pushed: false,
+    clash: true,
+    repo: "~/.dotfiles",
+    clashes: ["~/.local/bin/hyprglass-patched-swap"]
+  })
+  assert.equal(pubOutcome.kind, "push-clash")
+
+  const card = Model.confirmSpec("push-clash", {
+    clashes: ["~/.local/bin/hyprglass-patched-swap"]
+  })
+  assert.equal(card.cancelText, "Publish Config Sync first")
+  assert.equal(card.confirmText, "Upload anyway")
+  assert.equal(card.destructive, true)
+  same(card.lines, ["~/.local/bin/hyprglass-patched-swap"])
+
+  same(Model.pushClashPlan(["~/.dotfiles"]), [
+    { tag: "push", args: ["push", "--repo", "~/.dotfiles", "--allow-clash"], stdin: "" }
+  ])
+})
