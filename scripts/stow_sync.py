@@ -2103,6 +2103,21 @@ _CONFIG_SYNC_THEME_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 _CONFIG_SYNC_PLUGIN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _CONFIG_SYNC_HELPER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 _CONFIG_SYNC_LOCAL_OVERLAY_NAMES = frozenset({"local.conf", "local.lua", "local.toml"})
+# Mirrors config-sync v1.6.0's helper scan (`config_sync.py:77,78,1444-1538`).
+# Captures `.local/bin/<name>` references plus bare-name commands in quoted
+# `o.bind`/`o.rebind` third arguments; Lua `local` variable inlining in
+# `bindings.lua` (`config_sync.py:2643-2833`) is intentionally omitted to keep
+# the mirror small and self-contained.
+_CONFIG_SYNC_LOCAL_BIN_RE = re.compile(r"\.local/bin/([A-Za-z0-9][A-Za-z0-9._+-]*)")
+_CONFIG_SYNC_BIND_CMD_RE = re.compile(
+    r"""o\.(?:re)?bind\s*\(\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*,\s*"""
+    r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*,\s*(["'])((?:\\.|[^"'\\])*)\1"""
+)
+_CONFIG_SYNC_HYPR_SCAN_FILES = ("bindings.lua", "autostart.lua", "hyprland.lua")
+_CONFIG_SYNC_PLUGIN_HELPER_SCAN_SUFFIXES = frozenset({
+    ".qml", ".js", ".ts", ".lua", ".sh", ".py", ".json", ".toml", ".md", ".conf",
+})
+_CONFIG_SYNC_MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024
 
 
 def _home_dir() -> str:
@@ -2259,8 +2274,139 @@ def _config_sync_home_rel(rel: str) -> str | None:
     return None
 
 
-def config_sync_owned_paths() -> set[str] | None:
-    """Absolute home paths config-sync carries here; ``None`` when absent.
+def _config_sync_iter_files(root: str, budget: list[int]) -> list[str]:
+    """Walk regular non-symlinked config-sync files under ``root``.
+
+    Mirrors `config_sync.py` v1.6.0's `iter_files` (:1371-1399): refuses a
+    symlinked root, prunes skipped/dot/symlinked directories, and skips
+    dotfiles, skipped names and symlinks. Bounded by ``budget[0]``.
+    """
+    if budget[0] <= 0 or os.path.islink(root) or not os.path.exists(root):
+        return []
+    if os.path.isfile(root):
+        budget[0] -= 1
+        return [root]
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in _CONFIG_SYNC_SKIP_DIR_NAMES
+            and not d.startswith(".")
+            and not os.path.islink(os.path.join(dirpath, d))
+        ]
+        for name in filenames:
+            if budget[0] <= 0:
+                return out
+            if _config_sync_skip_name(name):
+                continue
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                continue
+            budget[0] -= 1
+            out.append(full)
+    return out
+
+
+def _config_sync_helper_scan_paths(home: str, clone: str) -> list[str]:
+    """Files config-sync v1.6.0 scans for `~/.local/bin` helper references.
+
+    Mirrors `config_sync.py` v1.6.0's `helper_scan_paths` (:1458-1485):
+    local and clone `hypr/{bindings,autostart,hyprland}.lua`, `omarchy/hooks`,
+    and `plugins` (matching `_CONFIG_SYNC_PLUGIN_HELPER_SCAN_SUFFIXES` or no
+    suffix).
+    """
+    out: list[str] = []
+    budget = [CONFIG_SYNC_MAX_FILES]
+    for root in (os.path.join(home, ".config", "hypr"), os.path.join(clone, "hypr")):
+        if os.path.islink(root) or not os.path.isdir(root):
+            continue
+        for name in _CONFIG_SYNC_HYPR_SCAN_FILES:
+            full = os.path.join(root, name)
+            if not os.path.islink(full) and os.path.isfile(full):
+                out.append(full)
+    for root in (
+        os.path.join(home, ".config", "omarchy", "hooks"),
+        os.path.join(clone, "omarchy", "hooks"),
+    ):
+        out.extend(_config_sync_iter_files(root, budget))
+    for root in (
+        os.path.join(home, ".config", "omarchy", "plugins"),
+        os.path.join(clone, "plugins"),
+    ):
+        if os.path.islink(root) or not os.path.isdir(root):
+            continue
+        for full in _config_sync_iter_files(root, budget):
+            suffix = os.path.splitext(full)[1].lower()
+            if suffix and suffix not in _CONFIG_SYNC_PLUGIN_HELPER_SCAN_SUFFIXES:
+                continue
+            out.append(full)
+    return out
+
+
+def _config_sync_helper_names_from_text(text: str) -> set[str]:
+    """Helper basenames referenced in ``text`` (`config_sync.py` v1.6.0 :1488-1509)."""
+    names = set(_CONFIG_SYNC_LOCAL_BIN_RE.findall(text))
+    for _quote, cmd in _CONFIG_SYNC_BIND_CMD_RE.findall(text):
+        stripped = cmd.strip()
+        if not stripped:
+            continue
+        token = stripped.split(None, 1)[0]
+        if _CONFIG_SYNC_HELPER_NAME_RE.fullmatch(token):
+            names.add(token)
+    return names
+
+
+def _config_sync_pending_helpers(
+    home: str,
+    clone: str,
+    excluded: set[str],
+    tracked: set[str],
+) -> set[str]:
+    """Local `~/.local/bin` helpers config-sync v1.6.0 will publish (`config_sync.py:1512-1538`).
+
+    Only regular non-symlinked files in `~/.local/bin` whose name is valid,
+    not skipped, not `machine_local`, within 2 MiB, and not already tracked in
+    the clone.
+    """
+    local_bin = os.path.join(home, ".local", "bin")
+    if not os.path.isdir(local_bin):
+        return set()
+    referenced: set[str] = set()
+    for path in _config_sync_helper_scan_paths(home, clone):
+        try:
+            info = os.lstat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _CONFIG_SYNC_MAX_TEXT_FILE_BYTES:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                text = handle.read(_CONFIG_SYNC_MAX_TEXT_FILE_BYTES)
+        except OSError:
+            continue
+        referenced.update(_config_sync_helper_names_from_text(text))
+    pending: set[str] = set()
+    for name in referenced:
+        if _config_sync_skip_name(name) or not _CONFIG_SYNC_HELPER_NAME_RE.fullmatch(name):
+            continue
+        if "bin/" + name in excluded:
+            continue
+        full = os.path.normpath(os.path.join(local_bin, name))
+        if full in tracked:
+            continue
+        try:
+            info = os.lstat(full)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _CONFIG_SYNC_MAX_TEXT_FILE_BYTES:
+            continue
+        pending.add(full)
+    return pending
+
+
+def _config_sync_inventory() -> tuple[set[str], set[str]] | None:
+    """``(tracked, pending)`` absolute home paths config-sync carries; ``None`` when absent.
 
     Present means the plugin directory exists and its clone has a ``.git``.
     Every failure — a missing clone, a git error or timeout, more files than
@@ -2288,14 +2434,24 @@ def config_sync_owned_paths() -> set[str] | None:
         # "absent" rather than own a path the marker may have kept local.
         return None
     home = _home_dir()
-    owned: set[str] = set()
+    tracked: set[str] = set()
     for rel in rels:
         if rel in excluded:
             continue
         home_rel = _config_sync_home_rel(rel)
         if home_rel:
-            owned.add(os.path.join(home, home_rel))
-    return owned
+            tracked.add(os.path.join(home, home_rel))
+    pending = _config_sync_pending_helpers(home, clone, excluded, tracked)
+    return tracked, pending
+
+
+def config_sync_owned_paths() -> set[str] | None:
+    """Absolute home paths config-sync carries here; ``None`` when absent."""
+    inventory = _config_sync_inventory()
+    if inventory is None:
+        return None
+    tracked, pending = inventory
+    return tracked | pending
 
 
 def config_sync_owns(path: str, owned: set[str] | None) -> bool:

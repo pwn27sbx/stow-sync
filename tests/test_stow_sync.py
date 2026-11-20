@@ -3962,6 +3962,79 @@ class ConfigSyncOwnershipTests(ConfigSyncTestBase):
         self.assertNotEqual(os.path.realpath(candidate), candidate)
         self.assertTrue(ss.config_sync_owns(candidate, owned))
 
+    # --- local referenced helpers (Config Sync v1.6.0 helper scan) -----
+
+    def test_referenced_local_helper_not_yet_in_clone_is_owned(self) -> None:
+        self.install(["terminals/kitty.conf"])
+        write(
+            self.home / ".config" / "hypr" / "autostart.lua",
+            'o.exec_once(os.getenv("HOME") .. "/.local/bin/hyprglass-patched-swap")\n',
+        )
+        write(
+            self.home / ".config" / "hypr" / "bindings.lua",
+            'o.bind("SUPER", "K", "my-bind-helper --flag")\n',
+        )
+        write(
+            self.home / ".config" / "omarchy" / "hooks" / "theme-set",
+            '#!/bin/sh\nexec "$HOME/.local/bin/hook-helper"\n',
+        )
+        write(
+            self.home / ".config" / "omarchy" / "plugins" / "demo.plugin" / "run",
+            '#!/bin/sh\n"$HOME/.local/bin/plugin-helper"\n',
+        )
+        for name in (
+            "hyprglass-patched-swap",
+            "my-bind-helper",
+            "hook-helper",
+            "plugin-helper",
+            "unreferenced-helper",
+        ):
+            write(self.home / ".local" / "bin" / name, "#!/bin/sh\ntrue\n")
+
+        owned = ss.config_sync_owned_paths()
+        self.assertIsNotNone(owned)
+        tilde = {ss.to_tilde(p) for p in owned}
+        for name in (
+            "hyprglass-patched-swap",
+            "my-bind-helper",
+            "hook-helper",
+            "plugin-helper",
+        ):
+            self.assertIn(f"~/.local/bin/{name}", tilde)
+        self.assertNotIn("~/.local/bin/unreferenced-helper", tilde)
+
+    def test_referenced_local_helper_filters_symlinks_backups_and_machine_local(self) -> None:
+        self.install(
+            ["terminals/kitty.conf"],
+            marker={"machine_local": ["bin/local-only-helper"]},
+        )
+        write(
+            self.home / ".config" / "hypr" / "autostart.lua",
+            "\n".join(
+                [
+                    'o.exec_once("~/.local/bin/stowed-helper")',
+                    'o.exec_once("~/.local/bin/foo.bak-2026-11-20")',
+                    'o.exec_once("~/.local/bin/local-only-helper")',
+                    'o.exec_once("~/.local/bin/missing-helper")',
+                ]
+            )
+            + "\n",
+        )
+        real_target = self.env.root / "dotfiles" / "bin" / ".local" / "bin" / "stowed-helper"
+        write(real_target, "#!/bin/sh\ntrue\n")
+        (self.home / ".local" / "bin").mkdir(parents=True, exist_ok=True)
+        (self.home / ".local" / "bin" / "stowed-helper").symlink_to(real_target)
+        write(self.home / ".local" / "bin" / "foo.bak-2026-11-20", "#!/bin/sh\ntrue\n")
+        write(self.home / ".local" / "bin" / "local-only-helper", "#!/bin/sh\ntrue\n")
+
+        owned = ss.config_sync_owned_paths()
+        self.assertIsNotNone(owned)
+        tilde = {ss.to_tilde(p) for p in owned}
+        self.assertNotIn("~/.local/bin/stowed-helper", tilde)
+        self.assertNotIn("~/.local/bin/foo.bak-2026-11-20", tilde)
+        self.assertNotIn("~/.local/bin/local-only-helper", tilde)
+        self.assertNotIn("~/.local/bin/missing-helper", tilde)
+
 
 class ConfigSyncVerdictTests(ConfigSyncTestBase):
     """S2: an owned path is recommended Ignore, and never overrides `never`."""
