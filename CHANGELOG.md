@@ -34,6 +34,14 @@ All notable changes to Stow Sync. The format follows
 
 ### Fixed
 
+- **Telemetry and machine-identity files are never recommended for adoption.**
+  Known telemetry stores (such as `~/.config/nextjs-nodejs`) and small JSON/TOML
+  files containing only telemetry/machine-ID keys (e.g. `anonymousId`,
+  `machineId`, `deviceId`, `installId`, `telemetry_id`, `salt`) are now
+  classified as **Ignore** (**Telemetry ID; private to this machine**). Files
+  that mix real settings with telemetry keys, or bare opt-out configs such as
+  `{"telemetry": false}`, keep their existing verdict, and secrets still take
+  precedence as **Never**.
 - **Backup and editor leftovers are never recommended for upload.** Stow Sync's
   own candidate heuristic now classifies `.bak.*`, `.bak-*`, `.backup`, `.orig`,
   `.old`, `.swp`, `.swo`, and trailing `~` files as **Ignore** (**Backup file;

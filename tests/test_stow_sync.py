@@ -1627,6 +1627,113 @@ class CandidateVerdictTests(unittest.TestCase):
         verdict, _reason = self.verdict(".config/app")
         self.assertEqual(verdict, ss.VERDICT_REVIEW)
 
+    def test_nextjs_telemetry_folder_is_ignore(self) -> None:
+        write(
+            self.home / ".config" / "nextjs-nodejs" / "config.json",
+            '{\n\t"telemetry": {\n\t\t"notifiedAt": "1732145678901",\n\t\t"anonymousId": "a1b2c3d4e5f6",\n\t\t"salt": "f6e5d4c3b2a1"\n\t}\n}\n',
+        )
+        verdict, reason = self.verdict(".config/nextjs-nodejs")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertEqual(reason, ss.TELEMETRY_REASON)
+        self.assertLessEqual(len(reason), ss.MAX_REASON_CHARS)
+
+    def test_unknown_folder_with_only_telemetry_json_is_ignore(self) -> None:
+        write(
+            self.home / ".config" / "turborepo" / "telemetry.json",
+            '{"telemetry_enabled": true, "telemetry_id": "abc123", "telemetry_salt": "def456"}\n',
+        )
+        verdict, reason = self.verdict(".config/turborepo")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertEqual(reason, ss.TELEMETRY_REASON)
+
+    def test_telemetry_toml_file_is_ignore(self) -> None:
+        write(
+            self.home / ".config" / "some-cli" / "telemetry.toml",
+            '[telemetry]\nmachine_id = "abc123"\nlast_ping = 1700000000\n',
+        )
+        verdict, reason = self.verdict(".config/some-cli/telemetry.toml")
+        self.assertEqual(verdict, ss.VERDICT_IGNORE)
+        self.assertEqual(reason, ss.TELEMETRY_REASON)
+
+    def test_json_with_telemetry_and_real_setting_stays_upload(self) -> None:
+        write(
+            self.home / ".config" / "app" / "config.json",
+            '{"telemetry": {"anonymousId": "abc123", "salt": "def456"}, "theme": "dark"}\n',
+        )
+        verdict, _reason = self.verdict(".config/app")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_json_bare_telemetry_opt_out_stays_upload(self) -> None:
+        for idx, body in enumerate((
+            '{"telemetry": false}\n',
+            '{"telemetry": {"enabled": false}}\n',
+        )):
+            with self.subTest(body=body.strip()):
+                rel = f".config/optout{idx}/config.json"
+                write(self.home / rel, body)
+                verdict, _reason = self.verdict(rel)
+                self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_normal_settings_json_stays_upload(self) -> None:
+        write(
+            self.home / ".config" / "app" / "settings.json",
+            '{"fontSize": 14, "theme": "gruvbox"}\n',
+        )
+        verdict, reason = self.verdict(".config/app")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+        self.assertIn("JSON settings you can edit", reason)
+
+    def test_mixed_folder_with_telemetry_and_real_config_is_review(self) -> None:
+        write(
+            self.home / ".config" / "app" / "telemetry.json",
+            '{"telemetry": {"anonymousId": "abc123", "salt": "def456"}}\n',
+        )
+        write(
+            self.home / ".config" / "app" / "settings.json",
+            '{"fontSize": 14}\n',
+        )
+        verdict, reason = self.verdict(".config/app")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+        self.assertEqual(reason, ss.DIR_MIXED_REASON)
+
+    def test_secret_inside_telemetry_folder_is_still_never(self) -> None:
+        token = "ghp_" + "m3M3m3M3" * 5
+        write(
+            self.home / ".config" / "nextjs-nodejs" / "config.json",
+            '{"telemetry": {"anonymousId": "' + token + '"}}\n',
+        )
+        verdict, _reason = self.verdict(".config/nextjs-nodejs")
+        self.assertEqual(verdict, ss.VERDICT_NEVER)
+
+    def test_user_script_like_agy_statusline_stays_upload(self) -> None:
+        script = self.home / ".local" / "bin" / "agy-statusline.sh"
+        write(script, "#!/usr/bin/env bash\necho ok\n")
+        os.chmod(script, 0o755)
+        verdict, _reason = self.verdict(".local/bin/agy-statusline.sh")
+        self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
+    def test_credential_folder_stays_flagged(self) -> None:
+        cred = self.home / ".config" / "antigravity" / "credential-user-scope"
+        write(cred, '{"scope": "user"}\n')
+        os.chmod(cred, 0o600)
+        verdict, _reason = self.verdict(".config/antigravity")
+        self.assertEqual(verdict, ss.VERDICT_REVIEW)
+        write(self.home / ".config" / "gh" / "hosts.yml", "github.com:\n  user: owner\n")
+        gh_verdict, _gh_reason = self.verdict(".config/gh")
+        self.assertEqual(gh_verdict, ss.VERDICT_NEVER)
+
+    def test_empty_and_commented_json_not_classified_as_telemetry(self) -> None:
+        for idx, body in enumerate((
+            "{}\n",
+            "[]\n",
+            '// comment\n{"anonymousId": "abc123"}\n',
+        )):
+            with self.subTest(body=body.strip()):
+                rel = f".config/edge{idx}/config.json"
+                write(self.home / rel, body)
+                verdict, _reason = self.verdict(rel)
+                self.assertEqual(verdict, ss.VERDICT_UPLOAD)
+
     def test_empty_directory_is_ignore(self) -> None:
         # Nothing to adopt, so it must not ask the owner anything.
         (self.home / ".config" / "empty").mkdir(parents=True)

@@ -33,6 +33,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
+
 VERSION = "0.4.0"
 
 # Per-stream output cap for a child process; the response as a whole is capped
@@ -2656,8 +2661,45 @@ _MACHINE_LOCK_NAMES = frozenset({
     "poetry.lock", "uv.lock", "Pipfile.lock", "composer.lock", "Gemfile.lock",
     "flake.lock",
 })
+# Strictly telemetry-only directories confirmed from upstream tool docs:
+# - nextjs-nodejs: Next.js CLI global anonymous telemetry store
+#   (~/.config/nextjs-nodejs/config.json; nextjs.org/telemetry,
+#   vercel/next.js packages/next/src/telemetry/storage.ts).
+_TELEMETRY_DIR_NAMES = frozenset({
+    "nextjs-nodejs",
+})
+# Small JSON/TOML content check bounds and key sets for machine-identity
+# telemetry state. At least one identity key must be present and every key in
+# the file must belong to the identity or companion metadata sets, so real
+# settings and bare opt-out files (e.g. {"telemetry": false}) are untouched.
+_TELEMETRY_CONTENT_MAX_BYTES = 16 * 1024
+_TELEMETRY_MAX_DEPTH = 4
+_TELEMETRY_IDENTITY_KEYS = frozenset({
+    "anonymousid",
+    "machineid",
+    "deviceid",
+    "installid",
+    "distinctid",
+    "telemetryid",
+    "telemetrysalt",
+    "salt",
+})
+_TELEMETRY_META_KEYS = frozenset({
+    "telemetry",
+    "notifiedat",
+    "lastping",
+    "lastpingat",
+    "enabled",
+    "disabled",
+    "telemetryenabled",
+    "telemetrydisabled",
+    "telemetryalerted",
+    "optout",
+    "optedout",
+})
 
 NEVER_CREDENTIAL_REASON = "Known credential store; never stow it"
+TELEMETRY_REASON = "Telemetry ID; private to this machine"
 TOOL_PATH_REASON = "Refers to a path installed on this machine only"
 DIR_STATE_REASON = "Only machine state inside; nothing to keep"
 DIR_MIXED_REASON = "Mixed contents; check it by hand"
@@ -2751,6 +2793,72 @@ def _machine_state_reason(path: str) -> str:
     # Any name that mentions a cache is a cache: its app regenerates it.
     if "cache" in lower:
         return "Cache; its app regenerates it"
+    return ""
+
+
+def _telemetry_dir_reason(path: str) -> str:
+    """Reason when ``path``'s basename is a known telemetry-only store."""
+    name = os.path.basename(os.path.normpath(path)).lower()
+    if name in _TELEMETRY_DIR_NAMES:
+        return TELEMETRY_REASON
+    return ""
+
+
+def _norm_telemetry_key(key: str) -> str:
+    """Normalize a JSON/TOML key for case- and separator-insensitive checks."""
+    return key.lower().replace("_", "").replace("-", "").replace(":", "")
+
+
+def _telemetry_mapping_state(data: dict[str, Any], depth: int = 0) -> tuple[bool, bool]:
+    """Return ``(all_allowed, has_identity)`` for a parsed telemetry mapping."""
+    if not data or depth > _TELEMETRY_MAX_DEPTH:
+        return False, False
+    has_identity = False
+    for raw_key, value in data.items():
+        if not isinstance(raw_key, str):
+            return False, False
+        key = _norm_telemetry_key(raw_key)
+        if key not in _TELEMETRY_IDENTITY_KEYS and key not in _TELEMETRY_META_KEYS:
+            return False, False
+        if isinstance(value, dict):
+            ok, sub_identity = _telemetry_mapping_state(value, depth + 1)
+            if not ok:
+                return False, False
+            if sub_identity:
+                has_identity = True
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            if key in _TELEMETRY_IDENTITY_KEYS:
+                has_identity = True
+        else:
+            return False, False
+    return True, has_identity
+
+
+def _telemetry_content_reason(path: str, text: str) -> str:
+    """Reason when a small JSON/TOML file holds only telemetry/machine-ID keys."""
+    if len(text) > _TELEMETRY_CONTENT_MAX_BYTES:
+        return ""
+    stripped = text.lstrip()
+    if not stripped:
+        return ""
+    parsed: Any = None
+    if stripped.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except (ValueError, RecursionError):
+            return ""
+    elif tomllib is not None and path.lower().endswith(".toml"):
+        try:
+            parsed = tomllib.loads(text)
+        except ValueError:
+            return ""
+    else:
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    ok, has_identity = _telemetry_mapping_state(parsed)
+    if ok and has_identity:
+        return TELEMETRY_REASON
     return ""
 
 
@@ -2968,6 +3076,9 @@ def _file_verdict(path: str) -> tuple[str, str]:
         state_reason = _machine_state_reason(path)
         if state_reason:
             return VERDICT_IGNORE, state_reason
+        telemetry_reason = _telemetry_content_reason(path, text)
+        if telemetry_reason:
+            return VERDICT_IGNORE, telemetry_reason
         if _tool_env_tool(text):
             return VERDICT_IGNORE, TOOL_PATH_REASON
         private = _owner_only_mode(path)
@@ -3000,8 +3111,10 @@ def _directory_verdict(path: str) -> tuple[str, str]:
         nonlocal unreadable
         unreadable = True
 
+    root_is_telemetry = _telemetry_dir_reason(path) != ""
     entries = 0
     state_files = 0
+    telemetry_files = 0
     text_names: list[str] = []
     text_reasons: list[str] = []
     dir_names: list[str] = []
@@ -3018,8 +3131,9 @@ def _directory_verdict(path: str) -> tuple[str, str]:
             dir_names.append(name)
             if _machine_state_reason(os.path.join(dirpath, name)):
                 state_dirs += 1
-        # A machine-state directory name (a cache, a log dir) decides for
-        # everything inside it; a secret still wins over the name.
+        # A machine-state or telemetry directory name decides for everything
+        # inside it; a secret still wins over the name.
+        in_telemetry = root_is_telemetry or _telemetry_dir_reason(dirpath) != ""
         in_state = _machine_state_reason(dirpath) != ""
         for name in sorted(filenames):
             full = os.path.join(dirpath, name)
@@ -3035,10 +3149,15 @@ def _directory_verdict(path: str) -> tuple[str, str]:
             verdict, reason = _file_verdict(full)
             if verdict == VERDICT_NEVER:
                 return VERDICT_NEVER, reason
-            if in_state:
+            if in_telemetry:
+                state_files += 1
+                telemetry_files += 1
+            elif in_state:
                 state_files += 1
             elif verdict == VERDICT_IGNORE:
                 state_files += 1
+                if reason == TELEMETRY_REASON:
+                    telemetry_files += 1
             elif verdict == VERDICT_REVIEW:
                 return VERDICT_REVIEW, reason
             else:
@@ -3062,6 +3181,8 @@ def _directory_verdict(path: str) -> tuple[str, str]:
             )
         return VERDICT_IGNORE, DIR_EMPTY_FOLDERS_REASON
     if not text_reasons:
+        if telemetry_files == state_files:
+            return VERDICT_IGNORE, TELEMETRY_REASON
         return VERDICT_IGNORE, DIR_STATE_REASON
     if state_files > 0:
         return VERDICT_REVIEW, DIR_MIXED_REASON
